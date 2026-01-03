@@ -1,0 +1,7 @@
+//Babel giúp bạn sử dụng các tính năng mới nhất của JavaScript ngay lập tức mà không
+//phải lo lắng về khả năng tương thích với các môi trường cũ.
+{
+    "presets": [
+        "@babel/preset-env"
+    ]
+}
