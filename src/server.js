@@ -6,7 +6,7 @@ import authRoute from './routes/auth';
 import useApi from './routes/useApi';
 import connectDB from './config/connectDB';
 import connection from './config/connectDB';
-
+import cookieParser from 'cookie-parser';
 require('dotenv').config();
 // Add headers before the routes are defined
 
@@ -18,7 +18,7 @@ viewEngine(app);
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-
+app.use(cookieParser());
 const HOSTNAME = process.env.HOSTNAME || "localhost";
 let PORT = process.env.PORT || 8080;
 

@@ -295,6 +295,7 @@ const handleRegister = async (req, res) => {
 };
 
 // 2. Login
+// 2. Login
 const handleLogin = async (req, res) => {
   try {
     if (!req.body.email || !req.body.password) {
@@ -304,23 +305,28 @@ const handleLogin = async (req, res) => {
         DT: '',
       });
     }
-    
+
     let data = await authService.loginUser(req.body);
-    //set cookie
-    res.cookie("jwt", data.DT.access_Token, { httpOnly: true, maxAge: 60 * 60 * 1000 });    
-    if (data.EC === 0) {
+
+    // ✅ Chỉ set cookie khi login thành công và có token
+    if (data.EC === 0 && data?.DT?.access_Token) {
+      res.cookie('jwt', data.DT.access_Token, {
+        httpOnly: true,
+        maxAge: 60 * 60 * 1000,
+      });
+
       return res.status(200).json({
         EM: data.EM,
         EC: data.EC,
         DT: data.DT,
       });
-    } else {
-      return res.status(401).json({
-        EM: data.EM,
-        EC: data.EC,
-        DT: data.DT,
-      });
     }
+
+    return res.status(401).json({
+      EM: data.EM,
+      EC: data.EC,
+      DT: data.DT,
+    });
   } catch (e) {
     console.error(e);
     return res.status(500).json({
@@ -328,8 +334,9 @@ const handleLogin = async (req, res) => {
       EC: '-1',
       DT: '',
     });
-  }   
+  }
 };
+
 
 // 3. Gửi OTP để reset password (ĐÃ THÊM RATE LIMITING)
 const handleForgotPassword = async (req, res) => {
