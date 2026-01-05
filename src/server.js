@@ -7,6 +7,7 @@ import useApi from './routes/useApi';
 import connectDB from './config/connectDB';
 import connection from './config/connectDB';
 import cookieParser from 'cookie-parser';
+import adminInventoryApi from "./routes/adminInventoryApi";
 require('dotenv').config();
 // Add headers before the routes are defined
 
@@ -46,6 +47,7 @@ app.use(function (req, res, next) {
 
 //init all web routes
 initWebRoutes(app);
+adminInventoryApi(app);
 authRoute(app);
 useApi(app);
 //init all web routes
