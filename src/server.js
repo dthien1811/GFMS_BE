@@ -9,7 +9,7 @@ import gymRoute from './routes/gym';
 import uploadRoute from './routes/upload';
 import connectDB from './config/connectDB';
 import connection from './config/connectDB';
-
+import cookieParser from 'cookie-parser';
 require('dotenv').config();
 // Add headers before the routes are defined
 
