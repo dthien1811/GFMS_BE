@@ -22,7 +22,10 @@ module.exports = (sequelize, DataTypes) => {
     description: DataTypes.TEXT,
     status: DataTypes.STRING,
     ownerId: DataTypes.INTEGER,
-    franchiseRequestId: DataTypes.INTEGER
+    franchiseRequestId: DataTypes.INTEGER,
+    // thêm các cột mới đã migrate
+    operatingHours: DataTypes.TEXT,
+    images: DataTypes.TEXT
   }, {
     sequelize,
     modelName: 'Gym',
