@@ -10,9 +10,10 @@ import uploadRoute from './routes/upload';
 import connectDB from './config/connectDB';
 import connection from './config/connectDB';
 import cookieParser from 'cookie-parser';
+
 require('dotenv').config();
 // Add headers before the routes are defined
-
+const trainerRoutes = require('./routes/trainer');
 
 let app = express();
 
@@ -56,6 +57,10 @@ app.use(function (req, res, next) {
 initWebRoutes(app);
 authRoute(app);
 useApi(app);
+
+app.use('/api/pt', trainerRoutes);
+app.use('/pt', trainerRoutes);
+
 gymRoute(app);
 uploadRoute(app);
 
