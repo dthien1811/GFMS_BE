@@ -1,57 +1,46 @@
-import express from 'express';
-import bodyParser from 'body-parser';
-import viewEngine from './config/viewEngine';
-import initWebRoutes from './routes/web';
-import authRoute from './routes/auth';
-import useApi from './routes/useApi';
-import connectDB from './config/connectDB';
-import connection from './config/connectDB';
-import cookieParser from 'cookie-parser';
+import express from "express";
+import bodyParser from "body-parser";
+import cookieParser from "cookie-parser";
+
+import initWebRoutes from "./routes/web";
+import authRoute from "./routes/auth";
+import useApi from "./routes/useApi";
 import adminInventoryApi from "./routes/adminInventoryApi";
-require('dotenv').config();
-// Add headers before the routes are defined
+import connection from "./config/connectDB";
 
+require("dotenv").config();
 
-let app = express();
-
-//config view engine
-viewEngine(app);
-
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-app.use(cookieParser());
+const app = express();
+const PORT = process.env.PORT || 8080;
 const HOSTNAME = process.env.HOSTNAME || "localhost";
-let PORT = process.env.PORT || 8080;
 
+app.use(bodyParser.json({ limit: "10mb" }));
+app.use(bodyParser.urlencoded({ extended: true, limit: "10mb" }));
+app.use(cookieParser());
 
-//CORS fixtable
-app.use(function (req, res, next) {
+// ===== CORS (NFR-REL) =====
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "X-Requested-With, Content-Type, Authorization, Accept"
+  );
+  res.setHeader("Access-Control-Allow-Credentials", true);
 
-    // Website you wish to allow to connect
-    res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000');
-
-    // Request methods you wish to allow
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
-
-    // Request headers you wish to allow
-    res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type');
-
-    // Set to true if you need the website to include cookies in the requests sent
-    // to the API (e.g. in case you use sessions)
-    res.setHeader('Access-Control-Allow-Credentials', true);
-
-    // Pass to next layer of middleware
-    next();
+  if (req.method === "OPTIONS") return res.sendStatus(204);
+  next();
 });
-//CORS fixtable
 
-//init all web routes
+// routes
 initWebRoutes(app);
 adminInventoryApi(app);
 authRoute(app);
 useApi(app);
-//init all web routes
+
+// DB connect
 connection();
+
 app.listen(PORT, () => {
-     console.log(`Server running at: http://${HOSTNAME}:${PORT}`);
-})
+  console.log(`Server running at: http://${HOSTNAME}:${PORT}`);
+});

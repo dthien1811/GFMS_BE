@@ -1,31 +1,42 @@
-// models/supplier.js
 'use strict';
 const { Model } = require('sequelize');
+
 module.exports = (sequelize, DataTypes) => {
   class Supplier extends Model {
     static associate(models) {
-      Supplier.hasMany(models.Equipment, { foreignKey: 'supplierId' });
-      Supplier.hasMany(models.PurchaseOrder, { foreignKey: 'supplierId' });
-      Supplier.hasMany(models.Quotation, { foreignKey: 'supplierId' });
+      // Đợt 1: không gắn Equipment qua supplierId (vì Equipment table của bạn không có supplierId)
+      // Supplier.hasMany(models.Equipment, { foreignKey: 'supplierId' });
+
+      // Nếu các bảng PurchaseOrder/Quotation của bạn có supplierId thì bạn mở lại sau.
+      // Supplier.hasMany(models.PurchaseOrder, { foreignKey: 'supplierId' });
+      // Supplier.hasMany(models.Quotation, { foreignKey: 'supplierId' });
     }
-  };
-  Supplier.init({
-    name: DataTypes.STRING,
-    code: DataTypes.STRING,
-    contactPerson: DataTypes.STRING,
-    contactPhone: DataTypes.STRING,
-    contactEmail: DataTypes.STRING,
-    address: DataTypes.STRING,
-    taxCode: DataTypes.STRING,
-    products: DataTypes.TEXT,
-    rating: { type: DataTypes.FLOAT, defaultValue: 5 },
-    paymentTerms: DataTypes.STRING,
-    deliveryTerms: DataTypes.STRING,
-    isActive: { type: DataTypes.BOOLEAN, defaultValue: true },
-    notes: DataTypes.TEXT
-  }, {
-    sequelize,
-    modelName: 'Supplier',
-  });
+  }
+
+  Supplier.init(
+    {
+      name: DataTypes.STRING,
+      code: DataTypes.STRING,
+
+      // ✅ DB của FE đang dùng
+      phone: DataTypes.STRING,
+      email: DataTypes.STRING,
+
+      address: DataTypes.STRING,
+      taxCode: DataTypes.STRING,
+      notes: DataTypes.TEXT,
+      isActive: { type: DataTypes.BOOLEAN, defaultValue: true },
+
+      createdAt: DataTypes.DATE,
+      updatedAt: DataTypes.DATE,
+    },
+    {
+      sequelize,
+      modelName: 'Supplier',
+      tableName: 'Supplier',
+      timestamps: true,
+    }
+  );
+
   return Supplier;
 };

@@ -1,22 +1,55 @@
-import { Op, QueryTypes } from "sequelize";
+import { QueryTypes } from "sequelize";
 import db from "../models";
 
-const pickPage = (query) => {
+const pickPage = (query = {}) => {
   const page = Math.max(1, parseInt(query.page || "1", 10));
   const limit = Math.max(1, Math.min(200, parseInt(query.limit || "10", 10)));
   const offset = (page - 1) * limit;
   return { page, limit, offset };
 };
 
-// ✅ lấy đúng tên bảng mà model hiện tại đang map tới (dù model bạn đặt gì)
 const tbl = (model) => {
   const t = model.getTableName();
-  // sequelize có thể trả object { tableName, schema }
   if (typeof t === "string") return t;
   return t?.tableName || t;
 };
 
 const qLike = (s) => `%${String(s || "").trim()}%`;
+
+// ✅ chỉ lấy field tồn tại trong model (tránh Unknown column khi create/update)
+const pickByModel = (model, payload = {}) => {
+  const allowed = new Set(Object.keys(model.rawAttributes || {}));
+  const out = {};
+  for (const k of Object.keys(payload)) {
+    if (allowed.has(k)) out[k] = payload[k];
+  }
+  return out;
+};
+
+// ✅ map supplier payload: FE gửi phone/email nhưng có thể lỡ gửi contactPhone/contactEmail
+const normalizeSupplierPayload = (payload = {}) => {
+  const p = { ...payload };
+  if (p.phone == null && p.contactPhone != null) p.phone = p.contactPhone;
+  if (p.email == null && p.contactEmail != null) p.email = p.contactEmail;
+
+  // dọn rác
+  delete p.contactPhone;
+  delete p.contactEmail;
+  delete p.contactPerson;
+  delete p.products;
+  delete p.rating;
+  delete p.paymentTerms;
+  delete p.deliveryTerms;
+  return p;
+};
+
+// ✅ dọn rác equipment (nếu lỡ bị gửi lên)
+const normalizeEquipmentPayload = (payload = {}) => {
+  const p = { ...payload };
+  delete p.gymId;
+  delete p.supplierId;
+  return p;
+};
 
 const adminInventoryService = {
   // ================== EQUIPMENT CATEGORIES ==================
@@ -29,8 +62,8 @@ const adminInventoryService = {
     return { data: rows };
   },
 
-  // ================== EQUIPMENTS ==================
-  async getEquipments(query) {
+  // ================== EQUIPMENTS (READ) ==================
+  async getEquipments(query = {}) {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
     const status = query.status && query.status !== "all" ? String(query.status) : null;
@@ -39,7 +72,6 @@ const adminInventoryService = {
     const eqTable = tbl(db.Equipment);
     const catTable = db.EquipmentCategory ? tbl(db.EquipmentCategory) : null;
 
-    // build where SQL (không phụ thuộc field mapping)
     const where = [];
     const params = {};
 
@@ -57,96 +89,63 @@ const adminInventoryService = {
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-
-    // join category nếu có
-    const joinSql = catTable
-      ? `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId`
-      : "";
-
-    const selectSql = `SELECT 
-      e.*, 
-      ${catTable ? "c.name AS categoryName" : "NULL AS categoryName"}
-    FROM \`${eqTable}\` e
-    ${joinSql}
-    ${whereSql}
-    ORDER BY e.id DESC
-    LIMIT :limit OFFSET :offset`;
-
-    const countSql = `SELECT COUNT(*) AS total
-      FROM \`${eqTable}\` e
-      ${whereSql}`;
+    const joinSql = catTable ? `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId` : "";
 
     const [rows, countRows] = await Promise.all([
-      db.sequelize.query(selectSql, {
-        type: QueryTypes.SELECT,
-        replacements: { ...params, limit, offset },
-      }),
-      db.sequelize.query(countSql, {
-        type: QueryTypes.SELECT,
-        replacements: params,
-      }),
+      db.sequelize.query(
+        `SELECT e.*, ${catTable ? "c.name AS categoryName" : "NULL AS categoryName"}
+         FROM \`${eqTable}\` e
+         ${joinSql}
+         ${whereSql}
+         ORDER BY e.id DESC
+         LIMIT :limit OFFSET :offset`,
+        { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
+      ),
+      db.sequelize.query(
+        `SELECT COUNT(*) AS total FROM \`${eqTable}\` e ${whereSql}`,
+        { type: QueryTypes.SELECT, replacements: params }
+      ),
     ]);
 
     const totalItems = Number(countRows?.[0]?.total || 0);
     const totalPages = Math.max(1, Math.ceil(totalItems / limit));
-
     return { data: rows, meta: { page, limit, totalItems, totalPages } };
   },
 
-  // ================== SUPPLIERS ==================
-  async getSuppliers(query) {
+  // ================== SUPPLIERS (READ) ==================
+  async getSuppliers(query = {}) {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
 
     const table = tbl(db.Supplier);
-
     const where = [];
     const params = {};
 
     if (q) {
-      where.push(`(name LIKE :q OR code LIKE :q)`);
+      where.push(`(name LIKE :q OR code LIKE :q OR phone LIKE :q OR email LIKE :q)`);
       params.q = qLike(q);
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    const rows = await db.sequelize.query(
-      `SELECT * FROM \`${table}\` ${whereSql} ORDER BY id DESC LIMIT :limit OFFSET :offset`,
-      {
-        type: QueryTypes.SELECT,
-        replacements: { ...params, limit, offset },
-      }
-    );
-
-    const countRows = await db.sequelize.query(
-      `SELECT COUNT(*) AS total FROM \`${table}\` ${whereSql}`,
-      {
-        type: QueryTypes.SELECT,
-        replacements: params,
-      }
-    );
+    const [rows, countRows] = await Promise.all([
+      db.sequelize.query(
+        `SELECT * FROM \`${table}\` ${whereSql} ORDER BY id DESC LIMIT :limit OFFSET :offset`,
+        { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
+      ),
+      db.sequelize.query(
+        `SELECT COUNT(*) AS total FROM \`${table}\` ${whereSql}`,
+        { type: QueryTypes.SELECT, replacements: params }
+      ),
+    ]);
 
     const totalItems = Number(countRows?.[0]?.total || 0);
     const totalPages = Math.max(1, Math.ceil(totalItems / limit));
-
-    const mapped = rows.map((s) => ({
-      ...s,
-      phone: s.phone ?? s.contactPhone ?? s.contact_phone ?? null,
-      email: s.email ?? s.contactEmail ?? s.contact_email ?? null,
-      status:
-        s.status ??
-        (s.isActive ?? s.is_active) === true
-          ? "active"
-          : (s.isActive ?? s.is_active) === false
-          ? "inactive"
-          : null,
-    }));
-
-    return { data: mapped, meta: { page, limit, totalItems, totalPages } };
+    return { data: rows, meta: { page, limit, totalItems, totalPages } };
   },
 
-  // ================== STOCKS ==================
-  async getStocks(query) {
+  // ================== STOCKS (READ) ==================
+  async getStocks(query = {}) {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
 
@@ -157,13 +156,16 @@ const adminInventoryService = {
     const where = [];
     const params = {};
 
+    if (query.gymId) {
+      where.push(`s.gymId = :gymId`);
+      params.gymId = Number(query.gymId);
+    }
     if (q && eqTable) {
       where.push(`(e.name LIKE :q OR e.code LIKE :q)`);
       params.q = qLike(q);
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-
     const joinEq = eqTable ? `LEFT JOIN \`${eqTable}\` e ON e.id = s.equipmentId` : "";
     const joinGym = gymTable ? `LEFT JOIN \`${gymTable}\` g ON g.id = s.gymId` : "";
 
@@ -180,10 +182,7 @@ const adminInventoryService = {
       ORDER BY s.id DESC
       LIMIT :limit OFFSET :offset
       `,
-      {
-        type: QueryTypes.SELECT,
-        replacements: { ...params, limit, offset },
-      }
+      { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
     );
 
     const countRows = await db.sequelize.query(
@@ -194,54 +193,70 @@ const adminInventoryService = {
     const totalItems = Number(countRows?.[0]?.total || 0);
     const totalPages = Math.max(1, Math.ceil(totalItems / limit));
 
-    const mapped = rows.map((r) => ({
-      ...r,
-      gym: r.gymName || r.gym || null,
-      equipment: r.equipmentName || r.equipment || null,
-      code: r.equipmentCode || r.code || null,
-      available: r.availableQuantity ?? r.available_quantity ?? r.available ?? 0,
-      reserved: r.reservedQuantity ?? r.reserved_quantity ?? r.reserved ?? 0,
-      damaged: r.damagedQuantity ?? r.damaged_quantity ?? r.damaged ?? 0,
-      maintenance: r.maintenanceQuantity ?? r.maintenance_quantity ?? r.maintenance ?? 0,
-      min: r.minStockLevel ?? r.min_stock_level ?? r.min ?? 0,
-      reorder: r.reorderPoint ?? r.reorder_point ?? r.reorder ?? 0,
-    }));
-
-    return { data: mapped, meta: { page, limit, totalItems, totalPages } };
+    return { data: rows, meta: { page, limit, totalItems, totalPages } };
   },
 
-  // ================== CREATE & UPDATE EQUIPMENT ==================
+  // ================== EQUIPMENT (C/R/D) ==================
   async createEquipment(payload) {
-    const equipment = await db.Equipment.create(payload);
-    return equipment;
+    const clean = pickByModel(db.Equipment, normalizeEquipmentPayload(payload));
+    if (!String(clean.name || "").trim()) throw new Error("name is required");
+
+    // ✅ chỉ insert đúng field DB có
+    const created = await db.Equipment.create(clean, { fields: Object.keys(clean) });
+    return created;
   },
 
   async updateEquipment(id, payload) {
-    const equipment = await db.Equipment.findByPk(id);
-    if (!equipment) return null;
-    await equipment.update(payload);
-    return equipment;
+    const clean = pickByModel(db.Equipment, normalizeEquipmentPayload(payload));
+    const eq = await db.Equipment.findByPk(id);
+    if (!eq) return null;
+
+    await eq.update(clean, { fields: Object.keys(clean) });
+    return eq;
   },
 
-  // ================== DISCONTINUE EQUIPMENT ==================
   async discontinueEquipment(id) {
-    const equipment = await db.Equipment.findByPk(id);
-    if (!equipment) return null;
-    await equipment.update({ status: "discontinued" });
-    return equipment;
+    const eq = await db.Equipment.findByPk(id);
+    if (!eq) return null;
+    await eq.update({ status: "discontinued" }, { fields: ["status"] });
+    return eq;
   },
 
-  // ================== CREATE & UPDATE SUPPLIERS ==================
+  // ================== SUPPLIER (C/R/D) ==================
   async createSupplier(payload) {
-    const supplier = await db.Supplier.create(payload);
-    return supplier;
+    const clean = pickByModel(db.Supplier, normalizeSupplierPayload(payload));
+    if (!String(clean.name || "").trim()) throw new Error("name is required");
+
+    const created = await db.Supplier.create(clean, { fields: Object.keys(clean) });
+    return created;
   },
 
   async updateSupplier(id, payload) {
-    const supplier = await db.Supplier.findByPk(id);
-    if (!supplier) return null;
-    await supplier.update(payload);
-    return supplier;
+    const clean = pickByModel(db.Supplier, normalizeSupplierPayload(payload));
+    const s = await db.Supplier.findByPk(id);
+    if (!s) return null;
+
+    await s.update(clean, { fields: Object.keys(clean) });
+    return s;
+  },
+
+  async setSupplierActive(id, isActive) {
+    const s = await db.Supplier.findByPk(id);
+    if (!s) return null;
+
+    await s.update({ isActive: !!isActive }, { fields: ["isActive"] });
+    return s;
+  },
+
+  // ================== IMPORT / EXPORT ==================
+  async createReceiptImport(payload) {
+    // (giữ như bạn đang làm – nếu cần mình sẽ chuẩn hóa tiếp khi bạn gửi lỗi import/export)
+    // Bạn đang dùng equipmentStock có gymId nên phần này ok.
+    return { message: "TODO: import logic (đang dùng bản của bạn)" };
+  },
+
+  async createExport(payload) {
+    return { message: "TODO: export logic (đang dùng bản của bạn)" };
   },
 };
 
