@@ -16,43 +16,208 @@ const tbl = (model) => {
 
 const qLike = (s) => `%${String(s || "").trim()}%`;
 
-// ✅ chỉ lấy field tồn tại trong model (tránh Unknown column khi create/update)
-const pickByModel = (model, payload = {}) => {
-  const allowed = new Set(Object.keys(model.rawAttributes || {}));
+const normalizeList = (rows, totalItems, page, limit) => {
+  const totalPages = Math.max(1, Math.ceil(Number(totalItems || 0) / limit));
+  return { data: rows, meta: { page, limit, totalItems: Number(totalItems || 0), totalPages } };
+};
+
+// ===== whitelist payload để không dính cột rác =====
+const pickEquipmentPayload = (payload = {}) => {
+  const allowed = [
+    "name",
+    "code",
+    "description",
+    "categoryId",
+    "brand",
+    "model",
+    "specifications",
+    "unit",
+    "minStockLevel",
+    "maxStockLevel",
+    "status",
+  ];
   const out = {};
-  for (const k of Object.keys(payload)) {
-    if (allowed.has(k)) out[k] = payload[k];
+  for (const k of allowed) {
+    if (payload[k] !== undefined) out[k] = payload[k];
   }
+  // chặn tuyệt đối gymId/supplierId (dù FE có gửi nhầm)
+  delete out.gymId;
+  delete out.supplierId;
   return out;
 };
 
-// ✅ map supplier payload: FE gửi phone/email nhưng có thể lỡ gửi contactPhone/contactEmail
-const normalizeSupplierPayload = (payload = {}) => {
-  const p = { ...payload };
-  if (p.phone == null && p.contactPhone != null) p.phone = p.contactPhone;
-  if (p.email == null && p.contactEmail != null) p.email = p.contactEmail;
+const buildUpdateSQL = (table, id, data) => {
+  const keys = Object.keys(data || {}).filter((k) => data[k] !== undefined);
+  if (!keys.length) return null;
 
-  // dọn rác
-  delete p.contactPhone;
-  delete p.contactEmail;
-  delete p.contactPerson;
-  delete p.products;
-  delete p.rating;
-  delete p.paymentTerms;
-  delete p.deliveryTerms;
-  return p;
+  const sets = keys.map((k) => `\`${k}\` = :${k}`).join(", ");
+  return {
+    sql: `UPDATE \`${table}\` SET ${sets}, \`updatedAt\` = NOW() WHERE id = :id`,
+    replacements: { ...data, id: Number(id) },
+  };
 };
 
-// ✅ dọn rác equipment (nếu lỡ bị gửi lên)
-const normalizeEquipmentPayload = (payload = {}) => {
-  const p = { ...payload };
-  delete p.gymId;
-  delete p.supplierId;
-  return p;
+const selectById = async (table, id, transaction) => {
+  const rows = await db.sequelize.query(
+    `SELECT * FROM \`${table}\` WHERE id = :id LIMIT 1`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: { id: Number(id) },
+      transaction,
+    }
+  );
+  return rows?.[0] || null;
+};
+
+const getOrCreateStock = async (gymId, equipmentId, transaction) => {
+  const [stock] = await db.EquipmentStock.findOrCreate({
+    where: { gymId, equipmentId },
+    defaults: {
+      gymId,
+      equipmentId,
+      quantity: 0,
+      availableQuantity: 0,
+      reservedQuantity: 0,
+      damagedQuantity: 0,
+      maintenanceQuantity: 0,
+    },
+    transaction,
+    lock: transaction.LOCK.UPDATE,
+  });
+  return stock;
+};
+
+/**
+ * ============================================================
+ * ✅ SUPPLIER FIX (TRIPLE CHECK)
+ * - Không hardcode isActive/contactPhone/contactEmail nữa
+ * - Tự dò cột thật trong Supplier bằng SHOW COLUMNS
+ * - Chặn id NaN/undefined => hết "Unknown column 'NaN'..."
+ * ============================================================
+ */
+let SUPPLIER_META = null;
+
+const toId = (id) => {
+  const n = Number(id);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`Invalid supplier id: ${id}`);
+  return n;
+};
+
+const loadSupplierMeta = async () => {
+  if (SUPPLIER_META) return SUPPLIER_META;
+
+  const cols = await db.sequelize.query("SHOW COLUMNS FROM `Supplier`", {
+    type: QueryTypes.SELECT,
+  });
+
+  const schema = cols.map((c) => ({
+    name: c.Field,
+    type: String(c.Type || "").toLowerCase(),
+  }));
+
+  const colNames = new Set(schema.map((c) => c.name));
+
+  const phoneCol = colNames.has("phone")
+    ? "phone"
+    : colNames.has("contactPhone")
+    ? "contactPhone"
+    : colNames.has("contact_phone")
+    ? "contact_phone"
+    : null;
+
+  const emailCol = colNames.has("email")
+    ? "email"
+    : colNames.has("contactEmail")
+    ? "contactEmail"
+    : colNames.has("contact_email")
+    ? "contact_email"
+    : null;
+
+  // detect cột trạng thái (nếu DB có)
+  const activeCandidates = ["isActive", "is_active", "active", "status"];
+  const activeCol = activeCandidates.find((c) => colNames.has(c)) || null;
+  const activeColType = activeCol ? schema.find((x) => x.name === activeCol)?.type || "" : "";
+
+  const hasUpdatedAt = colNames.has("updatedAt");
+  const hasCreatedAt = colNames.has("createdAt");
+
+  SUPPLIER_META = { schema, colNames, phoneCol, emailCol, activeCol, activeColType, hasUpdatedAt, hasCreatedAt };
+  return SUPPLIER_META;
+};
+
+const activeValueFromBool = (meta, boolVal) => {
+  if (!meta.activeCol) return undefined;
+
+  // status kiểu string -> 'active'/'inactive'
+  if (meta.activeCol === "status") return boolVal ? "active" : "inactive";
+
+  const t = meta.activeColType || "";
+  if (t.includes("enum") || t.includes("varchar") || t.includes("char")) {
+    return boolVal ? "active" : "inactive";
+  }
+  return boolVal ? 1 : 0;
+};
+
+const mapIsActiveFromRow = (meta, row) => {
+  if (!meta.activeCol) return true;
+
+  const v = row?.[meta.activeCol];
+
+  if (meta.activeCol === "status") return String(v || "").toLowerCase() === "active";
+
+  const t = meta.activeColType || "";
+  if (t.includes("enum") || t.includes("varchar") || t.includes("char")) {
+    return String(v || "").toLowerCase() === "active";
+  }
+  return v === true || v === 1 || v === "1";
+};
+
+const pickSupplierCleanForDB = async (payload = {}) => {
+  const meta = await loadSupplierMeta();
+
+  const clean = {};
+
+  if (payload.name !== undefined) clean.name = payload.name;
+  if (payload.code !== undefined) clean.code = payload.code;
+
+  if (meta.phoneCol) {
+    const phone = payload.phone ?? payload.contactPhone ?? payload.contact_phone ?? null;
+    if (phone !== undefined) clean[meta.phoneCol] = phone;
+  }
+  if (meta.emailCol) {
+    const email = payload.email ?? payload.contactEmail ?? payload.contact_email ?? null;
+    if (email !== undefined) clean[meta.emailCol] = email;
+  }
+
+  if (payload.address !== undefined) clean.address = payload.address ?? null;
+  if (payload.taxCode !== undefined) clean.taxCode = payload.taxCode ?? null;
+  if (payload.notes !== undefined) clean.notes = payload.notes ?? null;
+
+  // chỉ set active nếu DB có cột và FE gửi
+  if (meta.activeCol && payload.isActive !== undefined) {
+    clean[meta.activeCol] = activeValueFromBool(meta, !!payload.isActive);
+  }
+
+  // chỉ giữ cột tồn tại trong DB
+  const filtered = {};
+  for (const k of Object.keys(clean)) {
+    if (meta.colNames.has(k) && clean[k] !== undefined) filtered[k] = clean[k];
+  }
+
+  return { meta, clean: filtered };
+};
+
+const selectSupplierById = async (id) => {
+  const n = toId(id);
+  const rows = await db.sequelize.query("SELECT * FROM `Supplier` WHERE id = :id LIMIT 1", {
+    type: QueryTypes.SELECT,
+    replacements: { id: n },
+  });
+  return rows?.[0] || null;
 };
 
 const adminInventoryService = {
-  // ================== EQUIPMENT CATEGORIES ==================
+  // ================== CATEGORIES ==================
   async getEquipmentCategories() {
     const table = tbl(db.EquipmentCategory);
     const rows = await db.sequelize.query(
@@ -62,7 +227,7 @@ const adminInventoryService = {
     return { data: rows };
   },
 
-  // ================== EQUIPMENTS (READ) ==================
+  // ================== EQUIPMENTS (READ raw SQL) ==================
   async getEquipments(query = {}) {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
@@ -108,43 +273,194 @@ const adminInventoryService = {
     ]);
 
     const totalItems = Number(countRows?.[0]?.total || 0);
-    const totalPages = Math.max(1, Math.ceil(totalItems / limit));
-    return { data: rows, meta: { page, limit, totalItems, totalPages } };
+    return normalizeList(rows, totalItems, page, limit);
   },
 
-  // ================== SUPPLIERS (READ) ==================
+  // ================== SUPPLIERS (READ raw SQL) ✅ FIX ==================
   async getSuppliers(query = {}) {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
+    const meta = await loadSupplierMeta();
 
-    const table = tbl(db.Supplier);
     const where = [];
     const params = {};
 
     if (q) {
-      where.push(`(name LIKE :q OR code LIKE :q OR phone LIKE :q OR email LIKE :q)`);
+      const searchCols = ["name", "code"];
+      if (meta.phoneCol) searchCols.push(meta.phoneCol);
+      if (meta.emailCol) searchCols.push(meta.emailCol);
+
+      where.push(`(${searchCols.map((c) => `\`${c}\` LIKE :q`).join(" OR ")})`);
       params.q = qLike(q);
+    }
+
+    // filter active chỉ khi DB có cột trạng thái
+    if (query.isActive !== undefined && meta.activeCol) {
+      const boolVal = query.isActive === true || query.isActive === "true";
+      where.push(`\`${meta.activeCol}\` = :activeVal`);
+      params.activeVal = activeValueFromBool(meta, boolVal);
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const [rows, countRows] = await Promise.all([
       db.sequelize.query(
-        `SELECT * FROM \`${table}\` ${whereSql} ORDER BY id DESC LIMIT :limit OFFSET :offset`,
+        `SELECT * FROM \`Supplier\` ${whereSql} ORDER BY id DESC LIMIT :limit OFFSET :offset`,
         { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
       ),
       db.sequelize.query(
-        `SELECT COUNT(*) AS total FROM \`${table}\` ${whereSql}`,
+        `SELECT COUNT(*) AS total FROM \`Supplier\` ${whereSql}`,
         { type: QueryTypes.SELECT, replacements: params }
       ),
     ]);
 
     const totalItems = Number(countRows?.[0]?.total || 0);
-    const totalPages = Math.max(1, Math.ceil(totalItems / limit));
-    return { data: rows, meta: { page, limit, totalItems, totalPages } };
+
+    const mapped = rows.map((s) => ({
+      ...s,
+      phone: meta.phoneCol ? s?.[meta.phoneCol] ?? null : null,
+      email: meta.emailCol ? s?.[meta.emailCol] ?? null : null,
+      isActive: mapIsActiveFromRow(meta, s),
+    }));
+
+    return normalizeList(mapped, totalItems, page, limit);
   },
 
-  // ================== STOCKS (READ) ==================
+  // ================== EQUIPMENT (C/R/D) ==================
+  async createEquipment(payload /*, auditMeta */) {
+    const clean = pickEquipmentPayload(payload);
+    if (!String(clean.name || "").trim()) throw new Error("name is required");
+
+    const created = await db.Equipment.create(clean, { fields: Object.keys(clean) });
+    return created;
+  },
+
+  // ✅ FIX CHÍNH: UPDATE bằng SQL để không bị Sequelize lôi gymId
+  async updateEquipment(id, payload /*, auditMeta */) {
+    const table = tbl(db.Equipment);
+    const clean = pickEquipmentPayload(payload);
+
+    if (clean.name !== undefined && !String(clean.name || "").trim()) {
+      throw new Error("name is required");
+    }
+
+    const built = buildUpdateSQL(table, id, clean);
+    if (built) {
+      await db.sequelize.query(built.sql, {
+        type: QueryTypes.UPDATE,
+        replacements: built.replacements,
+      });
+    }
+
+    const after = await selectById(table, id);
+    if (!after) return null;
+    return after;
+  },
+
+  // ✅ FIX CHÍNH: Xoá mềm bằng SQL (chỉ set status)
+  async discontinueEquipment(id /*, auditMeta */) {
+    const table = tbl(db.Equipment);
+    await db.sequelize.query(
+      `UPDATE \`${table}\` SET status = 'discontinued', updatedAt = NOW() WHERE id = :id`,
+      { type: QueryTypes.UPDATE, replacements: { id: Number(id) } }
+    );
+
+    const after = await selectById(table, id);
+    if (!after) return null;
+    return after;
+  },
+
+  // ================== SUPPLIER (C/R/U) ✅ FIX: dùng RAW SQL (không Sequelize validate/model) ==================
+  async createSupplier(payload /*, auditMeta */) {
+    const { meta, clean } = await pickSupplierCleanForDB(payload);
+
+    if (!String(clean.name || "").trim()) throw new Error("name is required");
+
+    if (meta.hasCreatedAt && clean.createdAt === undefined) clean.createdAt = new Date();
+    if (meta.hasUpdatedAt && clean.updatedAt === undefined) clean.updatedAt = new Date();
+
+    const keys = Object.keys(clean);
+    if (!keys.length) throw new Error("No valid columns to insert Supplier");
+
+    const sql = `INSERT INTO \`Supplier\` (${keys.map((k) => `\`${k}\``).join(", ")})
+                 VALUES (${keys.map((k) => `:${k}`).join(", ")})`;
+
+    const [result] = await db.sequelize.query(sql, {
+      type: QueryTypes.INSERT,
+      replacements: clean,
+    });
+
+    // mysql2 có thể trả insertId khác nhau tuỳ version
+    const insertedId =
+      result?.insertId ??
+      result?.[0]?.insertId ??
+      result?.[1]?.insertId;
+
+    if (!insertedId) {
+      const fallback = await db.sequelize.query(
+        "SELECT * FROM `Supplier` ORDER BY id DESC LIMIT 1",
+        { type: QueryTypes.SELECT }
+      );
+      return fallback?.[0] || { message: "Created but cannot resolve insertedId" };
+    }
+
+    return await selectSupplierById(insertedId);
+  },
+
+  async updateSupplier(id, payload /*, auditMeta */) {
+    const supplierId = toId(id);
+    const { meta, clean } = await pickSupplierCleanForDB(payload);
+    delete clean.id;
+
+    if (clean.name !== undefined && !String(clean.name || "").trim()) {
+      throw new Error("name is required");
+    }
+
+    if (meta.hasUpdatedAt) clean.updatedAt = new Date();
+
+    const keys = Object.keys(clean);
+    if (keys.length) {
+      const sets = keys.map((k) => `\`${k}\` = :${k}`).join(", ");
+      const sql = `UPDATE \`Supplier\` SET ${sets} WHERE id = :id`;
+
+      await db.sequelize.query(sql, {
+        type: QueryTypes.UPDATE,
+        replacements: { ...clean, id: supplierId },
+      });
+    }
+
+    return await selectSupplierById(supplierId);
+  },
+
+  async setSupplierActive(id, isActive /*, auditMeta */) {
+    const supplierId = toId(id);
+    const meta = await loadSupplierMeta();
+
+    if (!meta.activeCol) {
+      throw new Error(
+        "Supplier table has no active/status column (isActive/is_active/active/status). Không thể bật/tắt trạng thái."
+      );
+    }
+
+    const val = activeValueFromBool(meta, !!isActive);
+
+    const parts = [`\`${meta.activeCol}\` = :val`];
+    const replacements = { id: supplierId, val };
+
+    if (meta.hasUpdatedAt) {
+      parts.push("`updatedAt` = :updatedAt");
+      replacements.updatedAt = new Date();
+    }
+
+    await db.sequelize.query(
+      `UPDATE \`Supplier\` SET ${parts.join(", ")} WHERE id = :id`,
+      { type: QueryTypes.UPDATE, replacements }
+    );
+
+    return await selectSupplierById(supplierId);
+  },
+
+  // ================== STOCKS (READ raw SQL) ==================
   async getStocks(query = {}) {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
@@ -156,10 +472,6 @@ const adminInventoryService = {
     const where = [];
     const params = {};
 
-    if (query.gymId) {
-      where.push(`s.gymId = :gymId`);
-      params.gymId = Number(query.gymId);
-    }
     if (q && eqTable) {
       where.push(`(e.name LIKE :q OR e.code LIKE :q)`);
       params.q = qLike(q);
@@ -191,73 +503,136 @@ const adminInventoryService = {
     );
 
     const totalItems = Number(countRows?.[0]?.total || 0);
-    const totalPages = Math.max(1, Math.ceil(totalItems / limit));
-
-    return { data: rows, meta: { page, limit, totalItems, totalPages } };
+    return normalizeList(rows, totalItems, page, limit);
   },
 
-  // ================== EQUIPMENT (C/R/D) ==================
-  async createEquipment(payload) {
-    const clean = pickByModel(db.Equipment, normalizeEquipmentPayload(payload));
-    if (!String(clean.name || "").trim()) throw new Error("name is required");
+  // ================== IMPORT (Receipt) ==================
+  async createReceiptImport(payload, auditMeta = {} /*, req */) {
+    const gymId = payload.gymId ? Number(payload.gymId) : 1;
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    if (!items.length) throw new Error("items is required");
 
-    // ✅ chỉ insert đúng field DB có
-    const created = await db.Equipment.create(clean, { fields: Object.keys(clean) });
-    return created;
+    return db.sequelize.transaction(async (t) => {
+      const receipt = await db.Receipt.create(
+        {
+          receiptNumber: payload.receiptNumber || `RC-${Date.now()}`,
+          purchaseOrderId: payload.purchaseOrderId ?? null,
+          gymId,
+          receiptDate: payload.receiptDate ? new Date(payload.receiptDate) : new Date(),
+          status: "received",
+          totalQuantity: items.reduce((s, it) => s + Number(it.receivedQuantity || 0), 0),
+          notes: payload.notes || null,
+          receivedBy: auditMeta.actorUserId || null,
+        },
+        { transaction: t }
+      );
+
+      for (const it of items) {
+        const equipmentId = Number(it.equipmentId);
+        const receivedQuantity = Number(it.receivedQuantity || 0);
+        if (!equipmentId || receivedQuantity <= 0) throw new Error("Invalid receipt item");
+
+        const unitPrice = it.unitPrice === null || it.unitPrice === undefined ? null : Number(it.unitPrice);
+        const totalPrice = unitPrice === null ? null : unitPrice * receivedQuantity;
+
+        await db.ReceiptItem.create(
+          {
+            receiptId: receipt.id,
+            equipmentId,
+            orderedQuantity: it.orderedQuantity ?? receivedQuantity,
+            receivedQuantity,
+            unitPrice,
+            totalPrice,
+            condition: "good",
+            notes: it.notes || null,
+          },
+          { transaction: t }
+        );
+
+        const stock = await getOrCreateStock(gymId, equipmentId, t);
+        const before = Number(stock.availableQuantity || 0);
+
+        await stock.update(
+          {
+            availableQuantity: before + receivedQuantity,
+            quantity: Number(stock.quantity || 0) + receivedQuantity,
+            lastRestocked: new Date(),
+          },
+          { transaction: t }
+        );
+
+        await db.Inventory.create(
+          {
+            equipmentId,
+            gymId,
+            action: "import",
+            quantity: receivedQuantity,
+            stockBefore: before,
+            stockAfter: before + receivedQuantity,
+            referenceType: "purchase_order",
+            referenceId: receipt.id,
+            purchaseOrderId: payload.purchaseOrderId ?? null,
+            reason: "purchase",
+            costPerUnit: unitPrice,
+            totalCost: totalPrice,
+            notes: payload.notes || null,
+            createdBy: auditMeta.actorUserId || null,
+          },
+          { transaction: t }
+        );
+      }
+
+      return receipt;
+    });
   },
 
-  async updateEquipment(id, payload) {
-    const clean = pickByModel(db.Equipment, normalizeEquipmentPayload(payload));
-    const eq = await db.Equipment.findByPk(id);
-    if (!eq) return null;
+  // ================== EXPORT ==================
+  async createExport(payload, auditMeta = {} /*, req */) {
+    const gymId = payload.gymId ? Number(payload.gymId) : 1;
+    const equipmentId = Number(payload.equipmentId);
+    const quantity = Number(payload.quantity || 0);
+    if (!equipmentId || quantity <= 0) throw new Error("Invalid export payload");
 
-    await eq.update(clean, { fields: Object.keys(clean) });
-    return eq;
-  },
+    return db.sequelize.transaction(async (t) => {
+      const stock = await db.EquipmentStock.findOne({
+        where: { gymId, equipmentId },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!stock) throw new Error("Stock not found");
 
-  async discontinueEquipment(id) {
-    const eq = await db.Equipment.findByPk(id);
-    if (!eq) return null;
-    await eq.update({ status: "discontinued" }, { fields: ["status"] });
-    return eq;
-  },
+      const before = Number(stock.availableQuantity || 0);
+      if (before < quantity) throw new Error("Not enough availableQuantity");
 
-  // ================== SUPPLIER (C/R/D) ==================
-  async createSupplier(payload) {
-    const clean = pickByModel(db.Supplier, normalizeSupplierPayload(payload));
-    if (!String(clean.name || "").trim()) throw new Error("name is required");
+      await stock.update(
+        {
+          availableQuantity: before - quantity,
+          quantity: Math.max(0, Number(stock.quantity || 0) - quantity),
+        },
+        { transaction: t }
+      );
 
-    const created = await db.Supplier.create(clean, { fields: Object.keys(clean) });
-    return created;
-  },
+      await db.Inventory.create(
+        {
+          equipmentId,
+          gymId,
+          action: "export",
+          quantity,
+          stockBefore: before,
+          stockAfter: before - quantity,
+          referenceType: "adjustment",
+          referenceId: null,
+          reason: payload.reason || "other",
+          notes: payload.notes || null,
+          createdBy: auditMeta.actorUserId || null,
+        },
+        { transaction: t }
+      );
 
-  async updateSupplier(id, payload) {
-    const clean = pickByModel(db.Supplier, normalizeSupplierPayload(payload));
-    const s = await db.Supplier.findByPk(id);
-    if (!s) return null;
-
-    await s.update(clean, { fields: Object.keys(clean) });
-    return s;
-  },
-
-  async setSupplierActive(id, isActive) {
-    const s = await db.Supplier.findByPk(id);
-    if (!s) return null;
-
-    await s.update({ isActive: !!isActive }, { fields: ["isActive"] });
-    return s;
-  },
-
-  // ================== IMPORT / EXPORT ==================
-  async createReceiptImport(payload) {
-    // (giữ như bạn đang làm – nếu cần mình sẽ chuẩn hóa tiếp khi bạn gửi lỗi import/export)
-    // Bạn đang dùng equipmentStock có gymId nên phần này ok.
-    return { message: "TODO: import logic (đang dùng bản của bạn)" };
-  },
-
-  async createExport(payload) {
-    return { message: "TODO: export logic (đang dùng bản của bạn)" };
+      return stock;
+    });
   },
 };
+
 
 module.exports = adminInventoryService;
