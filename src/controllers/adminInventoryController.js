@@ -1,3 +1,4 @@
+// src/controllers/adminInventoryController.js
 import adminInventoryService from "../service/adminInventoryService";
 
 const getAuditMeta = (req) => {
@@ -17,7 +18,7 @@ const readEquipments = async (req, res) => {
   try {
     return res.json(await adminInventoryService.getEquipments(req.query));
   } catch (e) {
-    console.error(e);
+    console.error("readEquipments:", e);
     return res.status(500).json({ message: e.message });
   }
 };
@@ -57,7 +58,7 @@ const readEquipmentCategories = async (req, res) => {
   try {
     return res.json(await adminInventoryService.getEquipmentCategories(req.query));
   } catch (e) {
-    console.error(e);
+    console.error("readEquipmentCategories:", e);
     return res.status(500).json({ message: e.message });
   }
 };
@@ -67,7 +68,7 @@ const readSuppliers = async (req, res) => {
   try {
     return res.json(await adminInventoryService.getSuppliers(req.query));
   } catch (e) {
-    console.error(e);
+    console.error("readSuppliers:", e);
     return res.status(500).json({ message: e.message });
   }
 };
@@ -109,12 +110,12 @@ const readStocks = async (req, res) => {
   try {
     return res.json(await adminInventoryService.getStocks(req.query));
   } catch (e) {
-    console.error(e);
+    console.error("readStocks:", e);
     return res.status(500).json({ message: e.message });
   }
 };
 
-// ✅ NEW: Inventory Logs
+// ===== (6) Inventory Logs =====
 const readInventoryLogs = async (req, res) => {
   try {
     return res.json(await adminInventoryService.getInventoryLogs(req.query));
@@ -124,7 +125,7 @@ const readInventoryLogs = async (req, res) => {
   }
 };
 
-// ===== Import / Export =====
+// ===== (4) Import / (5) Export =====
 const createReceiptImport = async (req, res) => {
   try {
     const result = await adminInventoryService.createReceiptImport(req.body, getAuditMeta(req), req);
@@ -145,7 +146,7 @@ const createExport = async (req, res) => {
   }
 };
 
-module.exports = {
+export default {
   readEquipments,
   createEquipment,
   updateEquipment,
@@ -158,8 +159,9 @@ module.exports = {
   setSupplierActive,
 
   readStocks,
-  readInventoryLogs,
 
+  // 4-5-6
+  readInventoryLogs,
   createReceiptImport,
   createExport,
 };
