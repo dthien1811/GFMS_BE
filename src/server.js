@@ -5,7 +5,7 @@ import cookieParser from "cookie-parser";
 import initWebRoutes from "./routes/web";
 import authRoute from "./routes/auth";
 import useApi from "./routes/useApi";
-import adminInventoryApi from "./routes/adminInventoryApi";
+const adminInventoryApi = require("./routes/adminInventoryApi"); // router object
 import connection from "./config/connectDB";
 
 require("dotenv").config();
@@ -34,7 +34,10 @@ app.use((req, res, next) => {
 
 // routes
 initWebRoutes(app);
-adminInventoryApi(app);
+
+// ✅ FIX: mount router đúng cách (KHÔNG gọi như function)
+app.use("/api/admin/inventory", adminInventoryApi);
+
 authRoute(app);
 useApi(app);
 

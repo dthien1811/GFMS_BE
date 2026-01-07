@@ -4,31 +4,28 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class Supplier extends Model {
     static associate(models) {
-      // Đợt 1: không bắt buộc liên kết Supplier -> Equipment
-      // vì DB của bạn đang mismatch nhiều cột
+      // nếu sau này bạn có bảng liên kết supplier-equipment/purchaseorder thì thêm ở đây
     }
-  };
+  }
 
   Supplier.init(
     {
       name: DataTypes.STRING,
       code: DataTypes.STRING,
-
-      // dùng phone/email nếu DB có; service sẽ tự map nếu DB dùng contactPhone/contactEmail
-      phone: DataTypes.STRING,
+      contactPerson: DataTypes.STRING,
       email: DataTypes.STRING,
-
+      phone: DataTypes.STRING,
       address: DataTypes.STRING,
       taxCode: DataTypes.STRING,
+      status: { type: DataTypes.ENUM('active', 'inactive'), defaultValue: 'active' },
       notes: DataTypes.TEXT,
-
       createdAt: DataTypes.DATE,
       updatedAt: DataTypes.DATE,
     },
     {
       sequelize,
       modelName: 'Supplier',
-      tableName: 'Supplier',
+      tableName: 'supplier',
       timestamps: true,
     }
   );

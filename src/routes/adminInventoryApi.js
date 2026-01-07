@@ -1,34 +1,31 @@
-// src/routes/adminInventoryApi.js
-import express from "express";
-import adminInventoryController from "../controllers/adminInventoryController";
+const express = require("express");
+const adminInventoryController = require("../controllers/adminInventoryController");
 
 const router = express.Router();
 
-const adminInventoryApi = (app) => {
-  // ===== Equipment =====
-  router.get("/admin/equipments", adminInventoryController.readEquipments);
-  router.post("/admin/equipments", adminInventoryController.createEquipment);
-  router.put("/admin/equipments/:id", adminInventoryController.updateEquipment);
-  router.patch("/admin/equipments/:id/discontinue", adminInventoryController.discontinueEquipment);
-  router.get("/admin/equipment-categories", adminInventoryController.readEquipmentCategories);
+// categories
+router.get("/equipment-categories", adminInventoryController.getEquipmentCategories);
 
-  // ===== Supplier =====
-  router.get("/admin/suppliers", adminInventoryController.readSuppliers);
-  router.post("/admin/suppliers", adminInventoryController.createSupplier);
-  router.put("/admin/suppliers/:id", adminInventoryController.updateSupplier);
-  router.patch("/admin/suppliers/:id/active", adminInventoryController.setSupplierActive);
+// equipments
+router.get("/equipments", adminInventoryController.getEquipments);
+router.post("/equipments", adminInventoryController.createEquipment);
+router.put("/equipments/:id", adminInventoryController.updateEquipment);
+router.patch("/equipments/:id/discontinue", adminInventoryController.discontinueEquipment);
 
-  // ===== Stock =====
-  router.get("/admin/stocks", adminInventoryController.readStocks);
+// suppliers
+router.get("/suppliers", adminInventoryController.getSuppliers);
+router.post("/suppliers", adminInventoryController.createSupplier);
+router.put("/suppliers/:id", adminInventoryController.updateSupplier);
+router.patch("/suppliers/:id/active", adminInventoryController.setSupplierActive);
 
-  // ===== (6) Inventory Logs =====
-  router.get("/admin/inventory-logs", adminInventoryController.readInventoryLogs);
+// stocks
+router.get("/stocks", adminInventoryController.getStocks);
 
-  // ===== (4) Import / (5) Export =====
-  router.post("/admin/receipts", adminInventoryController.createReceiptImport);
-  router.post("/admin/exports", adminInventoryController.createExport);
+// nhập kho / xuất kho
+router.post("/receipts", adminInventoryController.createReceipt);
+router.post("/exports", adminInventoryController.createExport);
 
-  return app.use("/api", router);
-};
+// nhật ký kho
+router.get("/inventory-logs", adminInventoryController.getInventoryLogs);
 
-export default adminInventoryApi;
+module.exports = router;

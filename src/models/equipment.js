@@ -4,22 +4,23 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class Equipment extends Model {
     static associate(models) {
-      Equipment.belongsTo(models.EquipmentCategory, {
-        foreignKey: 'categoryId',
-        as: 'category',
-      });
+      Equipment.belongsTo(models.EquipmentCategory, { foreignKey: 'categoryId', as: 'category' });
 
-      Equipment.hasMany(models.Maintenance, {
-        foreignKey: 'equipmentId',
-        as: 'maintenances',
-      });
+      if (models.Maintenance) {
+        Equipment.hasMany(models.Maintenance, { foreignKey: 'equipmentId', as: 'maintenances' });
+      }
+
+      // ✅ thêm các quan hệ kho đúng schema
+      if (models.EquipmentStock) Equipment.hasMany(models.EquipmentStock, { foreignKey: 'equipmentId' });
+      if (models.ReceiptItem) Equipment.hasMany(models.ReceiptItem, { foreignKey: 'equipmentId' });
+      if (models.Inventory) Equipment.hasMany(models.Inventory, { foreignKey: 'equipmentId' });
     }
   }
 
   Equipment.init(
     {
       name: { type: DataTypes.STRING, allowNull: false },
-      code: { type: DataTypes.STRING, unique: true },
+      code: DataTypes.STRING,
       description: DataTypes.TEXT,
       categoryId: DataTypes.INTEGER,
       brand: DataTypes.STRING,
@@ -35,7 +36,7 @@ module.exports = (sequelize, DataTypes) => {
     {
       sequelize,
       modelName: 'Equipment',
-      tableName: 'Equipment',
+      tableName: 'equipment',
       timestamps: true,
     }
   );

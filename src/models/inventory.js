@@ -1,70 +1,58 @@
-// models/inventory.js
 'use strict';
 const { Model } = require('sequelize');
+
 module.exports = (sequelize, DataTypes) => {
   class Inventory extends Model {
     static associate(models) {
       Inventory.belongsTo(models.Equipment, { foreignKey: 'equipmentId' });
       Inventory.belongsTo(models.Gym, { foreignKey: 'gymId' });
-      Inventory.belongsTo(models.User, { foreignKey: 'createdBy', as: 'creator' });
-      Inventory.belongsTo(models.PurchaseOrder, { foreignKey: 'purchaseOrderId', optional: true });
+      Inventory.belongsTo(models.User, { foreignKey: 'recordedBy', as: 'recorder' });
     }
-  };
-  Inventory.init({
-    equipmentId: DataTypes.INTEGER,
-    gymId: DataTypes.INTEGER,
-    action: {
-      type: DataTypes.ENUM('import', 'export', 'adjustment', 'transfer'),
-      allowNull: false
-    },
-    quantity: { 
-      type: DataTypes.INTEGER,
-      allowNull: false,
-      validate: {
-        min: 1
-      }
-    },
-    stockBefore: DataTypes.INTEGER,
-    stockAfter: DataTypes.INTEGER,
-    referenceType: {
-      type: DataTypes.ENUM('purchase_order', 'maintenance', 'damage', 'adjustment', 'transfer', 'initial'),
-      defaultValue: 'adjustment'
-    },
-    referenceId: DataTypes.INTEGER,
-    purchaseOrderId: DataTypes.INTEGER,
-    reason: {
-      type: DataTypes.ENUM(
-        'initial_stock',
-        'purchase',
-        'return',
-        'damaged',
-        'lost',
-        'adjustment',
-        'transfer_in',
-        'transfer_out',
-        'maintenance',
-        'other'
-      ),
-      defaultValue: 'other'
-    },
-    costPerUnit: DataTypes.DECIMAL(15, 2),
-    totalCost: DataTypes.DECIMAL(15, 2),
-    notes: DataTypes.TEXT,
-    createdBy: DataTypes.INTEGER
-  }, {
-    sequelize,
-    modelName: 'Inventory',
-    indexes: [
-      {
-        fields: ['equipmentId', 'gymId']
+  }
+
+  Inventory.init(
+    {
+      equipmentId: { type: DataTypes.INTEGER, allowNull: false },
+      gymId: { type: DataTypes.INTEGER, allowNull: false },
+
+      transactionType: {
+        type: DataTypes.ENUM('purchase', 'sale', 'adjustment', 'transfer_in', 'transfer_out', 'return'),
+
+        allowNull: false,
       },
-      {
-        fields: ['action']
-      },
-      {
-        fields: ['referenceType', 'referenceId']
-      }
-    ]
-  });
+
+      transactionId: DataTypes.INTEGER,
+      transactionCode: DataTypes.STRING,
+
+      // ⚠️ quantity có thể âm khi export (service đang ghi âm)
+      quantity: { type: DataTypes.INTEGER, allowNull: false },
+
+      unitPrice: DataTypes.DECIMAL(15, 2),
+      totalValue: DataTypes.DECIMAL(15, 2),
+
+      stockBefore: DataTypes.INTEGER,
+      stockAfter: DataTypes.INTEGER,
+
+      notes: DataTypes.TEXT,
+
+      recordedBy: DataTypes.INTEGER,
+      recordedAt: DataTypes.DATE,
+
+      createdAt: DataTypes.DATE,
+      updatedAt: DataTypes.DATE,
+    },
+    {
+      sequelize,
+      modelName: 'Inventory',
+      tableName: 'inventory',
+      timestamps: true,
+      indexes: [
+        { fields: ['equipmentId', 'gymId'] },
+        { fields: ['transactionType'] },
+        { fields: ['transactionCode'] },
+      ],
+    }
+  );
+
   return Inventory;
 };

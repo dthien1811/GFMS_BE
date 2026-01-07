@@ -1,8 +1,7 @@
-// src/service/adminInventoryService.js
 import { QueryTypes } from "sequelize";
 import db from "../models";
 
-// =================== helpers ===================
+// ================= helpers =================
 const pickPage = (query = {}) => {
   const page = Math.max(1, parseInt(query.page || "1", 10));
   const limit = Math.max(1, Math.min(200, parseInt(query.limit || "10", 10)));
@@ -10,10 +9,11 @@ const pickPage = (query = {}) => {
   return { page, limit, offset };
 };
 
-const tbl = (model) => {
+const tbl = (model, fallback) => {
+  if (!model) return fallback;
   const t = model.getTableName();
   if (typeof t === "string") return t;
-  return t?.tableName || t;
+  return t?.tableName || fallback;
 };
 
 const qLike = (s) => `%${String(s || "").trim()}%`;
@@ -21,6 +21,71 @@ const qLike = (s) => `%${String(s || "").trim()}%`;
 const normalizeList = (rows, totalItems, page, limit) => {
   const totalPages = Math.max(1, Math.ceil(Number(totalItems || 0) / limit));
   return { data: rows, meta: { page, limit, totalItems: Number(totalItems || 0), totalPages } };
+};
+
+const pad2 = (n) => String(n).padStart(2, "0");
+
+// ======================================================================
+// ✅ TIMEZONE HELPERS (FIX TRIỆT ĐỂ: đúng giờ VN, không double-shift)
+// ======================================================================
+// DB dùng DATETIME (không timezone). Ta sẽ luôn lưu "giờ VN" vào DB.
+// Không phụ thuộc timezone server/brower, không bị cộng/trừ 2 lần.
+//
+// Nguyên tắc:
+// - Khi format DATETIME -> cộng +7h vào "instant" rồi format bằng UTC-getter
+// - Khi parse "YYYY-MM-DD" -> tạo instant UTC sao cho format VN ra đúng ngày + giờ hiện tại VN
+const VN_OFFSET_MS = 7 * 60 * 60 * 1000;
+
+const toMySqlDateTimeVN = (val) => {
+  const dt = val instanceof Date ? val : new Date(val);
+  const base = Number.isNaN(dt.getTime()) ? new Date() : dt;
+
+  // +7h => ra giờ VN, dùng UTC-getter để không phụ thuộc TZ server
+  const vn = new Date(base.getTime() + VN_OFFSET_MS);
+  return `${vn.getUTCFullYear()}-${pad2(vn.getUTCMonth() + 1)}-${pad2(vn.getUTCDate())} ${pad2(
+    vn.getUTCHours()
+  )}:${pad2(vn.getUTCMinutes())}:${pad2(vn.getUTCSeconds())}`;
+};
+
+// nhận: "YYYY-MM-DD" hoặc "DD/MM/YYYY" hoặc ISO có time
+// trả về Date (instant) sao cho toMySqlDateTimeVN() ra đúng ngày đã chọn + giờ hiện tại VN
+const parseReceiptDateLocal = (val) => {
+  if (!val) return new Date();
+
+  if (typeof val === "string") {
+    const s = val.trim();
+
+    // giờ hiện tại VN (lấy bằng cách +7h rồi dùng UTC getter)
+    const nowVN = new Date(Date.now() + VN_OFFSET_MS);
+    const hh = nowVN.getUTCHours();
+    const mm = nowVN.getUTCMinutes();
+    const ss = nowVN.getUTCSeconds();
+
+    // YYYY-MM-DD
+    const m1 = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (m1) {
+      const y = Number(m1[1]);
+      const mo = Number(m1[2]);
+      const d = Number(m1[3]);
+
+      // tạo instant UTC sao cho +7h => (y-mo-d hh:mm:ss) theo VN
+      return new Date(Date.UTC(y, mo - 1, d, hh, mm, ss) - VN_OFFSET_MS);
+    }
+
+    // DD/MM/YYYY
+    const m2 = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+    if (m2) {
+      const d = Number(m2[1]);
+      const mo = Number(m2[2]);
+      const y = Number(m2[3]);
+
+      return new Date(Date.UTC(y, mo - 1, d, hh, mm, ss) - VN_OFFSET_MS);
+    }
+  }
+
+  // fallback: ISO có time hoặc timestamp
+  const dt = new Date(val);
+  return Number.isNaN(dt.getTime()) ? new Date() : dt;
 };
 
 // ===== whitelist payload để không dính cột rác =====
@@ -42,23 +107,32 @@ const pickEquipmentPayload = (payload = {}) => {
   for (const k of allowed) {
     if (payload[k] !== undefined) out[k] = payload[k];
   }
-  // chặn tuyệt đối gymId/supplierId (dù FE có gửi nhầm)
   delete out.gymId;
   delete out.supplierId;
   return out;
 };
 
 const pickSupplierPayload = (payload = {}) => {
+  // DB supplier của bạn dùng status enum active/inactive
   const out = {
     name: payload.name,
     code: payload.code,
+    contactPerson: payload.contactPerson ?? null,
     phone: payload.phone ?? payload.contactPhone ?? null,
     email: payload.email ?? payload.contactEmail ?? null,
     address: payload.address ?? null,
     taxCode: payload.taxCode ?? null,
     notes: payload.notes ?? null,
-    isActive: payload.isActive ?? true,
   };
+
+  // Cho phép FE gửi status, nếu không gửi thì giữ default DB (active)
+  if (payload.status === "active" || payload.status === "inactive") {
+    out.status = payload.status;
+  } else if (payload.isActive !== undefined) {
+    // backward compatible: FE gửi isActive -> map sang status
+    out.status = payload.isActive ? "active" : "inactive";
+  }
+
   delete out.contactPhone;
   delete out.contactEmail;
   return out;
@@ -84,30 +158,54 @@ const selectById = async (table, id, transaction) => {
   return rows?.[0] || null;
 };
 
-// =================== dynamic columns resolver (FIX 4-5-6) ===================
-const __colsCache = new Map();
+// ================= STOCK RAW (đúng schema DB của bạn) =================
+const getOrCreateStockRaw = async ({ gymId, equipmentId }, t) => {
+  const stTable = tbl(db.EquipmentStock, "equipmentstock");
 
-const getCols = async (table) => {
-  if (__colsCache.has(table)) return __colsCache.get(table);
-  const cols = await db.sequelize.query(`SHOW COLUMNS FROM \`${table}\``, { type: QueryTypes.SELECT });
-  const set = new Set(cols.map((c) => c.Field));
-  __colsCache.set(table, set);
-  return set;
+  const found = await db.sequelize.query(
+    `SELECT * FROM \`${stTable}\`
+     WHERE gymId = :gymId AND equipmentId = :equipmentId
+     LIMIT 1 FOR UPDATE`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: { gymId: Number(gymId), equipmentId: Number(equipmentId) },
+      transaction: t,
+    }
+  );
+
+  if (found?.[0]) return found[0];
+
+  await db.sequelize.query(
+    `INSERT INTO \`${stTable}\`
+      (equipmentId, gymId, quantity, reservedQuantity, availableQuantity, location, reorderPoint, lastRestocked, createdAt, updatedAt)
+     VALUES
+      (:equipmentId, :gymId, 0, 0, 0, NULL, NULL, NULL, NOW(), NOW())`,
+    {
+      type: QueryTypes.INSERT,
+      replacements: { gymId: Number(gymId), equipmentId: Number(equipmentId) },
+      transaction: t,
+    }
+  );
+
+  const again = await db.sequelize.query(
+    `SELECT * FROM \`${stTable}\`
+     WHERE gymId = :gymId AND equipmentId = :equipmentId
+     LIMIT 1 FOR UPDATE`,
+    {
+      type: QueryTypes.SELECT,
+      replacements: { gymId: Number(gymId), equipmentId: Number(equipmentId) },
+      transaction: t,
+    }
+  );
+
+  return again?.[0] || null;
 };
 
-const pickCol = async (table, candidates = []) => {
-  const cols = await getCols(table);
-  for (const c of candidates) {
-    if (cols.has(c)) return c;
-  }
-  return null;
-};
-
-// =================== Service ===================
+// ================= service =================
 const adminInventoryService = {
   // ================== CATEGORIES ==================
   async getEquipmentCategories() {
-    const table = tbl(db.EquipmentCategory);
+    const table = tbl(db.EquipmentCategory, "equipmentcategory");
     const rows = await db.sequelize.query(`SELECT * FROM \`${table}\` ORDER BY name ASC`, {
       type: QueryTypes.SELECT,
     });
@@ -121,8 +219,8 @@ const adminInventoryService = {
     const status = query.status && query.status !== "all" ? String(query.status) : null;
     const categoryId = query.categoryId ? Number(query.categoryId) : null;
 
-    const eqTable = tbl(db.Equipment);
-    const catTable = db.EquipmentCategory ? tbl(db.EquipmentCategory) : null;
+    const eqTable = tbl(db.Equipment, "equipment");
+    const catTable = db.EquipmentCategory ? tbl(db.EquipmentCategory, "equipmentcategory") : null;
 
     const where = [];
     const params = {};
@@ -167,7 +265,7 @@ const adminInventoryService = {
   async getSuppliers(query = {}) {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
-    const table = tbl(db.Supplier);
+    const table = tbl(db.Supplier, "supplier");
 
     const where = [];
     const params = {};
@@ -177,19 +275,35 @@ const adminInventoryService = {
       params.q = qLike(q);
     }
 
-    // ✅ IMPORTANT: nếu DB bạn không có isActive thì đừng filter theo isActive
-    const hasIsActive = (await getCols(table)).has("isActive") || (await getCols(table)).has("is_active");
-    if (hasIsActive && query.isActive !== undefined) {
-      const colIsActive = (await pickCol(table, ["isActive", "is_active"])) || "isActive";
-      where.push(`\`${colIsActive}\` = :isActive`);
-      params.isActive = query.isActive === true || query.isActive === "true";
+    // ✅ filter theo status (active/inactive)
+    // FE có thể gửi: status=active|inactive|all
+    // hoặc legacy: isActive=true/false
+    let status = null;
+    if (query.status !== undefined && query.status !== "" && query.status !== "all") {
+      status = String(query.status);
+    } else if (query.isActive !== undefined && query.isActive !== "" && query.isActive !== "all") {
+      const isActive = query.isActive === true || query.isActive === "true";
+      status = isActive ? "active" : "inactive";
+    }
+
+    if (status === "active" || status === "inactive") {
+      where.push(`status = :status`);
+      params.status = status;
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
     const [rows, countRows] = await Promise.all([
       db.sequelize.query(
-        `SELECT * FROM \`${table}\` ${whereSql} ORDER BY id DESC LIMIT :limit OFFSET :offset`,
+        `
+        SELECT
+          s.*,
+          CASE WHEN s.status = 'active' THEN 1 ELSE 0 END AS isActive
+        FROM \`${table}\` s
+        ${whereSql}
+        ORDER BY s.id DESC
+        LIMIT :limit OFFSET :offset
+        `,
         { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
       ),
       db.sequelize.query(`SELECT COUNT(*) AS total FROM \`${table}\` ${whereSql}`, {
@@ -207,15 +321,15 @@ const adminInventoryService = {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
 
-    const stTable = tbl(db.EquipmentStock);
-    const eqTable = db.Equipment ? tbl(db.Equipment) : null;
-    const gymTable = db.Gym ? tbl(db.Gym) : null;
+    const stTable = tbl(db.EquipmentStock, "equipmentstock");
+    const eqTable = db.Equipment ? tbl(db.Equipment, "equipment") : null;
+    const gymTable = db.Gym ? tbl(db.Gym, "gym") : null;
 
     const where = [];
     const params = {};
 
     if (q && eqTable) {
-      where.push(`(e.name LIKE :q OR e.code LIKE :q)`);
+      where.push(`(e.name LIKE :q OR e.code LIKE :q OR g.name LIKE :q)`);
       params.q = qLike(q);
     }
 
@@ -223,25 +337,26 @@ const adminInventoryService = {
     const joinEq = eqTable ? `LEFT JOIN \`${eqTable}\` e ON e.id = s.equipmentId` : "";
     const joinGym = gymTable ? `LEFT JOIN \`${gymTable}\` g ON g.id = s.gymId` : "";
 
-    const rows = await db.sequelize.query(
-      `
-      SELECT 
-        s.*,
-        ${eqTable ? "e.name AS equipmentName, e.code AS equipmentCode" : "NULL AS equipmentName, NULL AS equipmentCode"},
-        ${gymTable ? "g.name AS gymName" : "NULL AS gymName"}
-      FROM \`${stTable}\` s
-      ${joinEq}
-      ${joinGym}
-      ${whereSql}
-      ORDER BY s.id DESC
-      LIMIT :limit OFFSET :offset
-      `,
-      { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
-    );
-
-    const countRows = await db.sequelize.query(`SELECT COUNT(*) AS total FROM \`${stTable}\` s`, {
-      type: QueryTypes.SELECT,
-    });
+    const [rows, countRows] = await Promise.all([
+      db.sequelize.query(
+        `
+        SELECT 
+          s.*,
+          ${eqTable ? "e.name AS equipmentName, e.code AS equipmentCode" : "NULL AS equipmentName, NULL AS equipmentCode"},
+          ${gymTable ? "g.name AS gymName" : "NULL AS gymName"}
+        FROM \`${stTable}\` s
+        ${joinEq}
+        ${joinGym}
+        ${whereSql}
+        ORDER BY s.id DESC
+        LIMIT :limit OFFSET :offset
+        `,
+        { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
+      ),
+      db.sequelize.query(`SELECT COUNT(*) AS total FROM \`${stTable}\` s`, {
+        type: QueryTypes.SELECT,
+      }),
+    ]);
 
     const totalItems = Number(countRows?.[0]?.total || 0);
     return normalizeList(rows, totalItems, page, limit);
@@ -256,7 +371,7 @@ const adminInventoryService = {
   },
 
   async updateEquipment(id, payload) {
-    const table = tbl(db.Equipment);
+    const table = tbl(db.Equipment, "equipment");
     const clean = pickEquipmentPayload(payload);
 
     if (clean.name !== undefined && !String(clean.name || "").trim()) {
@@ -272,23 +387,20 @@ const adminInventoryService = {
     }
 
     const after = await selectById(table, id);
-    if (!after) return null;
     return after;
   },
 
   async discontinueEquipment(id) {
-    const table = tbl(db.Equipment);
+    const table = tbl(db.Equipment, "equipment");
     await db.sequelize.query(
       `UPDATE \`${table}\` SET status = 'discontinued', updatedAt = NOW() WHERE id = :id`,
       { type: QueryTypes.UPDATE, replacements: { id: Number(id) } }
     );
-
     const after = await selectById(table, id);
-    if (!after) return null;
     return after;
   },
 
-  // ================== SUPPLIER (C/R/D) ==================
+  // ================== SUPPLIER (C/R/U) ==================
   async createSupplier(payload) {
     const clean = pickSupplierPayload(payload);
     if (!String(clean.name || "").trim()) throw new Error("name is required");
@@ -297,7 +409,7 @@ const adminInventoryService = {
   },
 
   async updateSupplier(id, payload) {
-    const table = tbl(db.Supplier);
+    const table = tbl(db.Supplier, "supplier");
     const clean = pickSupplierPayload(payload);
 
     if (clean.name !== undefined && !String(clean.name || "").trim()) {
@@ -306,433 +418,351 @@ const adminInventoryService = {
 
     const built = buildUpdateSQL(table, id, clean);
     if (built) {
-      await db.sequelize.query(built.sql, {
-        type: QueryTypes.UPDATE,
-        replacements: built.replacements,
-      });
+      await db.sequelize.query(built.sql, { type: QueryTypes.UPDATE, replacements: built.replacements });
     }
 
     const after = await selectById(table, id);
-    if (!after) return null;
     return after;
   },
 
-  async setSupplierActive(id, isActive) {
-    const table = tbl(db.Supplier);
-    const colIsActive = (await pickCol(table, ["isActive", "is_active"])) || "isActive";
+  // ✅ NEW: update status (active/inactive)
+  // nhận { status } hoặc { isActive } để tương thích
+  async setSupplierStatus(id, { status, isActive } = {}) {
+    const table = tbl(db.Supplier, "supplier");
+
+    let next = null;
+    if (status === "active" || status === "inactive") next = status;
+    else if (isActive !== undefined) next = isActive ? "active" : "inactive";
+    else throw new Error("status or isActive is required");
+
     await db.sequelize.query(
-      `UPDATE \`${table}\` SET \`${colIsActive}\` = :isActive, updatedAt = NOW() WHERE id = :id`,
-      { type: QueryTypes.UPDATE, replacements: { id: Number(id), isActive: !!isActive } }
+      `UPDATE \`${table}\` SET status = :status, updatedAt = NOW() WHERE id = :id`,
+      { type: QueryTypes.UPDATE, replacements: { id: Number(id), status: next } }
     );
+
     const after = await selectById(table, id);
-    if (!after) return null;
+    // alias cho FE
+    if (after) after.isActive = after.status === "active";
     return after;
   },
 
-  // ================== (6) INVENTORY LOGS ==================
-  async getInventoryLogs(query = {}) {
-    const { page, limit, offset } = pickPage(query);
-    const q = String(query.q || "").trim();
-    const action = query.action ? String(query.action) : null;
+  // =====================================================================
+  // ✅ 4) NHẬP KHO (Receipt + ReceiptItem + update EquipmentStock + ghi Inventory)
+  // =====================================================================
+  async createReceipt(payload = {}, auditMeta = {}) {
+    const receiptTable = tbl(db.Receipt, "receipt");
+    const receiptItemTable = tbl(db.ReceiptItem, "receiptitem");
+    const invTable = tbl(db.Inventory, "inventory");
 
-    const invTable = tbl(db.Inventory);
-    const eqTable = db.Equipment ? tbl(db.Equipment) : null;
-    const gymTable = db.Gym ? tbl(db.Gym) : null;
-    const userTable = db.User ? tbl(db.User) : null;
-
-    // resolve real columns
-    const invCreatedBy = (await pickCol(invTable, ["createdBy", "created_by"])) || null;
-    const invCreatedAt = (await pickCol(invTable, ["createdAt", "created_at"])) || "createdAt";
-
-    const where = [];
-    const params = {};
-
-    if (action) {
-      where.push(`i.action = :action`);
-      params.action = action;
-    }
-
-    if (q) {
-      const like = qLike(q);
-      const parts = [];
-      parts.push(`i.reason LIKE :q`);
-      parts.push(`CAST(i.referenceId AS CHAR) LIKE :q`);
-      if (eqTable) parts.push(`e.name LIKE :q OR e.code LIKE :q`);
-      if (gymTable) parts.push(`g.name LIKE :q`);
-      where.push(`(${parts.join(" OR ")})`);
-      params.q = like;
-    }
-
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-
-    const joinEq = eqTable ? `LEFT JOIN \`${eqTable}\` e ON e.id = i.equipmentId` : "";
-    const joinGym = gymTable ? `LEFT JOIN \`${gymTable}\` g ON g.id = i.gymId` : "";
-
-    // User không có fullName => dùng username/email
-    let joinUser = "";
-    let userSelect = "NULL AS createdByName";
-    if (userTable && invCreatedBy) {
-      joinUser = `LEFT JOIN \`${userTable}\` u ON u.id = i.\`${invCreatedBy}\``;
-      userSelect = `COALESCE(u.username, u.email) AS createdByName`;
-    }
-
-    const rows = await db.sequelize.query(
-      `
-      SELECT
-        i.*,
-        ${eqTable ? "e.name AS equipmentName, e.code AS equipmentCode" : "NULL AS equipmentName, NULL AS equipmentCode"},
-        ${gymTable ? "g.name AS gymName" : "NULL AS gymName"},
-        ${userSelect}
-      FROM \`${invTable}\` i
-      ${joinEq}
-      ${joinGym}
-      ${joinUser}
-      ${whereSql}
-      ORDER BY i.\`${invCreatedAt}\` DESC
-      LIMIT :limit OFFSET :offset
-      `,
-      { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
-    );
-
-    const countRows = await db.sequelize.query(
-      `SELECT COUNT(*) AS total FROM \`${invTable}\` i ${whereSql}`,
-      { type: QueryTypes.SELECT, replacements: params }
-    );
-
-    const totalItems = Number(countRows?.[0]?.total || 0);
-    return normalizeList(rows, totalItems, page, limit);
-  },
-
-  // ================== (4) IMPORT: Receipt + ReceiptItem + update stock + insert inventory ==================
-  async createReceiptImport(payload, auditMeta = {}) {
     const gymId = payload.gymId ? Number(payload.gymId) : 1;
+    let purchaseOrderId = payload.purchaseOrderId ? Number(payload.purchaseOrderId) : null;
+
+    const receiptDateObj = parseReceiptDateLocal(payload.receiptDate);
+    const receiptDate = toMySqlDateTimeVN(receiptDateObj);
+
+    const processedBy = auditMeta.actorUserId
+      ? Number(auditMeta.actorUserId)
+      : payload.processedBy
+        ? Number(payload.processedBy)
+        : null;
+
     const items = Array.isArray(payload.items) ? payload.items : [];
     if (!items.length) throw new Error("items is required");
 
-    const receiptTable = tbl(db.Receipt);
-    const receiptItemTable = tbl(db.ReceiptItem);
-    const stockTable = tbl(db.EquipmentStock);
-    const invTable = tbl(db.Inventory);
-
-    // resolve columns (camel/snake)
-    const rcReceiptNumber = (await pickCol(receiptTable, ["receiptNumber", "receipt_number"])) || "receiptNumber";
-    const rcPurchaseOrderId = (await pickCol(receiptTable, ["purchaseOrderId", "purchase_order_id"])) || "purchaseOrderId";
-    const rcGymId = (await pickCol(receiptTable, ["gymId", "gym_id"])) || "gymId";
-    const rcReceiptDate = (await pickCol(receiptTable, ["receiptDate", "receipt_date"])) || "receiptDate";
-    const rcStatus = (await pickCol(receiptTable, ["status"])) || "status";
-    const rcTotalQuantity = (await pickCol(receiptTable, ["totalQuantity", "total_quantity"])) || "totalQuantity";
-    const rcNotes = (await pickCol(receiptTable, ["notes"])) || "notes";
-    const rcReceivedBy = (await pickCol(receiptTable, ["receivedBy", "received_by"])) || "receivedBy";
-
-    const riReceiptId = (await pickCol(receiptItemTable, ["receiptId", "receipt_id"])) || "receiptId";
-    const riEquipmentId = (await pickCol(receiptItemTable, ["equipmentId", "equipment_id"])) || "equipmentId";
-    const riOrderedQuantity = (await pickCol(receiptItemTable, ["orderedQuantity", "ordered_quantity"])) || "orderedQuantity";
-    const riReceivedQuantity = (await pickCol(receiptItemTable, ["receivedQuantity", "received_quantity"])) || "receivedQuantity";
-    const riUnitPrice = (await pickCol(receiptItemTable, ["unitPrice", "unit_price"])) || "unitPrice";
-    const riTotalPrice = (await pickCol(receiptItemTable, ["totalPrice", "total_price"])) || "totalPrice";
-    const riNotes = (await pickCol(receiptItemTable, ["notes"])) || "notes";
-
-    const stGymId = (await pickCol(stockTable, ["gymId", "gym_id"])) || "gymId";
-    const stEquipmentId = (await pickCol(stockTable, ["equipmentId", "equipment_id"])) || "equipmentId";
-    const stQty = (await pickCol(stockTable, ["quantity"])) || "quantity";
-    const stAvail = (await pickCol(stockTable, ["availableQuantity", "available_quantity"])) || "availableQuantity";
-    const stLastRestocked = (await pickCol(stockTable, ["lastRestocked", "last_restocked"])) || null;
-
-    const invGymId = (await pickCol(invTable, ["gymId", "gym_id"])) || "gymId";
-    const invEquipmentId = (await pickCol(invTable, ["equipmentId", "equipment_id"])) || "equipmentId";
-    const invAction = (await pickCol(invTable, ["action"])) || "action";
-    const invQuantity = (await pickCol(invTable, ["quantity"])) || "quantity";
-    const invBefore = (await pickCol(invTable, ["stockBefore", "stock_before"])) || "stockBefore";
-    const invAfter = (await pickCol(invTable, ["stockAfter", "stock_after"])) || "stockAfter";
-    const invRefType = (await pickCol(invTable, ["referenceType", "reference_type"])) || "referenceType";
-    const invRefId = (await pickCol(invTable, ["referenceId", "reference_id"])) || "referenceId";
-    const invPO = (await pickCol(invTable, ["purchaseOrderId", "purchase_order_id"])) || "purchaseOrderId";
-    const invReason = (await pickCol(invTable, ["reason"])) || "reason";
-    const invNotes = (await pickCol(invTable, ["notes"])) || "notes";
-    const invCreatedBy = (await pickCol(invTable, ["createdBy", "created_by"])) || null;
-    const invCostPerUnit = (await pickCol(invTable, ["costPerUnit", "cost_per_unit"])) || null;
-    const invTotalCost = (await pickCol(invTable, ["totalCost", "total_cost"])) || null;
+    const code = String(payload.code || "").trim() || `REC-${Date.now()}`;
 
     return db.sequelize.transaction(async (t) => {
-      const receiptNumber = payload.receiptNumber || `RC-${Date.now()}`;
-      const totalQty = items.reduce((s, it) => s + Number(it.receivedQuantity || 0), 0);
+      let totalValue = 0;
 
-      // INSERT receipt (raw)
-      const insertReceiptSql = `
-        INSERT INTO \`${receiptTable}\`
-        (\`${rcReceiptNumber}\`, \`${rcPurchaseOrderId}\`, \`${rcGymId}\`, \`${rcReceiptDate}\`, \`${rcStatus}\`, \`${rcTotalQuantity}\`, \`${rcNotes}\`, \`${rcReceivedBy}\`, createdAt, updatedAt)
-        VALUES
-        (:receiptNumber, :purchaseOrderId, :gymId, :receiptDate, :status, :totalQuantity, :notes, :receivedBy, NOW(), NOW())
-      `;
-      const [_, metaReceipt] = await db.sequelize.query(insertReceiptSql, {
-        type: QueryTypes.INSERT,
-        transaction: t,
-        replacements: {
-          receiptNumber,
-          purchaseOrderId: payload.purchaseOrderId ?? null,
-          gymId,
-          receiptDate: payload.receiptDate ? new Date(payload.receiptDate) : new Date(),
-          status: "received",
-          totalQuantity: totalQty,
-          notes: payload.notes || null,
-          receivedBy: auditMeta.actorUserId || null,
-        },
-      });
+      if (purchaseOrderId) {
+        const poTable = tbl(db.PurchaseOrder, "purchaseorder");
+        const exists = await db.sequelize.query(
+          `SELECT id FROM \`${poTable}\` WHERE id = :id LIMIT 1`,
+          { type: QueryTypes.SELECT, transaction: t, replacements: { id: purchaseOrderId } }
+        );
+        if (!exists?.length) purchaseOrderId = null;
+      }
 
-      const receiptId = metaReceipt?.insertId;
-
-      // for each item: insert ReceiptItem + upsert stock + insert inventory log
-      for (const it of items) {
-        const equipmentId = Number(it.equipmentId);
-        const receivedQuantity = Number(it.receivedQuantity || 0);
-        if (!equipmentId || receivedQuantity <= 0) throw new Error("Invalid receipt item");
-
-        const unitPrice = it.unitPrice === null || it.unitPrice === undefined ? null : Number(it.unitPrice);
-        const totalPrice = unitPrice === null ? null : unitPrice * receivedQuantity;
-
-        // insert ReceiptItem
-        const insertItemSql = `
-          INSERT INTO \`${receiptItemTable}\`
-          (\`${riReceiptId}\`, \`${riEquipmentId}\`, \`${riOrderedQuantity}\`, \`${riReceivedQuantity}\`, \`${riUnitPrice}\`, \`${riTotalPrice}\`, \`${riNotes}\`, createdAt, updatedAt)
-          VALUES
-          (:receiptId, :equipmentId, :orderedQuantity, :receivedQuantity, :unitPrice, :totalPrice, :notes, NOW(), NOW())
-        `;
-        await db.sequelize.query(insertItemSql, {
+      await db.sequelize.query(
+        `INSERT INTO \`${receiptTable}\`
+          (code, purchaseOrderId, type, gymId, processedBy, receiptDate, status, totalValue, notes, createdAt, updatedAt)
+         VALUES
+          (:code, :purchaseOrderId, 'inbound', :gymId, :processedBy, :receiptDate, 'completed', 0, :notes, NOW(), NOW())`,
+        {
           type: QueryTypes.INSERT,
           transaction: t,
           replacements: {
-            receiptId,
-            equipmentId,
-            orderedQuantity: it.orderedQuantity ?? receivedQuantity,
-            receivedQuantity,
-            unitPrice,
-            totalPrice,
-            notes: it.notes || null,
+            code,
+            purchaseOrderId,
+            gymId,
+            processedBy,
+            receiptDate,
+            notes: payload.notes || null,
           },
-        });
+        }
+      );
 
-        // select stock FOR UPDATE
-        const stockRows = await db.sequelize.query(
-          `SELECT * FROM \`${stockTable}\` WHERE \`${stGymId}\` = :gymId AND \`${stEquipmentId}\` = :equipmentId LIMIT 1 FOR UPDATE`,
-          { type: QueryTypes.SELECT, transaction: t, replacements: { gymId, equipmentId } }
-        );
-        let stock = stockRows?.[0];
+      const createdReceipt = await db.sequelize.query(
+        `SELECT * FROM \`${receiptTable}\` WHERE code = :code ORDER BY id DESC LIMIT 1`,
+        { type: QueryTypes.SELECT, transaction: t, replacements: { code } }
+      );
+      const receipt = createdReceipt?.[0];
+      if (!receipt?.id) throw new Error("Cannot create receipt");
 
-        if (!stock) {
-          // create stock row if missing
-          const insertStockSql = `
-            INSERT INTO \`${stockTable}\`
-            (\`${stGymId}\`, \`${stEquipmentId}\`, \`${stQty}\`, \`${stAvail}\`, createdAt, updatedAt)
-            VALUES (:gymId, :equipmentId, 0, 0, NOW(), NOW())
-          `;
-          await db.sequelize.query(insertStockSql, {
+      for (const it of items) {
+        const equipmentId = Number(it.equipmentId);
+        const quantity = Number(it.quantity ?? it.receivedQuantity ?? it.qty ?? 0);
+        if (!equipmentId || quantity <= 0) throw new Error("Invalid receipt item");
+
+        const unitPrice =
+          it.unitPrice === null || it.unitPrice === undefined || it.unitPrice === ""
+            ? null
+            : Number(it.unitPrice);
+
+        const totalPrice = unitPrice === null ? null : unitPrice * quantity;
+        if (typeof totalPrice === "number" && !Number.isNaN(totalPrice)) totalValue += totalPrice;
+
+        await db.sequelize.query(
+          `INSERT INTO \`${receiptItemTable}\`
+            (receiptId, equipmentId, quantity, unitPrice, totalPrice, batchNumber, expiryDate, notes, createdAt, updatedAt)
+           VALUES
+            (:receiptId, :equipmentId, :quantity, :unitPrice, :totalPrice, :batchNumber, :expiryDate, :notes, NOW(), NOW())`,
+          {
             type: QueryTypes.INSERT,
             transaction: t,
-            replacements: { gymId, equipmentId },
-          });
-
-          const stockRows2 = await db.sequelize.query(
-            `SELECT * FROM \`${stockTable}\` WHERE \`${stGymId}\` = :gymId AND \`${stEquipmentId}\` = :equipmentId LIMIT 1 FOR UPDATE`,
-            { type: QueryTypes.SELECT, transaction: t, replacements: { gymId, equipmentId } }
-          );
-          stock = stockRows2?.[0];
-        }
-
-        const before = Number(stock?.[stAvail] ?? stock?.availableQuantity ?? stock?.available_quantity ?? 0);
-        const qtyBefore = Number(stock?.[stQty] ?? stock?.quantity ?? 0);
-
-        // update stock
-        const updateParts = [
-          `\`${stAvail}\` = :newAvail`,
-          `\`${stQty}\` = :newQty`,
-          `updatedAt = NOW()`,
-        ];
-        const replacements = {
-          gymId,
-          equipmentId,
-          newAvail: before + receivedQuantity,
-          newQty: qtyBefore + receivedQuantity,
-        };
-        if (stLastRestocked) {
-          updateParts.push(`\`${stLastRestocked}\` = NOW()`);
-        }
-
-        await db.sequelize.query(
-          `UPDATE \`${stockTable}\` SET ${updateParts.join(", ")} WHERE \`${stGymId}\` = :gymId AND \`${stEquipmentId}\` = :equipmentId`,
-          { type: QueryTypes.UPDATE, transaction: t, replacements }
+            replacements: {
+              receiptId: Number(receipt.id),
+              equipmentId,
+              quantity,
+              unitPrice,
+              totalPrice,
+              batchNumber: it.batchNumber ?? null,
+              expiryDate: it.expiryDate ? toMySqlDateTimeVN(parseReceiptDateLocal(it.expiryDate)) : null,
+              notes: it.notes ?? null,
+            },
+          }
         );
 
-        // insert inventory log
-        const invCols = [
-          `\`${invEquipmentId}\``,
-          `\`${invGymId}\``,
-          `\`${invAction}\``,
-          `\`${invQuantity}\``,
-          `\`${invBefore}\``,
-          `\`${invAfter}\``,
-          `\`${invRefType}\``,
-          `\`${invRefId}\``,
-          `\`${invPO}\``,
-          `\`${invReason}\``,
-          `\`${invNotes}\``,
-        ];
-        const invVals = [
-          ":equipmentId",
-          ":gymId",
-          ":action",
-          ":quantity",
-          ":stockBefore",
-          ":stockAfter",
-          ":referenceType",
-          ":referenceId",
-          ":purchaseOrderId",
-          ":reason",
-          ":notes",
-        ];
-        const invRep = {
-          equipmentId,
-          gymId,
-          action: "import",
-          quantity: receivedQuantity,
-          stockBefore: before,
-          stockAfter: before + receivedQuantity,
-          referenceType: "purchase_order",
-          referenceId: receiptId,
-          purchaseOrderId: payload.purchaseOrderId ?? null,
-          reason: "purchase",
-          notes: payload.notes || null,
-        };
+        const stock = await getOrCreateStockRaw({ gymId, equipmentId }, t);
+        const beforeAvail = Number(stock.availableQuantity || 0);
+        const beforeQty = Number(stock.quantity || 0);
 
-        if (invCreatedBy) {
-          invCols.push(`\`${invCreatedBy}\``);
-          invVals.push(":createdBy");
-          invRep.createdBy = auditMeta.actorUserId || null;
-        }
-        if (invCostPerUnit) {
-          invCols.push(`\`${invCostPerUnit}\``);
-          invVals.push(":costPerUnit");
-          invRep.costPerUnit = unitPrice;
-        }
-        if (invTotalCost) {
-          invCols.push(`\`${invTotalCost}\``);
-          invVals.push(":totalCost");
-          invRep.totalCost = totalPrice;
-        }
+        const afterAvail = beforeAvail + quantity;
+        const afterQty = beforeQty + quantity;
+
+        const stTable = tbl(db.EquipmentStock, "equipmentstock");
+        await db.sequelize.query(
+          `UPDATE \`${stTable}\`
+           SET availableQuantity = :afterAvail,
+               quantity = :afterQty,
+               lastRestocked = :lastRestocked,
+               updatedAt = NOW()
+           WHERE id = :id`,
+          {
+            type: QueryTypes.UPDATE,
+            transaction: t,
+            replacements: {
+              id: Number(stock.id),
+              afterAvail,
+              afterQty,
+              lastRestocked: toMySqlDateTimeVN(new Date()),
+            },
+          }
+        );
 
         await db.sequelize.query(
-          `INSERT INTO \`${invTable}\` (${invCols.join(", ")}, createdAt, updatedAt)
-           VALUES (${invVals.join(", ")}, NOW(), NOW())`,
-          { type: QueryTypes.INSERT, transaction: t, replacements: invRep }
+          `INSERT INTO \`${invTable}\`
+            (equipmentId, gymId, transactionType, transactionId, transactionCode,
+             quantity, unitPrice, totalValue, stockBefore, stockAfter, notes,
+             recordedBy, recordedAt, createdAt, updatedAt)
+           VALUES
+            (:equipmentId, :gymId, 'purchase', :transactionId, :transactionCode,
+             :qty, :unitPrice, :totalValue, :stockBefore, :stockAfter, :notes,
+             :recordedBy, :recordedAt, NOW(), NOW())`,
+          {
+            type: QueryTypes.INSERT,
+            transaction: t,
+            replacements: {
+              equipmentId,
+              gymId,
+              transactionId: Number(receipt.id),
+              transactionCode: String(code),
+              qty: Number(quantity),
+              unitPrice,
+              totalValue: totalPrice,
+              stockBefore: beforeAvail,
+              stockAfter: afterAvail,
+              notes: it.notes ?? payload.notes ?? null,
+              recordedBy: processedBy,
+              recordedAt: receiptDate,
+            },
+          }
         );
       }
 
-      // return receipt row
-      const after = await selectById(receiptTable, receiptId, t);
+      await db.sequelize.query(
+        `UPDATE \`${receiptTable}\` SET totalValue = :totalValue, updatedAt = NOW() WHERE id = :id`,
+        {
+          type: QueryTypes.UPDATE,
+          transaction: t,
+          replacements: { id: Number(receipt.id), totalValue: Number(totalValue) || 0 },
+        }
+      );
+
+      const afterReceipt = await selectById(receiptTable, receipt.id, t);
+      return afterReceipt;
+    });
+  },
+
+  async createReceiptImport(payload = {}, auditMeta = {}) {
+    return this.createReceipt(payload, auditMeta);
+  },
+
+  // =====================================================================
+  // ✅ 5) XUẤT KHO
+  // =====================================================================
+  async createExport(payload = {}, auditMeta = {}) {
+    const invTable = tbl(db.Inventory, "inventory");
+    const gymId = payload.gymId ? Number(payload.gymId) : 1;
+    const equipmentId = Number(payload.equipmentId);
+    const qty = Number(payload.quantity ?? 0);
+
+    if (!equipmentId || qty <= 0) throw new Error("Invalid export payload");
+
+    const reason = String(payload.reason || "other");
+    const transactionType = reason === "transfer" || reason === "transfer_out" ? "transfer_out" : "adjustment";
+
+    const recordedBy = auditMeta.actorUserId
+      ? Number(auditMeta.actorUserId)
+      : payload.recordedBy
+        ? Number(payload.recordedBy)
+        : null;
+
+    const recordedAt = toMySqlDateTimeVN(new Date());
+    const transactionCode = String(payload.transactionCode || `EXP-${Date.now()}`);
+
+    return db.sequelize.transaction(async (t) => {
+      const stock = await getOrCreateStockRaw({ gymId, equipmentId }, t);
+      const beforeAvail = Number(stock.availableQuantity || 0);
+      const beforeQty = Number(stock.quantity || 0);
+
+      if (beforeAvail < qty) throw new Error("Not enough availableQuantity");
+
+      const afterAvail = beforeAvail - qty;
+      const afterQty = Math.max(0, beforeQty - qty);
+
+      const stTable = tbl(db.EquipmentStock, "equipmentstock");
+      await db.sequelize.query(
+        `UPDATE \`${stTable}\`
+         SET availableQuantity = :afterAvail,
+             quantity = :afterQty,
+             updatedAt = NOW()
+         WHERE id = :id`,
+        {
+          type: QueryTypes.UPDATE,
+          transaction: t,
+          replacements: { id: Number(stock.id), afterAvail, afterQty },
+        }
+      );
+
+      await db.sequelize.query(
+        `INSERT INTO \`${invTable}\`
+          (equipmentId, gymId, transactionType, transactionId, transactionCode,
+           quantity, unitPrice, totalValue, stockBefore, stockAfter, notes,
+           recordedBy, recordedAt, createdAt, updatedAt)
+         VALUES
+          (:equipmentId, :gymId, :transactionType, NULL, :transactionCode,
+           :qty, NULL, NULL, :stockBefore, :stockAfter, :notes,
+           :recordedBy, :recordedAt, NOW(), NOW())`,
+        {
+          type: QueryTypes.INSERT,
+          transaction: t,
+          replacements: {
+            equipmentId,
+            gymId,
+            transactionType,
+            transactionCode,
+            qty: -Math.abs(qty),
+            stockBefore: beforeAvail,
+            stockAfter: afterAvail,
+            notes: payload.notes ?? reason ?? null,
+            recordedBy,
+            recordedAt,
+          },
+        }
+      );
+
+      const after = await selectById(stTable, stock.id, t);
       return after;
     });
   },
 
-  // ================== (5) EXPORT: update stock + insert inventory ==================
-  async createExport(payload, auditMeta = {}) {
-    const gymId = payload.gymId ? Number(payload.gymId) : 1;
-    const equipmentId = Number(payload.equipmentId);
-    const quantity = Number(payload.quantity || 0);
-    if (!equipmentId || quantity <= 0) throw new Error("Invalid export payload");
+  // =====================================================================
+  // ✅ 6) NHẬT KÝ KHO
+  // =====================================================================
+  async getInventoryLogs(query = {}) {
+    const { page, limit, offset } = pickPage(query);
+    const q = String(query.q || "").trim();
+    const transactionType =
+      query.transactionType && query.transactionType !== "all" ? String(query.transactionType) : null;
 
-    const stockTable = tbl(db.EquipmentStock);
-    const invTable = tbl(db.Inventory);
+    const invTable = tbl(db.Inventory, "inventory");
+    const eqTable = tbl(db.Equipment, "equipment");
+    const gymTable = tbl(db.Gym, "gym");
 
-    const stGymId = (await pickCol(stockTable, ["gymId", "gym_id"])) || "gymId";
-    const stEquipmentId = (await pickCol(stockTable, ["equipmentId", "equipment_id"])) || "equipmentId";
-    const stQty = (await pickCol(stockTable, ["quantity"])) || "quantity";
-    const stAvail = (await pickCol(stockTable, ["availableQuantity", "available_quantity"])) || "availableQuantity";
+    const where = [];
+    const params = {};
 
-    const invGymId = (await pickCol(invTable, ["gymId", "gym_id"])) || "gymId";
-    const invEquipmentId = (await pickCol(invTable, ["equipmentId", "equipment_id"])) || "equipmentId";
-    const invAction = (await pickCol(invTable, ["action"])) || "action";
-    const invQuantity = (await pickCol(invTable, ["quantity"])) || "quantity";
-    const invBefore = (await pickCol(invTable, ["stockBefore", "stock_before"])) || "stockBefore";
-    const invAfter = (await pickCol(invTable, ["stockAfter", "stock_after"])) || "stockAfter";
-    const invRefType = (await pickCol(invTable, ["referenceType", "reference_type"])) || "referenceType";
-    const invRefId = (await pickCol(invTable, ["referenceId", "reference_id"])) || "referenceId";
-    const invReason = (await pickCol(invTable, ["reason"])) || "reason";
-    const invNotes = (await pickCol(invTable, ["notes"])) || "notes";
-    const invCreatedBy = (await pickCol(invTable, ["createdBy", "created_by"])) || null;
+    if (q) {
+      where.push(`(
+        e.name LIKE :q OR e.code LIKE :q OR
+        g.name LIKE :q OR
+        i.transactionType LIKE :q OR
+        i.transactionCode LIKE :q OR
+        i.notes LIKE :q
+      )`);
+      params.q = qLike(q);
+    }
 
-    return db.sequelize.transaction(async (t) => {
-      const stockRows = await db.sequelize.query(
-        `SELECT * FROM \`${stockTable}\` WHERE \`${stGymId}\` = :gymId AND \`${stEquipmentId}\` = :equipmentId LIMIT 1 FOR UPDATE`,
-        { type: QueryTypes.SELECT, transaction: t, replacements: { gymId, equipmentId } }
-      );
-      const stock = stockRows?.[0];
-      if (!stock) throw new Error("Stock not found");
+    if (transactionType) {
+      where.push(`i.transactionType = :transactionType`);
+      params.transactionType = transactionType;
+    }
 
-      const before = Number(stock?.[stAvail] ?? stock?.availableQuantity ?? stock?.available_quantity ?? 0);
-      const qtyBefore = Number(stock?.[stQty] ?? stock?.quantity ?? 0);
-      if (before < quantity) throw new Error("Not enough availableQuantity");
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-      const newAvail = before - quantity;
-      const newQty = Math.max(0, qtyBefore - quantity);
+    const [rows, countRows] = await Promise.all([
+      db.sequelize.query(
+        `
+        SELECT
+          i.*,
+          e.name AS equipmentName,
+          e.code AS equipmentCode,
+          g.name AS gymName
+        FROM \`${invTable}\` i
+        LEFT JOIN \`${eqTable}\` e ON e.id = i.equipmentId
+        LEFT JOIN \`${gymTable}\` g ON g.id = i.gymId
+        ${whereSql}
+        ORDER BY i.id DESC
+        LIMIT :limit OFFSET :offset
+        `,
+        { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
+      ),
+      db.sequelize.query(
+        `
+        SELECT COUNT(*) AS total
+        FROM \`${invTable}\` i
+        LEFT JOIN \`${eqTable}\` e ON e.id = i.equipmentId
+        LEFT JOIN \`${gymTable}\` g ON g.id = i.gymId
+        ${whereSql}
+        `,
+        { type: QueryTypes.SELECT, replacements: params }
+      ),
+    ]);
 
-      await db.sequelize.query(
-        `UPDATE \`${stockTable}\`
-         SET \`${stAvail}\` = :newAvail, \`${stQty}\` = :newQty, updatedAt = NOW()
-         WHERE \`${stGymId}\` = :gymId AND \`${stEquipmentId}\` = :equipmentId`,
-        { type: QueryTypes.UPDATE, transaction: t, replacements: { gymId, equipmentId, newAvail, newQty } }
-      );
-
-      const invCols = [
-        `\`${invEquipmentId}\``,
-        `\`${invGymId}\``,
-        `\`${invAction}\``,
-        `\`${invQuantity}\``,
-        `\`${invBefore}\``,
-        `\`${invAfter}\``,
-        `\`${invRefType}\``,
-        `\`${invRefId}\``,
-        `\`${invReason}\``,
-        `\`${invNotes}\``,
-      ];
-      const invVals = [
-        ":equipmentId",
-        ":gymId",
-        ":action",
-        ":quantity",
-        ":stockBefore",
-        ":stockAfter",
-        ":referenceType",
-        ":referenceId",
-        ":reason",
-        ":notes",
-      ];
-      const invRep = {
-        equipmentId,
-        gymId,
-        action: "export",
-        quantity,
-        stockBefore: before,
-        stockAfter: newAvail,
-        referenceType: "adjustment",
-        referenceId: null,
-        reason: payload.reason || "other",
-        notes: payload.notes || null,
-      };
-
-      if (invCreatedBy) {
-        invCols.push(`\`${invCreatedBy}\``);
-        invVals.push(":createdBy");
-        invRep.createdBy = auditMeta.actorUserId || null;
-      }
-
-      await db.sequelize.query(
-        `INSERT INTO \`${invTable}\` (${invCols.join(", ")}, createdAt, updatedAt)
-         VALUES (${invVals.join(", ")}, NOW(), NOW())`,
-        { type: QueryTypes.INSERT, transaction: t, replacements: invRep }
-      );
-
-      return { ok: true, gymId, equipmentId, before, after: newAvail };
-    });
+    const totalItems = Number(countRows?.[0]?.total || 0);
+    return normalizeList(rows, totalItems, page, limit);
   },
 };
 
-export default adminInventoryService;
+module.exports = adminInventoryService;

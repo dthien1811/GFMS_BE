@@ -1,167 +1,140 @@
-// src/controllers/adminInventoryController.js
 import adminInventoryService from "../service/adminInventoryService";
 
-const getAuditMeta = (req) => {
-  const actorUserId = req?.user?.id || null;
-  return {
-    actorUserId,
-    ipAddress: req.headers["x-forwarded-for"] || req.socket?.remoteAddress || null,
-    userAgent: req.headers["user-agent"] || null,
-  };
-};
-
 const ok = (res, data) => res.status(200).json(data);
-const created = (res, data) => res.status(201).json(data);
+const bad = (res, err) =>
+  res.status(400).json({ message: err?.message || String(err || "Bad Request") });
 
-// ===== Equipment =====
-const readEquipments = async (req, res) => {
-  try {
-    return res.json(await adminInventoryService.getEquipments(req.query));
-  } catch (e) {
-    console.error("readEquipments:", e);
-    return res.status(500).json({ message: e.message });
-  }
+const adminInventoryController = {
+  // ===== categories
+  async getEquipmentCategories(req, res) {
+    try {
+      const data = await adminInventoryService.getEquipmentCategories();
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  // ===== equipments
+  async getEquipments(req, res) {
+    try {
+      const data = await adminInventoryService.getEquipments(req.query);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  async createEquipment(req, res) {
+    try {
+      const data = await adminInventoryService.createEquipment(req.body);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  async updateEquipment(req, res) {
+    try {
+      const data = await adminInventoryService.updateEquipment(req.params.id, req.body);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  async discontinueEquipment(req, res) {
+    try {
+      const data = await adminInventoryService.discontinueEquipment(req.params.id);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  // ===== suppliers
+  async getSuppliers(req, res) {
+    try {
+      const data = await adminInventoryService.getSuppliers(req.query);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  async createSupplier(req, res) {
+    try {
+      const data = await adminInventoryService.createSupplier(req.body);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  async updateSupplier(req, res) {
+    try {
+      const data = await adminInventoryService.updateSupplier(req.params.id, req.body);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  // ✅ FIX: đổi từ setSupplierActive -> setSupplierStatus
+  async setSupplierActive(req, res) {
+    try {
+      const id = req.params.id;
+      const { isActive, status } = req.body || {};
+
+      // FE đang gửi isActive boolean, service support luôn
+      const data = await adminInventoryService.setSupplierStatus(id, { isActive, status });
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  // ===== stocks
+  async getStocks(req, res) {
+    try {
+      const data = await adminInventoryService.getStocks(req.query);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  // ✅ nhập kho
+  async createReceipt(req, res) {
+    try {
+      const auditMeta = { actorUserId: req?.user?.id || null };
+      const data = await adminInventoryService.createReceipt(req.body, auditMeta);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  // ✅ xuất kho
+  async createExport(req, res) {
+    try {
+      const auditMeta = { actorUserId: req?.user?.id || null };
+      const data = await adminInventoryService.createExport(req.body, auditMeta);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  // ✅ nhật ký kho
+  async getInventoryLogs(req, res) {
+    try {
+      const data = await adminInventoryService.getInventoryLogs(req.query);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
 };
 
-const createEquipment = async (req, res) => {
-  try {
-    const result = await adminInventoryService.createEquipment(req.body, getAuditMeta(req));
-    return created(res, result);
-  } catch (e) {
-    console.error("createEquipment:", e);
-    return res.status(400).json({ message: e?.message || "Create failed" });
-  }
-};
-
-const updateEquipment = async (req, res) => {
-  try {
-    const result = await adminInventoryService.updateEquipment(req.params.id, req.body, getAuditMeta(req));
-    if (!result) return res.status(404).json({ message: "Equipment not found" });
-    return ok(res, result);
-  } catch (e) {
-    console.error("updateEquipment:", e);
-    return res.status(400).json({ message: e?.message || "Update failed" });
-  }
-};
-
-const discontinueEquipment = async (req, res) => {
-  try {
-    const result = await adminInventoryService.discontinueEquipment(req.params.id, getAuditMeta(req));
-    return ok(res, result);
-  } catch (e) {
-    console.error("discontinueEquipment:", e);
-    return res.status(400).json({ message: e?.message || "Discontinue failed" });
-  }
-};
-
-const readEquipmentCategories = async (req, res) => {
-  try {
-    return res.json(await adminInventoryService.getEquipmentCategories(req.query));
-  } catch (e) {
-    console.error("readEquipmentCategories:", e);
-    return res.status(500).json({ message: e.message });
-  }
-};
-
-// ===== Supplier =====
-const readSuppliers = async (req, res) => {
-  try {
-    return res.json(await adminInventoryService.getSuppliers(req.query));
-  } catch (e) {
-    console.error("readSuppliers:", e);
-    return res.status(500).json({ message: e.message });
-  }
-};
-
-const createSupplier = async (req, res) => {
-  try {
-    const result = await adminInventoryService.createSupplier(req.body, getAuditMeta(req));
-    return created(res, result);
-  } catch (e) {
-    console.error("createSupplier:", e);
-    return res.status(400).json({ message: e?.message || "Create failed" });
-  }
-};
-
-const updateSupplier = async (req, res) => {
-  try {
-    const result = await adminInventoryService.updateSupplier(req.params.id, req.body, getAuditMeta(req));
-    if (!result) return res.status(404).json({ message: "Supplier not found" });
-    return ok(res, result);
-  } catch (e) {
-    console.error("updateSupplier:", e);
-    return res.status(400).json({ message: e?.message || "Update failed" });
-  }
-};
-
-const setSupplierActive = async (req, res) => {
-  try {
-    const { isActive } = req.body;
-    const result = await adminInventoryService.setSupplierActive(req.params.id, isActive, getAuditMeta(req));
-    return ok(res, result);
-  } catch (e) {
-    console.error("setSupplierActive:", e);
-    return res.status(400).json({ message: e?.message || "Update failed" });
-  }
-};
-
-// ===== Stock =====
-const readStocks = async (req, res) => {
-  try {
-    return res.json(await adminInventoryService.getStocks(req.query));
-  } catch (e) {
-    console.error("readStocks:", e);
-    return res.status(500).json({ message: e.message });
-  }
-};
-
-// ===== (6) Inventory Logs =====
-const readInventoryLogs = async (req, res) => {
-  try {
-    return res.json(await adminInventoryService.getInventoryLogs(req.query));
-  } catch (e) {
-    console.error("readInventoryLogs:", e);
-    return res.status(500).json({ message: e.message });
-  }
-};
-
-// ===== (4) Import / (5) Export =====
-const createReceiptImport = async (req, res) => {
-  try {
-    const result = await adminInventoryService.createReceiptImport(req.body, getAuditMeta(req), req);
-    return created(res, result);
-  } catch (e) {
-    console.error("createReceiptImport:", e);
-    return res.status(400).json({ message: e?.message || "Import failed" });
-  }
-};
-
-const createExport = async (req, res) => {
-  try {
-    const result = await adminInventoryService.createExport(req.body, getAuditMeta(req), req);
-    return created(res, result);
-  } catch (e) {
-    console.error("createExport:", e);
-    return res.status(400).json({ message: e?.message || "Export failed" });
-  }
-};
-
-export default {
-  readEquipments,
-  createEquipment,
-  updateEquipment,
-  discontinueEquipment,
-  readEquipmentCategories,
-
-  readSuppliers,
-  createSupplier,
-  updateSupplier,
-  setSupplierActive,
-
-  readStocks,
-
-  // 4-5-6
-  readInventoryLogs,
-  createReceiptImport,
-  createExport,
-};
+module.exports = adminInventoryController;
