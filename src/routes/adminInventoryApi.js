@@ -3,6 +3,9 @@ const adminInventoryController = require("../controllers/adminInventoryControlle
 
 const router = express.Router();
 
+// ✅ gyms (dropdown)
+router.get("/gyms", adminInventoryController.getGyms);
+
 // categories
 router.get("/equipment-categories", adminInventoryController.getEquipmentCategories);
 

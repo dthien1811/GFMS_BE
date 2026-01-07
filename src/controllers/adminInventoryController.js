@@ -5,6 +5,16 @@ const bad = (res, err) =>
   res.status(400).json({ message: err?.message || String(err || "Bad Request") });
 
 const adminInventoryController = {
+  // ✅ gyms
+  async getGyms(req, res) {
+    try {
+      const data = await adminInventoryService.getGyms(req.query);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
   // ===== categories
   async getEquipmentCategories(req, res) {
     try {
@@ -80,14 +90,13 @@ const adminInventoryController = {
     }
   },
 
-  // ✅ FIX: đổi từ setSupplierActive -> setSupplierStatus
+  // ✅ nhận cả {isActive:true/false} hoặc boolean
   async setSupplierActive(req, res) {
     try {
       const id = req.params.id;
-      const { isActive, status } = req.body || {};
-
-      // FE đang gửi isActive boolean, service support luôn
-      const data = await adminInventoryService.setSupplierStatus(id, { isActive, status });
+      const body = req.body || {};
+      const isActive = typeof body === "object" ? body.isActive : body;
+      const data = await adminInventoryService.setSupplierActive(id, isActive);
       return ok(res, data);
     } catch (e) {
       return bad(res, e);
