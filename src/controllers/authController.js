@@ -294,50 +294,53 @@ const handleRegister = async (req, res) => {
   }
 };
 
+
 // 2. Login
 const handleLogin = async (req, res) => {
   try {
     if (!req.body.email || !req.body.password) {
       return res.status(400).json({
-        EM: 'Missing required fields',
-        EC: '1',
-        DT: '',
+        EM: "Missing required fields",
+        EC: 1,
+        DT: "",
       });
     }
 
-    let data = await authService.loginUser(req.body);
+    const data = await authService.loginUser(req.body);
 
-    // set cookie (optional)
-    if (data?.DT?.accessToken) {
-      res.cookie("jwt", data.DT.accessToken, {
+    // ✅ chỉ set cookie khi login OK và có token
+    const token = data?.DT?.accessToken;
+    if (data.EC === 0 && token) {
+      res.cookie("jwt", token, {
         httpOnly: true,
-        maxAge: 60 * 60 * 1000
+        maxAge: 60 * 60 * 1000,
       });
     }
 
+    // ✅ trả đúng status theo kết quả
     if (data.EC === 0) {
       return res.status(200).json({
         EM: data.EM,
         EC: data.EC,
-        DT: data.DT, // { user, accessToken }
-      });
-    } else {
-      return res.status(401).json({
-        EM: data.EM,
-        EC: data.EC,
-        DT: data.DT,
+        DT: data.DT, // { user, accessToken, roles? }
       });
     }
 
+    return res.status(401).json({
+      EM: data.EM,
+      EC: data.EC,
+      DT: data.DT,
+    });
   } catch (e) {
     console.error(e);
     return res.status(500).json({
-      EM: 'error from server',
-      EC: '-1',
-      DT: '',
+      EM: "error from server",
+      EC: -1,
+      DT: "",
     });
   }
 };
+
 
 // 3. Gửi OTP để reset password (ĐÃ THÊM RATE LIMITING)
 const handleForgotPassword = async (req, res) => {
