@@ -1,6 +1,7 @@
 // authService.js
 import db from '../models/index';
 import bcrypt from 'bcryptjs';
+import jwtService from "./JWTService";
 const salt = bcrypt.genSaltSync(10);
 
 const hashPassword = (userPassword) => {
@@ -84,41 +85,44 @@ const registerNewUser = async (rawUserData) => {
 }
 
 const loginUser = async (userData) => {
-    try {
-        let user = await db.User.findOne({
-            where: { email: userData.email }
-        });
-        if (user) {
-            let isCorrectPassword = bcrypt.compareSync(userData.password, user.password);
-            if (isCorrectPassword) {
-                return {
-                    EM: 'Login success',
-                    EC: 0,
-                    DT: user
-                }
-            } else {
-                return {
-                    EM: 'Wrong password',
-                    EC: 1,
-                    DT: ''
-                }
-            }
-        } else {
-            return {
-                EM: 'User not found',
-                EC: 1,
-                DT: ''
-            }
-        }
-    } catch (error) {
-        console.log(error);
-        return {
-            EM: 'Something went wrong in service...',
-            EC: -2,
-            DT: ''
-        };
+  try {
+    let user = await db.User.findOne({
+      where: { email: userData.email },
+      raw: true, // ✅ để dễ delete password
+    });
+
+    if (!user) {
+      return { EM: "User not found", EC: 1, DT: "" };
     }
-}
+
+    let isCorrectPassword = bcrypt.compareSync(userData.password, user.password);
+    if (!isCorrectPassword) {
+      return { EM: "Wrong password", EC: 1, DT: "" };
+    }
+
+    // ✅ tạo token
+    const payload = {
+      id: user.id,
+      email: user.email,
+      groupId: user.groupId,
+    };
+    const accessToken = jwtService.createToken(payload);
+
+    delete user.password;
+
+    return {
+      EM: "Login success",
+      EC: 0,
+      DT: {
+        user,
+        accessToken, // ✅ quan trọng
+      },
+    };
+  } catch (error) {
+    console.log(error);
+    return { EM: "Something went wrong in service...", EC: -2, DT: "" };
+  }
+};
 
 module.exports = {
     registerNewUser,

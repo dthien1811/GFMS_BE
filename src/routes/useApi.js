@@ -1,23 +1,26 @@
-/**
- * API routes for admin/user CRUD
- */
+// routes/useApi.js
 import express from "express";
 import useApiController from "../controllers/useApiController";
+import ownerPackageRoute from "./owner/package.route";
+import memberBookingRoute from "./member/booking.route";
+import memberPackageRoute from "./member/package.route";
+import memberMyPackagesRoute from "./member/myPackages.route";
 
 let router = express.Router();
 
-let useApi = (app) => {
-  // Users (UC-USER-13..16)
+const useApi = (app) => {
+  app.use("/api/owner/packages", ownerPackageRoute);
+  app.use("/api/member/bookings", memberBookingRoute);
+  app.use("/api/member/packages", memberPackageRoute);
+  app.use("/api/member/my-packages", memberMyPackagesRoute);
   router.get("/users", useApiController.readUsers);
   router.post("/users", useApiController.createUser);
   router.put("/users/:id", useApiController.updateUser);
   router.delete("/users/:id", useApiController.deleteUser);
 
-  // Groups (for dropdown)
   router.get("/groups", useApiController.readGroups);
 
-  // Prefix
   return app.use("/api", router);
 };
 
-module.exports = useApi;
+export default useApi;
