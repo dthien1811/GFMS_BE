@@ -1,17 +1,13 @@
-const { Sequelize } = require('sequelize');
-
-const sequelize = new Sequelize('jwt', 'root', null, {
-  host: 'localhost',
-  dialect: 'mysql',
-});
+// src/config/connectDB.js
+import db from "../models";
 
 const connection = async () => {
   try {
-    await sequelize.authenticate();
-    console.log('Connection has been established successfully.');
+    await db.sequelize.authenticate();
+    console.log("✅ DB connected (using db.sequelize from models/index.js)");
   } catch (error) {
-    console.error('Unable to connect to the database:', error);
+    console.error("❌ Unable to connect to DB:", error);
   }
-}
+};
 
 export default connection;
