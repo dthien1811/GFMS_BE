@@ -1,31 +1,34 @@
-// models/supplier.js
 'use strict';
 const { Model } = require('sequelize');
+
 module.exports = (sequelize, DataTypes) => {
   class Supplier extends Model {
     static associate(models) {
-      Supplier.hasMany(models.Equipment, { foreignKey: 'supplierId' });
-      Supplier.hasMany(models.PurchaseOrder, { foreignKey: 'supplierId' });
-      Supplier.hasMany(models.Quotation, { foreignKey: 'supplierId' });
+      // nếu sau này bạn có bảng liên kết supplier-equipment/purchaseorder thì thêm ở đây
     }
-  };
-  Supplier.init({
-    name: DataTypes.STRING,
-    code: DataTypes.STRING,
-    contactPerson: DataTypes.STRING,
-    contactPhone: DataTypes.STRING,
-    contactEmail: DataTypes.STRING,
-    address: DataTypes.STRING,
-    taxCode: DataTypes.STRING,
-    products: DataTypes.TEXT,
-    rating: { type: DataTypes.FLOAT, defaultValue: 5 },
-    paymentTerms: DataTypes.STRING,
-    deliveryTerms: DataTypes.STRING,
-    isActive: { type: DataTypes.BOOLEAN, defaultValue: true },
-    notes: DataTypes.TEXT
-  }, {
-    sequelize,
-    modelName: 'Supplier',
-  });
+  }
+
+  Supplier.init(
+    {
+      name: DataTypes.STRING,
+      code: DataTypes.STRING,
+      contactPerson: DataTypes.STRING,
+      email: DataTypes.STRING,
+      phone: DataTypes.STRING,
+      address: DataTypes.STRING,
+      taxCode: DataTypes.STRING,
+      status: { type: DataTypes.ENUM('active', 'inactive'), defaultValue: 'active' },
+      notes: DataTypes.TEXT,
+      createdAt: DataTypes.DATE,
+      updatedAt: DataTypes.DATE,
+    },
+    {
+      sequelize,
+      modelName: 'Supplier',
+      tableName: 'supplier',
+      timestamps: true,
+    }
+  );
+
   return Supplier;
 };

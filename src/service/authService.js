@@ -43,7 +43,7 @@ const registerNewUser = async (rawUserData) => {
       username: rawUserData.username,
       password: hashPass,
       phone: rawUserData.phone,
-      groupId: 5, // default group
+      groupId: 5, // default group (Guest)
     });
 
     return { EM: "A user is created successfully", EC: 0 };
@@ -65,10 +65,10 @@ const loginUser = async (userData) => {
     const isCorrectPassword = bcrypt.compareSync(userData.password, user.password);
     if (!isCorrectPassword) return { EM: "Wrong password", EC: 1, DT: "" };
 
-    // (Optional) load roles nếu cần dùng ở FE
+    // roles (optional) - nếu FE cần hiển thị/ẩn chức năng theo role
     const roles = await getGroupWithRoles(user);
 
-    // ✅ payload token
+    // payload token (quan trọng: có groupId để middleware permission dùng)
     const payload = {
       id: user.id,
       email: user.email,
@@ -78,6 +78,7 @@ const loginUser = async (userData) => {
 
     const accessToken = createToken(payload);
 
+    // không trả password về client
     delete user.password;
 
     return {
@@ -85,8 +86,8 @@ const loginUser = async (userData) => {
       EC: 0,
       DT: {
         user,
-        accessToken, // ✅ thống nhất camelCase
-        roles,       // optional, nếu FE cần phân quyền
+        accessToken,
+        roles,
       },
     };
   } catch (error) {

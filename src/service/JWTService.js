@@ -2,8 +2,9 @@
 import db from "../models/index";
 import jwt from "jsonwebtoken";
 
+// Lấy group kèm roles (dùng cho login/authorize)
 const getGroupWithRoles = async (user) => {
-  const roles = await db.Group.findOne({
+  const group = await db.Group.findOne({
     where: { id: user.groupId },
     attributes: ["id", "name", "description"],
     include: {
@@ -13,7 +14,29 @@ const getGroupWithRoles = async (user) => {
     },
   });
 
-  return roles ? roles : {};
+  return group || {};
+};
+
+// Lấy danh sách prefix url mà group này được phép truy cập
+const getAllowedPrefixesByGroupId = async (groupId) => {
+  const group = await db.Group.findOne({
+    where: { id: groupId },
+    attributes: ["id", "name"],
+    include: {
+      model: db.Role,
+      attributes: ["url"],
+      through: { attributes: [] },
+    },
+  });
+
+  const roles = group?.Roles || [];
+  return roles.map((r) => r.url).filter(Boolean);
+};
+
+// prefix match
+const checkPrefixPermission = (allowedPrefixes = [], path = "") => {
+  if (!path) return false;
+  return allowedPrefixes.some((p) => path === p || path.startsWith(p + "/"));
 };
 
 const createToken = (payload) => {
@@ -26,6 +49,8 @@ const verifyToken = (token) => {
 
 module.exports = {
   getGroupWithRoles,
+  getAllowedPrefixesByGroupId,
+  checkPrefixPermission,
   createToken,
   verifyToken,
 };

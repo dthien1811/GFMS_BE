@@ -1,61 +1,49 @@
 'use strict';
 const { Model } = require('sequelize');
+
 module.exports = (sequelize, DataTypes) => {
   class Equipment extends Model {
     static associate(models) {
-      // Quan hệ với EquipmentCategory (vì có categoryId trong migration)
-      Equipment.belongsTo(models.EquipmentCategory, { 
-        foreignKey: 'categoryId',
-        as: 'category'
-      });
-      
-      // Các quan hệ khác (không có trong migration nhưng có thể cần)
-      Equipment.hasMany(models.Maintenance, { 
-        foreignKey: 'equipmentId',
-        as: 'maintenances'
-      });
-      
-      // Quan hệ với bảng inventory, purchase order items, etc.
-      // (Thêm sau khi có các bảng đó)
+      Equipment.belongsTo(models.EquipmentCategory, { foreignKey: 'categoryId', as: 'category' });
+
+      if (models.Maintenance) {
+        Equipment.hasMany(models.Maintenance, { foreignKey: 'equipmentId', as: 'maintenances' });
+      }
+
+      // ✅ thêm các quan hệ kho đúng schema
+      if (models.EquipmentStock) Equipment.hasMany(models.EquipmentStock, { foreignKey: 'equipmentId' });
+      if (models.ReceiptItem) Equipment.hasMany(models.ReceiptItem, { foreignKey: 'equipmentId' });
+      if (models.Inventory) Equipment.hasMany(models.Inventory, { foreignKey: 'equipmentId' });
+      if (models.EquipmentImage) {
+  Equipment.hasMany(models.EquipmentImage, { foreignKey: "equipmentId", as: "images" });
+}
+
     }
-  };
-  
-  Equipment.init({
-    // KHỚP VỚI MIGRATION 30-migrate-equipment.js
-    name: {
-      type: DataTypes.STRING,
-      allowNull: false
+  }
+
+  Equipment.init(
+    {
+      name: { type: DataTypes.STRING, allowNull: false },
+      code: DataTypes.STRING,
+      description: DataTypes.TEXT,
+      categoryId: DataTypes.INTEGER,
+      brand: DataTypes.STRING,
+      model: DataTypes.STRING,
+      specifications: DataTypes.JSON,
+      unit: { type: DataTypes.STRING, defaultValue: 'piece' },
+      minStockLevel: { type: DataTypes.INTEGER, defaultValue: 0 },
+      maxStockLevel: DataTypes.INTEGER,
+      status: { type: DataTypes.ENUM('active', 'discontinued'), defaultValue: 'active' },
+      createdAt: DataTypes.DATE,
+      updatedAt: DataTypes.DATE,
     },
-    code: {
-      type: DataTypes.STRING,
-      unique: true
-    },
-    description: DataTypes.TEXT,
-    categoryId: DataTypes.INTEGER,
-    brand: DataTypes.STRING,
-    model: DataTypes.STRING,
-    specifications: DataTypes.JSON,
-    unit: {
-      type: DataTypes.STRING,
-      defaultValue: 'piece'
-    },
-    minStockLevel: {
-      type: DataTypes.INTEGER,
-      defaultValue: 0
-    },
-    maxStockLevel: DataTypes.INTEGER,
-    status: {
-      type: DataTypes.ENUM('active', 'discontinued'),
-      defaultValue: 'active'
-    },
-    createdAt: DataTypes.DATE,
-    updatedAt: DataTypes.DATE
-  }, {
-    sequelize,
-    modelName: 'Equipment',
-    tableName: 'Equipment',
-    timestamps: true
-  });
-  
+    {
+      sequelize,
+      modelName: 'Equipment',
+      tableName: 'equipment',
+      timestamps: true,
+    }
+  );
+
   return Equipment;
 };
