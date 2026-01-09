@@ -5,7 +5,11 @@ import cookieParser from "cookie-parser";
 import initWebRoutes from "./routes/web";
 import authRoute from "./routes/auth";
 import useApi from "./routes/useApi";
-const adminInventoryApi = require("./routes/adminInventoryApi"); // router object
+const adminInventoryApi = require("./routes/adminInventoryApi");
+
+import jwtAction from "./middleware/JWTAction";
+import { checkUserPermission } from "./middleware/permission";
+
 import connection from "./config/connectDB";
 
 require("dotenv").config();
@@ -35,8 +39,18 @@ app.use((req, res, next) => {
 // routes (web nháp - bạn nói kệ nó)
 initWebRoutes(app);
 
-// ✅ inventory admin
-app.use("/api/admin/inventory", adminInventoryApi);
+// ✅ inventory admin (SIẾT Ở ĐÂY CHO CHẮC)
+app.use(
+  "/api/admin/inventory",
+  jwtAction.checkUserJWT,
+  checkUserPermission({
+    getPath: (req) => {
+      const fullPath = `${req.baseUrl}${req.path}`;
+      return fullPath.replace(/^\/api\/admin/, "/admin");
+    },
+  }),
+  adminInventoryApi
+);
 
 // ✅ auth
 authRoute(app);
