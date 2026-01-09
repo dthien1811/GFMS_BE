@@ -1,34 +1,35 @@
 'use strict';
+
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Role', [ // SỐ ÍT
-      {
-        url: '/admin/dashboard',
-        description: 'Access admins dashboard',
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        url: '/owner/dashboard',
-        description: 'Access owner dashboard',
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        url: '/trainer/dashboard',
-        description: 'Access trainer dashboard',
-        createdAt: new Date(),
-        updatedAt: new Date()
-      },
-      {
-        url: '/member/dashboard',
-        description: 'Access member dashboard',
-        createdAt: new Date(),
-        updatedAt: new Date()
-      }
+    // 1) dọn sạch các role prefix cũ (nếu chạy seed nhiều lần)
+    await queryInterface.bulkDelete('Role', {
+      url: ['/admin', '/owner', '/trainer', '/member', '/guest']
+    }, {});
+
+    // 2) insert role prefix
+    await queryInterface.bulkInsert('Role', [
+      { url: '/admin',   description: 'Admin area (full admin access)', createdAt: new Date(), updatedAt: new Date() },
+      { url: '/owner',   description: 'Owner area',                    createdAt: new Date(), updatedAt: new Date() },
+      { url: '/trainer', description: 'Trainer area',                  createdAt: new Date(), updatedAt: new Date() },
+      { url: '/member',  description: 'Member area',                   createdAt: new Date(), updatedAt: new Date() },
+      { url: '/guest',   description: 'Guest view only',               createdAt: new Date(), updatedAt: new Date() },
     ], {});
   },
+
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Role', null, {}); // SỐ ÍT
+    // Lấy id các role prefix cần xoá
+    const rows = await queryInterface.sequelize.query(
+      "SELECT id FROM `Role` WHERE url IN ('/admin','/owner','/trainer','/member','/guest')",
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+
+    const roleIds = rows.map(r => r.id);
+    if (roleIds.length) {
+      // 1) xoá bảng liên kết trước (FK nằm ở đây)
+      await queryInterface.bulkDelete('grouprole', { roleId: roleIds }, {});
+      // 2) rồi mới xoá role
+      await queryInterface.bulkDelete('Role', { id: roleIds }, {});
+    }
   }
 };

@@ -25,6 +25,12 @@ module.exports = {
         description: 'Gym members',
         createdAt: new Date(),
         updatedAt: new Date()
+      },
+       {
+        name: 'Guests',
+        description: 'Guest Only View',
+        createdAt: new Date(),
+        updatedAt: new Date()
       }
     ], {});
   },

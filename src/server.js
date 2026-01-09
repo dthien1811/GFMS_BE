@@ -32,13 +32,16 @@ app.use((req, res, next) => {
   next();
 });
 
-// routes
+// routes (web nháp - bạn nói kệ nó)
 initWebRoutes(app);
 
-// ✅ FIX: mount router đúng cách (KHÔNG gọi như function)
+// ✅ inventory admin
 app.use("/api/admin/inventory", adminInventoryApi);
 
+// ✅ auth
 authRoute(app);
+
+// ✅ admin/user CRUD
 useApi(app);
 
 // DB connect
