@@ -1,48 +1,49 @@
 // src/service/authService.js
 import db from "../models/index";
 import bcrypt from "bcryptjs";
-import jwtAction from "../middleware/JWTAction";
+import { createToken, getGroupWithRoles } from "./JWTService";
 
 const salt = bcrypt.genSaltSync(10);
 
-const hashPassword = (userPassword) => {
-  return bcrypt.hashSync(userPassword, salt);
-};
+const hashPassword = (userPassword) => bcrypt.hashSync(userPassword, salt);
 
 const checkEmailExist = async (userEmail) => {
-  let user = await db.User.findOne({ where: { email: userEmail } });
+  const user = await db.User.findOne({ where: { email: userEmail } });
   return !!user;
 };
 
 const checkPhoneExist = async (userPhone) => {
-  let user = await db.User.findOne({ where: { phone: userPhone } });
+  const user = await db.User.findOne({ where: { phone: userPhone } });
   return !!user;
 };
 
 const checkUsernameExist = async (username) => {
-  let user = await db.User.findOne({ where: { username } });
+  const user = await db.User.findOne({ where: { username } });
   return !!user;
 };
 
 const registerNewUser = async (rawUserData) => {
   try {
-    let isEmailExist = await checkEmailExist(rawUserData.email);
-    if (isEmailExist) return { EM: "The email is already exist", EC: 1 };
+    if (await checkEmailExist(rawUserData.email)) {
+      return { EM: "The email is already exist", EC: 1 };
+    }
 
-    let isPhoneExist = await checkPhoneExist(rawUserData.phone);
-    if (isPhoneExist) return { EM: "The phone number is already exist", EC: 1 };
+    if (await checkPhoneExist(rawUserData.phone)) {
+      return { EM: "The phone number is already exist", EC: 1 };
+    }
 
-    let isUsernameExist = await checkUsernameExist(rawUserData.username);
-    if (isUsernameExist) return { EM: "The username is already exist", EC: 1 };
+    if (await checkUsernameExist(rawUserData.username)) {
+      return { EM: "The username is already exist", EC: 1 };
+    }
 
-    let hashPass = hashPassword(rawUserData.password);
+    const hashPass = hashPassword(rawUserData.password);
 
     await db.User.create({
       email: rawUserData.email,
       username: rawUserData.username,
       password: hashPass,
       phone: rawUserData.phone,
-      groupId: 5, // mặc định Guest (bạn đang dùng 5)
+      groupId: 5, // default group (Guest)
     });
 
     return { EM: "A user is created successfully", EC: 0 };
@@ -54,25 +55,20 @@ const registerNewUser = async (rawUserData) => {
 
 const loginUser = async (userData) => {
   try {
-    let user = await db.User.findOne({
+    const user = await db.User.findOne({
       where: { email: userData.email },
+      raw: true,
     });
 
-    if (!user) {
-      return { EM: "User not found", EC: 1, DT: "" };
-    }
+    if (!user) return { EM: "User not found", EC: 1, DT: "" };
 
-    let isCorrectPassword = bcrypt.compareSync(userData.password, user.password);
-    if (!isCorrectPassword) {
-      return { EM: "Wrong password", EC: 1, DT: "" };
-    }
+    const isCorrectPassword = bcrypt.compareSync(userData.password, user.password);
+    if (!isCorrectPassword) return { EM: "Wrong password", EC: 1, DT: "" };
 
-    // (Tuỳ chọn) chặn user inactive nếu bạn có cột status
-    // if (user.status && user.status !== "active") {
-    //   return { EM: "User is not active", EC: 1, DT: "" };
-    // }
+    // roles (optional) - nếu FE cần hiển thị/ẩn chức năng theo role
+    const roles = await getGroupWithRoles(user);
 
-    // ✅ Payload phải có groupId để middleware permission dùng
+    // payload token (quan trọng: có groupId để middleware permission dùng)
     const payload = {
       id: user.id,
       email: user.email,
@@ -80,17 +76,18 @@ const loginUser = async (userData) => {
       groupId: user.groupId,
     };
 
-    const access_Token = jwtAction.createJWT(payload);
+    const accessToken = createToken(payload);
 
-    const userPlain = user.get ? user.get({ plain: true }) : user;
-    if (userPlain && userPlain.password) delete userPlain.password;
+    // không trả password về client
+    delete user.password;
 
     return {
       EM: "Login success",
       EC: 0,
       DT: {
-        access_Token,
-        user: userPlain,
+        user,
+        accessToken,
+        roles,
       },
     };
   } catch (error) {
