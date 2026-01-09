@@ -62,6 +62,52 @@ const adminInventoryController = {
     }
   },
 
+  // ==========================
+  // ✅ EQUIPMENT IMAGES (NEW)
+  // ==========================
+  async getEquipmentImages(req, res) {
+    try {
+      const data = await adminInventoryService.getEquipmentImages(req.params.id);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  async uploadEquipmentImages(req, res) {
+    try {
+      const files = req.files || [];
+      const data = await adminInventoryService.uploadEquipmentImages(req.params.id, files);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  async setPrimaryEquipmentImage(req, res) {
+    try {
+      const data = await adminInventoryService.setPrimaryEquipmentImage(
+        req.params.id,
+        req.params.imageId
+      );
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
+  async deleteEquipmentImage(req, res) {
+    try {
+      const data = await adminInventoryService.deleteEquipmentImage(
+        req.params.id,
+        req.params.imageId
+      );
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e);
+    }
+  },
+
   // ===== suppliers
   async getSuppliers(req, res) {
     try {

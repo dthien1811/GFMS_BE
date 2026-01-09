@@ -217,7 +217,7 @@ const adminInventoryService = {
     return { data: rows };
   },
 
-  // ================== EQUIPMENTS ==================
+   // ================== EQUIPMENTS ==================
   async getEquipments(query = {}) {
     const { page, limit, offset } = pickPage(query);
     const q = String(query.q || "").trim();
@@ -226,6 +226,9 @@ const adminInventoryService = {
 
     const eqTable = tbl(db.Equipment, "Equipment");
     const catTable = db.EquipmentCategory ? tbl(db.EquipmentCategory, "EquipmentCategory") : null;
+
+    // NEW: primary image join
+    const imgTable = db.EquipmentImage ? tbl(db.EquipmentImage, "equipmentimage") : null;
 
     const where = [];
     const params = {};
@@ -244,13 +247,20 @@ const adminInventoryService = {
     }
 
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const joinSql = catTable ? `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId` : "";
+    const joinCatSql = catTable ? `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId` : "";
+    const joinImgSql = imgTable
+      ? `LEFT JOIN \`${imgTable}\` img ON img.equipmentId = e.id AND img.isPrimary = 1`
+      : "";
 
     const [rows, countRows] = await Promise.all([
       db.sequelize.query(
-        `SELECT e.*, ${catTable ? "c.name AS categoryName" : "NULL AS categoryName"}
+        `SELECT 
+            e.*,
+            ${catTable ? "c.name AS categoryName" : "NULL AS categoryName"},
+            ${imgTable ? "img.url AS primaryImageUrl" : "NULL AS primaryImageUrl"}
          FROM \`${eqTable}\` e
-         ${joinSql}
+         ${joinCatSql}
+         ${joinImgSql}
          ${whereSql}
          ORDER BY e.id DESC
          LIMIT :limit OFFSET :offset`,
@@ -265,6 +275,7 @@ const adminInventoryService = {
     const totalItems = Number(countRows?.[0]?.total || 0);
     return normalizeList(rows, totalItems, page, limit);
   },
+
 
   // ================== SUPPLIERS ==================
   async getSuppliers(query = {}) {
@@ -779,6 +790,92 @@ const adminInventoryService = {
     const totalItems = Number(countRows?.[0]?.total || 0);
     return normalizeList(rows, totalItems, page, limit);
   },
+    // ================== EQUIPMENT IMAGES ==================
+  async getEquipmentImages(equipmentId) {
+    const id = Number(equipmentId);
+    if (!id) throw new Error("Invalid equipmentId");
+
+    const equipment = await db.Equipment.findByPk(id);
+    if (!equipment) throw new Error("Equipment not found");
+
+    const rows = await db.EquipmentImage.findAll({
+      where: { equipmentId: id },
+      order: [["isPrimary", "DESC"], ["sortOrder", "ASC"], ["id", "ASC"]],
+    });
+
+    return { data: rows };
+  },
+
+  async uploadEquipmentImages(equipmentId, files = []) {
+    const id = Number(equipmentId);
+    if (!id) throw new Error("Invalid equipmentId");
+    if (!files.length) throw new Error("No files uploaded");
+
+    const equipment = await db.Equipment.findByPk(id);
+    if (!equipment) throw new Error("Equipment not found");
+
+    const hasPrimary = await db.EquipmentImage.count({
+      where: { equipmentId: id, isPrimary: true },
+    });
+
+    const rows = files.map((f, idx) => ({
+      equipmentId: id,
+      url: `/uploads/equipment/${f.filename}`,
+      isPrimary: hasPrimary === 0 && idx === 0,
+      sortOrder: 0,
+      altText: f.originalname || null,
+    }));
+
+    const created = await db.EquipmentImage.bulkCreate(rows);
+    return { data: created };
+  },
+
+  async setPrimaryEquipmentImage(equipmentId, imageId) {
+    const eqId = Number(equipmentId);
+    const imgId = Number(imageId);
+    if (!eqId || !imgId) throw new Error("Invalid id");
+
+    const img = await db.EquipmentImage.findOne({ where: { id: imgId, equipmentId: eqId } });
+    if (!img) throw new Error("Image not found");
+
+    await db.sequelize.transaction(async (t) => {
+      await db.EquipmentImage.update(
+        { isPrimary: false },
+        { where: { equipmentId: eqId }, transaction: t }
+      );
+
+      await db.EquipmentImage.update(
+        { isPrimary: true },
+        { where: { id: imgId }, transaction: t }
+      );
+    });
+
+    return { message: "Primary image updated" };
+  },
+
+  async deleteEquipmentImage(equipmentId, imageId) {
+    const eqId = Number(equipmentId);
+    const imgId = Number(imageId);
+    if (!eqId || !imgId) throw new Error("Invalid id");
+
+    const img = await db.EquipmentImage.findOne({ where: { id: imgId, equipmentId: eqId } });
+    if (!img) throw new Error("Image not found");
+
+    const wasPrimary = !!img.isPrimary;
+
+    await img.destroy();
+
+    if (wasPrimary) {
+      const next = await db.EquipmentImage.findOne({
+        where: { equipmentId: eqId },
+        order: [["sortOrder", "ASC"], ["id", "ASC"]],
+      });
+      if (next) await next.update({ isPrimary: true });
+    }
+
+    return { message: "Image deleted" };
+  },
+
 };
 
 module.exports = adminInventoryService;

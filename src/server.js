@@ -1,6 +1,7 @@
 import express from "express";
 import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
+import path from "path";
 
 import initWebRoutes from "./routes/web";
 import authRoute from "./routes/auth";
@@ -21,6 +22,9 @@ const HOSTNAME = process.env.HOSTNAME || "localhost";
 app.use(bodyParser.json({ limit: "10mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
+
+// ✅ serve static uploads (NEW)
+app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // ===== CORS (NFR-REL) =====
 app.use((req, res, next) => {

@@ -14,6 +14,10 @@ module.exports = (sequelize, DataTypes) => {
       if (models.EquipmentStock) Equipment.hasMany(models.EquipmentStock, { foreignKey: 'equipmentId' });
       if (models.ReceiptItem) Equipment.hasMany(models.ReceiptItem, { foreignKey: 'equipmentId' });
       if (models.Inventory) Equipment.hasMany(models.Inventory, { foreignKey: 'equipmentId' });
+      if (models.EquipmentImage) {
+  Equipment.hasMany(models.EquipmentImage, { foreignKey: "equipmentId", as: "images" });
+}
+
     }
   }
 
