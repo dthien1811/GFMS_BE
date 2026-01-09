@@ -1,28 +1,81 @@
 'use strict';
+
 module.exports = {
-  up: async (queryInterface, Sequelize) => {
+  async up(queryInterface, Sequelize) {
     await queryInterface.createTable('Gym', {
-      id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
-      name: { type: Sequelize.STRING },
-      address: { type: Sequelize.STRING },
-      phone: { type: Sequelize.STRING },
-      email: { type: Sequelize.STRING },
-      description: { type: Sequelize.TEXT },
-      status: { type: Sequelize.STRING },
-      ownerId: { 
+      id: {
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // Giữ lại vì User đã có
+        primaryKey: true,
+        autoIncrement: true,
+        allowNull: false,
       },
-      franchiseRequestId: { 
+
+      name: {
+        type: Sequelize.STRING,
+        allowNull: false,
+      },
+
+      address: {
+        type: Sequelize.STRING,
+        allowNull: true,
+      },
+
+      phone: {
+        type: Sequelize.STRING,
+        allowNull: true,
+      },
+
+      email: {
+        type: Sequelize.STRING,
+        allowNull: true,
+      },
+
+      description: {
+        type: Sequelize.TEXT,
+        allowNull: true,
+      },
+
+      status: {
+        type: Sequelize.STRING,
+        allowNull: false,
+        defaultValue: 'ACTIVE',
+      },
+
+      ownerId: {
         type: Sequelize.INTEGER,
-        // XÓA references TẠM THỜI, sẽ thêm trong file 27
-        // references: { model: 'FranchiseRequest', key: 'id' }
+        allowNull: false,
+        references: {
+          model: 'User', // ⚠️ đúng tên bảng User
+          key: 'id',
+        },
+        onUpdate: 'CASCADE',
+        onDelete: 'RESTRICT',
       },
-      createdAt: { type: Sequelize.DATE, allowNull: false },
-      updatedAt: { type: Sequelize.DATE, allowNull: false }
+
+      franchiseRequestId: {
+        type: Sequelize.INTEGER,
+        allowNull: true,
+        // ❗ CỐ TÌNH KHÔNG references ở đây
+        // vì bạn nói sẽ thêm FK ở migration sau
+      },
+
+      createdAt: {
+        type: Sequelize.DATE,
+        allowNull: false,
+        defaultValue: Sequelize.literal('CURRENT_TIMESTAMP'),
+      },
+
+      updatedAt: {
+        type: Sequelize.DATE,
+        allowNull: false,
+        defaultValue: Sequelize.literal(
+          'CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'
+        ),
+      },
     });
   },
-  down: async (queryInterface, Sequelize) => {
+
+  async down(queryInterface) {
     await queryInterface.dropTable('Gym');
-  }
+  },
 };
