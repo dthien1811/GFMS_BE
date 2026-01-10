@@ -2,12 +2,24 @@
 
 import express from 'express';
 import gymController from '../controllers/gymController';
+import jwtAction from "../middleware/JWTAction";
+import { checkUserPermission } from "../middleware/permission";
 
 let router = express.Router();
 
 let gymRoute = (app) => {
   
-  
+  // ✅ Protect all gym routes with JWT + permission
+  router.use(jwtAction.checkUserJWT);
+  router.use(
+    checkUserPermission({
+      // map path thực tế: /api/gym/...  => /admin/gyms/...
+      getPath: (req) => {
+        const fullPath = `${req.baseUrl}${req.path}`;
+        return fullPath.replace(/^\/api\/gym/, "/admin/gyms");
+      },
+    })
+  );
 
   router.get('/', gymController.getAllGyms);
   router.get('/:id/detail', gymController.getGymDetail); 
