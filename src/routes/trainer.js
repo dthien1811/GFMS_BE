@@ -2,11 +2,14 @@ const express = require('express');
 const router = express.Router();
 const trainerController = require('../controllers/trainerController');
 
+router.get('/me', trainerController.getMyTrainerProfile);
+
 // Endpoint: Xem danh sách PT
 router.get('/', trainerController.getTrainers);
 
 // Endpoint: Tạo hồ sơ PT mới
 router.post('/', trainerController.createTrainer);
+
 
 // Endpoint: Cập nhật thông tin PT
 router.put('/:id', trainerController.updateTrainer);

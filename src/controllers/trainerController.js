@@ -222,12 +222,24 @@ exports.getTrainerSchedule = async (req, res) => {
     });
     if (!trainer) return res.status(404).json({ message: 'Trainer not found' });
 
-    return res.status(200).json(trainer.availableHours || {});
+    // ✅ parse nếu DB đang lưu string JSON
+    let parsed = {};
+    try {
+      parsed =
+        typeof trainer.availableHours === 'string'
+          ? JSON.parse(trainer.availableHours || '{}')
+          : (trainer.availableHours || {});
+    } catch {
+      parsed = {};
+    }
+
+    return res.status(200).json(parsed);
   } catch (error) {
     console.error('[getTrainerSchedule] Error:', error);
     return res.status(500).json({ message: 'Error fetching schedule', error: error.message });
   }
 };
+
 
 // ===================== UC-TR-006: UPDATE SCHEDULE =====================
 exports.updateTrainerSchedule = async (req, res) => {
@@ -239,21 +251,29 @@ exports.updateTrainerSchedule = async (req, res) => {
     const trainer = await TrainerModel.findByPk(id, { attributes: ['id', 'availableHours'] });
     if (!trainer) return res.status(404).json({ message: 'Trainer not found' });
 
-    const { availableHours } = req.body || {};
-    const normalized = normalizeAvailableHours(availableHours);
+    // ✅ accept both formats
+    const incoming =
+      req.body?.availableHours && typeof req.body.availableHours === 'object'
+        ? req.body.availableHours
+        : req.body; // fallback nếu FE gửi thẳng schedule object
+
+    const normalized = normalizeAvailableHours(incoming);
     if (!normalized) {
       return res.status(400).json({ message: 'availableHours format is invalid' });
     }
 
-    trainer.availableHours = normalized;
+    // ✅ DB bạn đang là string => stringify trước khi save
+    trainer.availableHours = JSON.stringify(normalized);
     await trainer.save();
 
-    return res.status(200).json(trainer);
+    // ✅ trả về object cho FE dùng luôn
+    return res.status(200).json(normalized);
   } catch (error) {
     console.error('[updateTrainerSchedule] Error:', error);
     return res.status(500).json({ message: 'Error updating schedule', error: error.message });
   }
 };
+
 
 // ===================== UC-TR-007: DETAILS =====================
 exports.getTrainerDetails = async (req, res) => {
@@ -312,3 +332,34 @@ exports.updateTrainerSkills = async (req, res) => {
     return res.status(500).json({ message: 'Error updating skills', error: error.message });
   }
 };
+
+// ===================== UC-TR-000: GET MY TRAINER PROFILE =====================
+exports.getMyTrainerProfile = async (req, res) => {
+  try {
+    mustHaveModel(TrainerModel, 'Trainer');
+
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ message: 'Unauthenticated (missing req.user.id)' });
+    }
+
+    const trainer = await TrainerModel.findOne({
+      where: { userId },
+      attributes: TRAINER_ATTRIBUTES,
+      raw: true,
+    });
+
+    if (!trainer) {
+      return res.status(404).json({
+        message: 'Trainer profile not found for this user',
+        userId,
+      });
+    }
+
+    return res.status(200).json(trainer);
+  } catch (error) {
+    console.error('[getMyTrainerProfile] Error:', error);
+    return res.status(500).json({ message: 'Error fetching my trainer profile', error: error.message });
+  }
+};
+

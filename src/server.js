@@ -26,6 +26,7 @@ try {
 } catch (e) {}
 try {
   trainerRoutes = require("./routes/trainer");
+  trainerRoutes = trainerRoutes.default || trainerRoutes;
 } catch (e) {}
 
 require("dotenv").config();
@@ -76,14 +77,39 @@ app.use(
 // ✅ auth
 authRoute(app);
 
+if (trainerRoutes) {
+  // ✅ Trainer API: siết JWT + permission và map /api/pt -> /trainer
+  app.use(
+    "/api/pt",
+    jwtAction.checkUserJWT,
+    checkUserPermission({
+      getPath: (req) => {
+        const fullPath = `${req.baseUrl}${req.path}`; // /api/pt/me
+        return fullPath.replace(/^\/api\/pt/, "/trainer"); // /trainer/me
+      },
+    }),
+    trainerRoutes
+  );
+
+  // (optional) nếu bạn vẫn giữ route /pt cho test/dev thì cũng map tương tự
+  app.use(
+    "/pt",
+    jwtAction.checkUserJWT,
+    checkUserPermission({
+      getPath: (req) => {
+        const fullPath = `${req.baseUrl}${req.path}`; // /pt/me
+        return fullPath.replace(/^\/pt/, "/trainer");  // /trainer/me
+      },
+    }),
+    trainerRoutes
+  );
+}
+
 // ✅ admin/user CRUD (api chung)
 useApi(app);
 
-// ===== OPTIONAL: trainer/gym/upload (nếu tồn tại) =====
-if (trainerRoutes) {
-  app.use("/api/pt", trainerRoutes);
-  app.use("/pt", trainerRoutes);
-}
+
+
 
 if (typeof gymRoute === "function") gymRoute(app);
 if (typeof uploadRoute === "function") uploadRoute(app);
