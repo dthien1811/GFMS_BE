@@ -8,15 +8,15 @@ import initWebRoutes from "./routes/web";
 import authRoute from "./routes/auth";
 import useApi from "./routes/useApi";
 
-import connection from "./config/connectDB";
+import connectDB from "./config/connectDB";
 
 import jwtAction from "./middleware/JWTAction";
 import { checkUserPermission } from "./middleware/permission";
 
-// Nếu file route này là CommonJS (module.exports = router) thì để require cho chắc
+// Nếu file route này là CommonJS
 const adminInventoryApi = require("./routes/adminInventoryApi");
 
-// ===== OPTIONAL ROUTES (nếu project bạn có) =====
+// ===== OPTIONAL ROUTES =====
 let gymRoute, uploadRoute, trainerRoutes;
 try {
   gymRoute = require("./routes/gym").default || require("./routes/gym");
@@ -43,29 +43,27 @@ app.use(
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
-// Preflight
 app.options("*", cors());
 
-// ===== BODY PARSER (tăng limit để nhận base64 ảnh) =====
+// ===== BODY PARSER =====
 app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 
 // ===== COOKIE =====
 app.use(cookieParser());
 
-// ===== STATIC UPLOADS =====
+// ===== STATIC UPLOAD =====
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // ===== ROUTES =====
 initWebRoutes(app);
 
-// ✅ inventory admin (SIẾT JWT + PERMISSION)
+// ✅ inventory admin (JWT + permission)
 app.use(
   "/api/admin/inventory",
   jwtAction.checkUserJWT,
   checkUserPermission({
     getPath: (req) => {
-      // Ví dụ: /api/admin/inventory/equipment -> /admin/inventory/equipment
       const fullPath = `${req.baseUrl}${req.path}`;
       return fullPath.replace(/^\/api\/admin/, "/admin");
     },
@@ -76,20 +74,19 @@ app.use(
 // ✅ auth
 authRoute(app);
 
-// ✅ admin/user CRUD (api chung)
+// ✅ common API
 useApi(app);
 
-// ===== OPTIONAL: trainer/gym/upload (nếu tồn tại) =====
+// ===== OPTIONAL ROUTES =====
 if (trainerRoutes) {
   app.use("/api/pt", trainerRoutes);
   app.use("/pt", trainerRoutes);
 }
-
 if (typeof gymRoute === "function") gymRoute(app);
 if (typeof uploadRoute === "function") uploadRoute(app);
 
 // ===== DB CONNECT =====
-connection();
+connectDB();
 
 app.listen(PORT, () => {
   console.log(`Server running at: http://${HOSTNAME}:${PORT}`);

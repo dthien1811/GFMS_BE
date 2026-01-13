@@ -1,11 +1,12 @@
+// routes/owner/package.route.js
 import express from "express";
 import packageController from "../../controllers/owner/package.controller";
-import verifyToken from "../../middleware/auth";      // ✅ default
 import { requireGroupName } from "../../middleware/role";
 
 const router = express.Router();
 
-router.use(verifyToken, requireGroupName(["Gym Owners"]));
+// ✅ req.user đã có từ jwtAction.checkUserJWT ở /api
+router.use(requireGroupName(["Gym Owners"]));
 
 router.get("/", packageController.getMyPackages);
 router.post("/", packageController.createPackage);
