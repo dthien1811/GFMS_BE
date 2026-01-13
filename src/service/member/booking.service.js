@@ -1,3 +1,4 @@
+// src/service/member/booking.service.js
 import db from "../../models";
 import { Op } from "sequelize";
 
@@ -12,18 +13,15 @@ function parseHHMM(timeStr) {
   if (Number.isNaN(hh) || Number.isNaN(mm)) throw new Error("Invalid time");
   return { hh, mm };
 }
-
 function timeToMinutes(timeStr) {
   const { hh, mm } = parseHHMM(timeStr);
   return hh * 60 + mm;
 }
-
 function minutesToTime(min) {
   const hh = String(Math.floor(min / 60)).padStart(2, "0");
   const mm = String(min % 60).padStart(2, "0");
   return `${hh}:${mm}:00`;
 }
-
 function isSlotAligned(startTime) {
   const { mm } = parseHHMM(startTime);
   return mm % SLOT_MINUTES === 0;
@@ -45,11 +43,9 @@ function assertDateOnly(dateStr) {
   }
   return s;
 }
-
 function toDateObj(dateStr) {
   return new Date(`${dateStr}T00:00:00`);
 }
-
 function getLocalTodayStr() {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -57,12 +53,10 @@ function getLocalTodayStr() {
   const dd = String(now.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 }
-
 function nowMinutesLocal() {
   const n = new Date();
   return n.getHours() * 60 + n.getMinutes();
 }
-
 function safeParseJSON(value, fallback) {
   if (value == null) return fallback;
   if (typeof value === "object") return value;
@@ -78,7 +72,6 @@ function safeParseJSON(value, fallback) {
 async function getMemberByUserId(userId) {
   return db.Member.findOne({ where: { userId } });
 }
-
 async function getActivePackageActivation(memberId) {
   return db.PackageActivation.findOne({
     where: {
@@ -90,7 +83,6 @@ async function getActivePackageActivation(memberId) {
     order: [["createdAt", "DESC"]],
   });
 }
-
 async function assertTrainerShareToGym({ trainerId, gymId, bookingDateObj }) {
   const share = await db.TrainerShare.findOne({
     where: {
@@ -107,20 +99,15 @@ async function assertTrainerShareToGym({ trainerId, gymId, bookingDateObj }) {
     err.statusCode = 403;
     throw err;
   }
-
   return share;
 }
-
 function assertNotPastBooking(bookingDateStr, startTime) {
   const todayStr = getLocalTodayStr();
-
   if (bookingDateStr < todayStr) {
     const err = new Error("Không thể đặt lịch trong quá khứ.");
     err.statusCode = 400;
     throw err;
   }
-
-  // nếu là hôm nay, chặn đặt slot đã qua
   if (bookingDateStr === todayStr) {
     const startMin = timeToMinutes(startTime);
     const nowMin = nowMinutesLocal();
@@ -131,10 +118,7 @@ function assertNotPastBooking(bookingDateStr, startTime) {
     }
   }
 }
-
 async function assertNoOverlapLocked({ trainerId, gymId, bookingDateStr, startMin, endMin, transaction }) {
-  // ✅ Không dùng TIME literal nữa; so sánh bằng minutes ở JS
-  // Lấy tất cả booking cùng ngày của trainer để check overlap (có lock)
   const existing = await db.Booking.findAll({
     where: {
       trainerId,
@@ -150,7 +134,7 @@ async function assertNoOverlapLocked({ trainerId, gymId, bookingDateStr, startMi
   const conflict = existing.some((b) => {
     const s = timeToMinutes(b.startTime);
     const e = timeToMinutes(b.endTime);
-    return s < endMin && e > startMin; // overlap
+    return s < endMin && e > startMin;
   });
 
   if (conflict) {
@@ -161,7 +145,7 @@ async function assertNoOverlapLocked({ trainerId, gymId, bookingDateStr, startMi
 }
 
 const bookingService = {
-  // PT share vào gym hiện tại của member (TrainerShare-only)
+  // ✅ FIX: Trainer không có gymId => chỉ select các field tồn tại (tránh Sequelize tự select Trainer.gymId)
   async getAvailableTrainers(userId) {
     const member = await getMemberByUserId(userId);
     if (!member) {
@@ -171,6 +155,7 @@ const bookingService = {
     }
 
     const today = new Date();
+
     const shares = await db.TrainerShare.findAll({
       where: {
         toGymId: member.gymId,
@@ -181,6 +166,32 @@ const bookingService = {
       include: [
         {
           model: db.Trainer,
+          // ✅ CHỈ LẤY CỘT CÓ THẬT TRONG TABLE trainer
+          attributes: [
+            "id",
+            "userId",
+            "specialization",
+            "certification",
+            "experienceYears",
+            "hourlyRate",
+            "commissionRate",
+            "rating",
+            "totalSessions",
+            "status",
+            "bio",
+            "availableHours",
+            "preferredGyms",
+            "maxSessionsPerDay",
+            "minBookingNotice",
+            "isAvailableForShare",
+            "languages",
+            "socialLinks",
+            "totalEarned",
+            "pendingCommission",
+            "lastPayoutDate",
+            "payoutMethod",
+            "bankAccountInfo",
+          ],
           include: [{ model: db.User, attributes: ["id", "username", "email"] }],
         },
         { model: db.Gym, as: "fromGym", attributes: ["id", "name"] },
@@ -208,7 +219,7 @@ const bookingService = {
     return Array.from(map.values());
   },
 
-  // Slots trống theo lịch làm việc của PT (availableHours) trừ các booking đã tồn tại
+  // ✅ FIX: Trainer.findByPk cũng phải giới hạn attributes để tránh select gymId
   async getAvailableSlots(userId, { trainerId, date }) {
     const member = await getMemberByUserId(userId);
     if (!member) {
@@ -226,11 +237,13 @@ const bookingService = {
     const bookingDateStr = assertDateOnly(date);
     const bookingDateObj = toDateObj(bookingDateStr);
 
-    // ✅ chặn ngày quá khứ luôn ở BE
     const todayStr = getLocalTodayStr();
     if (bookingDateStr < todayStr) return [];
 
-    const trainer = await db.Trainer.findByPk(trainerId);
+    const trainer = await db.Trainer.findByPk(trainerId, {
+      attributes: ["id", "availableHours", "userId"], // ✅ tối thiểu cần
+    });
+
     if (!trainer) {
       const err = new Error("Không tìm thấy Trainer.");
       err.statusCode = 404;
@@ -277,7 +290,6 @@ const bookingService = {
         const s = t;
         const e = t + SLOT_MINUTES;
 
-        // ✅ nếu là hôm nay: bỏ các slot đã qua
         if (bookingDateStr === todayStr && s <= todayMin) continue;
 
         const overlapped = busy.some((x) => x.start < e && x.end > s);
@@ -293,7 +305,7 @@ const bookingService = {
     return slots;
   },
 
-  // Create booking (atomic-ish)
+  // (các hàm khác giữ nguyên logic của bạn)
   async createBooking(userId, payload) {
     const t = await db.sequelize.transaction();
     try {
@@ -321,14 +333,19 @@ const bookingService = {
         throw err;
       }
 
-      // ✅ chặn quá khứ ở BE (nghiệp vụ)
       assertNotPastBooking(bookingDateStr, startTime);
 
       const startMin = timeToMinutes(startTime);
       const endMin = startMin + SLOT_MINUTES;
       const endTime = minutesToTime(endMin);
 
-      const trainer = await db.Trainer.findByPk(trainerId, { transaction: t, lock: t.LOCK.UPDATE });
+      // ✅ FIX: giới hạn attributes để tránh select gymId (nếu model vẫn khai báo nhầm)
+      const trainer = await db.Trainer.findByPk(trainerId, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+        attributes: ["id", "userId"],
+      });
+
       if (!trainer) {
         const err = new Error("Không tìm thấy Trainer.");
         err.statusCode = 404;
@@ -348,7 +365,6 @@ const bookingService = {
         throw err;
       }
 
-      // ✅ check overlap với lock trong transaction
       await assertNoOverlapLocked({
         trainerId: trainer.id,
         gymId: member.gymId,
@@ -365,7 +381,7 @@ const bookingService = {
           gymId: member.gymId,
           packageId: activation.packageId,
           packageActivationId: activation.id,
-          bookingDate: bookingDateStr, // ✅ DATEONLY string
+          bookingDate: bookingDateStr,
           startTime: minutesToTime(startMin),
           endTime,
           sessionType: sessionType || "personal_training",
@@ -395,7 +411,11 @@ const bookingService = {
     return db.Booking.findAll({
       where: { memberId: member.id },
       include: [
-        { model: db.Trainer, include: [{ model: db.User, attributes: ["username", "email"] }] },
+        {
+          model: db.Trainer,
+          attributes: ["id", "userId", "specialization", "rating"], // ✅ tránh gymId
+          include: [{ model: db.User, attributes: ["username", "email"] }],
+        },
         { model: db.Gym, attributes: ["id", "name"] },
         { model: db.Package, attributes: ["id", "name", "type"] },
       ],
@@ -540,7 +560,11 @@ const bookingService = {
         { transaction: t }
       );
 
-      const trainer = await db.Trainer.findByPk(booking.trainerId, { transaction: t, lock: t.LOCK.UPDATE });
+      const trainer = await db.Trainer.findByPk(booking.trainerId, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+        attributes: ["id", "totalSessions"],
+      });
       if (trainer) {
         await trainer.update({ totalSessions: (trainer.totalSessions || 0) + 1 }, { transaction: t });
       }
