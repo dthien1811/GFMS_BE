@@ -29,7 +29,7 @@ module.exports = (sequelize, DataTypes) => {
     {
       sequelize,
       modelName: 'Receipt',
-      tableName: 'Receipt',
+      tableName: 'receipt',
       freezeTableName: true,
       timestamps: true,
     }

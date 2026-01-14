@@ -41,6 +41,9 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'Quotation',
+    tableName: 'quotation',
+    freezeTableName: true,
+    timestamps: true
   });
   return Quotation;
 };

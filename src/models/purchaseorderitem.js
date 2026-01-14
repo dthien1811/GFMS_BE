@@ -20,6 +20,9 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'PurchaseOrderItem',
+    tableName: 'purchaseOrderItem',
+    freezeTableName: true,
+    timestamps: true
   });
   return PurchaseOrderItem;
 };
