@@ -71,7 +71,7 @@ module.exports = (sequelize, DataTypes) => {
     groupId: {
       type: DataTypes.INTEGER,
       references: {
-        model: 'Group',
+        model: 'group',
         key: 'id'
       }
     },
@@ -93,7 +93,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'User',
-    tableName: 'User',
+    tableName: 'user',
     timestamps: true
   });
   return User;

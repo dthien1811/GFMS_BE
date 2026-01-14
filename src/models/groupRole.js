@@ -9,15 +9,27 @@ module.exports = (sequelize, DataTypes) => {
     }
   }
 
-  GroupRole.init({
-    groupId: DataTypes.INTEGER,
-    roleId: DataTypes.INTEGER,
-  }, {
-    sequelize,
-    modelName: 'GroupRole',
-    tableName: 'GroupRole',
-    timestamps: false
-  });
+  GroupRole.init(
+    {
+      groupId: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        field: 'groupId',
+      },
+      roleId: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        field: 'roleId',
+      },
+    },
+    {
+      sequelize,
+      modelName: 'GroupRole',
+      tableName: 'grouprole',  // ✅ đổi theo tên bảng THẬT trong DB
+      freezeTableName: true,
+      timestamps: false,
+    }
+  );
 
   return GroupRole;
 };

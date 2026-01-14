@@ -1,48 +1,82 @@
 'use strict';
+
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const Sequelize = require('sequelize');
+
 const basename = path.basename(__filename);
 const env = process.env.NODE_ENV || 'development';
-const config = require(__dirname + '/../config/config.json')[env];
+
+// ✅ FIX: config.json nằm ở src/config/config.json (không phải src/models/config/...)
+const configPath = path.join(__dirname, '..', 'config', 'config.json');
+const config = require(configPath)[env];
+
 const db = {};
 
 let sequelize;
-if (config.use_env_variable) {
-  sequelize = new Sequelize(process.env[config.use_env_variable], config);
+
+if (env === 'production') {
+  // ✅ Aiven env
+  const host = process.env.AIVEN_HOST;
+  const port = Number(process.env.AIVEN_PORT || 3306);
+  const database = process.env.AIVEN_DB;
+  const username = process.env.AIVEN_USER;
+  const password = process.env.AIVEN_PASSWORD;
+  const caPath = process.env.AIVEN_SSL_CA;
+
+  if (!host || !database || !username || !password) {
+    throw new Error(
+      'Missing Aiven env vars: AIVEN_HOST, AIVEN_DB, AIVEN_USER, AIVEN_PASSWORD (and optional AIVEN_PORT, AIVEN_SSL_CA)'
+    );
+  }
+  if (!caPath) {
+    throw new Error('Missing AIVEN_SSL_CA (path to ca.pem)');
+  }
+
+  sequelize = new Sequelize(database, username, password, {
+    ...config,
+    host,
+    port,
+    dialect: 'mysql',
+    logging: false,
+    define: {
+      ...(config.define || {}),
+      freezeTableName: true,
+    },
+    dialectOptions: {
+      ...(config.dialectOptions || {}),
+      ssl: {
+        ca: fs.readFileSync(path.resolve(caPath), 'utf8'),
+        rejectUnauthorized: true,
+      },
+    },
+  });
 } else {
+  // ✅ Local (XAMPP)
   sequelize = new Sequelize(config.database, config.username, config.password, config);
 }
 
-// Đọc tất cả file .js trong thư mục models (bao gồm cả subfolders)
+// ---- Load all models (recursive) ----
 const readModels = (dir) => {
-  fs.readdirSync(dir)
-    .forEach(file => {
-      const fullPath = path.join(dir, file);
-      const stat = fs.statSync(fullPath);
-      
-      if (stat.isDirectory()) {
-        // Đệ quy vào thư mục con
-        readModels(fullPath);
-      } else if (
-        file.indexOf('.') !== 0 &&
-        file !== basename &&
-        file.slice(-3) === '.js'
-      ) {
-        const model = require(fullPath)(sequelize, Sequelize.DataTypes);
-        db[model.name] = model;
-      }
-    });
+  fs.readdirSync(dir).forEach((file) => {
+    const fullPath = path.join(dir, file);
+    const stat = fs.statSync(fullPath);
+
+    if (stat.isDirectory()) return readModels(fullPath);
+
+    if (file.indexOf('.') !== 0 && file !== basename && file.slice(-3) === '.js') {
+      const model = require(fullPath)(sequelize, Sequelize.DataTypes);
+      db[model.name] = model;
+    }
+  });
 };
 
-// Bắt đầu đọc từ thư mục models
 readModels(__dirname);
 
-Object.keys(db).forEach(modelName => {
-  if (db[modelName].associate) {
-    db[modelName].associate(db);
-  }
+// ---- Associate ----
+Object.keys(db).forEach((modelName) => {
+  if (db[modelName].associate) db[modelName].associate(db);
 });
 
 db.sequelize = sequelize;
