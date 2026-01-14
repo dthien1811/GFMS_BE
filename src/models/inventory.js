@@ -17,34 +17,30 @@ module.exports = (sequelize, DataTypes) => {
 
       transactionType: {
         type: DataTypes.ENUM('purchase', 'sale', 'adjustment', 'transfer_in', 'transfer_out', 'return'),
-
         allowNull: false,
       },
 
-      transactionId: DataTypes.INTEGER,
-      transactionCode: DataTypes.STRING,
+      transactionId: { type: DataTypes.INTEGER, allowNull: true },
+      transactionCode: { type: DataTypes.STRING, allowNull: true },
 
-      // ⚠️ quantity có thể âm khi export (service đang ghi âm)
       quantity: { type: DataTypes.INTEGER, allowNull: false },
 
-      unitPrice: DataTypes.DECIMAL(15, 2),
-      totalValue: DataTypes.DECIMAL(15, 2),
+      unitPrice: { type: DataTypes.DECIMAL(15, 2), allowNull: true },
+      totalValue: { type: DataTypes.DECIMAL(15, 2), allowNull: true },
 
-      stockBefore: DataTypes.INTEGER,
-      stockAfter: DataTypes.INTEGER,
+      stockBefore: { type: DataTypes.INTEGER, allowNull: true },
+      stockAfter: { type: DataTypes.INTEGER, allowNull: true },
 
-      notes: DataTypes.TEXT,
+      notes: { type: DataTypes.TEXT, allowNull: true },
 
-      recordedBy: DataTypes.INTEGER,
-      recordedAt: DataTypes.DATE,
-
-      createdAt: DataTypes.DATE,
-      updatedAt: DataTypes.DATE,
+      recordedBy: { type: DataTypes.INTEGER, allowNull: true },
+      recordedAt: { type: DataTypes.DATE, allowNull: true },
     },
     {
       sequelize,
       modelName: 'Inventory',
       tableName: 'inventory',
+      freezeTableName: true,
       timestamps: true,
       indexes: [
         { fields: ['equipmentId', 'gymId'] },

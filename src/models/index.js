@@ -8,16 +8,13 @@ const Sequelize = require('sequelize');
 const basename = path.basename(__filename);
 const env = process.env.NODE_ENV || 'development';
 
-// ✅ FIX: config.json nằm ở src/config/config.json (không phải src/models/config/...)
 const configPath = path.join(__dirname, '..', 'config', 'config.json');
 const config = require(configPath)[env];
 
 const db = {};
-
 let sequelize;
 
 if (env === 'production') {
-  // ✅ Aiven env
   const host = process.env.AIVEN_HOST;
   const port = Number(process.env.AIVEN_PORT || 3306);
   const database = process.env.AIVEN_DB;
@@ -30,9 +27,7 @@ if (env === 'production') {
       'Missing Aiven env vars: AIVEN_HOST, AIVEN_DB, AIVEN_USER, AIVEN_PASSWORD (and optional AIVEN_PORT, AIVEN_SSL_CA)'
     );
   }
-  if (!caPath) {
-    throw new Error('Missing AIVEN_SSL_CA (path to ca.pem)');
-  }
+  if (!caPath) throw new Error('Missing AIVEN_SSL_CA (path to ca.pem)');
 
   sequelize = new Sequelize(database, username, password, {
     ...config,
@@ -53,11 +48,16 @@ if (env === 'production') {
     },
   });
 } else {
-  // ✅ Local (XAMPP)
-  sequelize = new Sequelize(config.database, config.username, config.password, config);
+  sequelize = new Sequelize(config.database, config.username, config.password, {
+    ...config,
+    define: {
+      ...(config.define || {}),
+      freezeTableName: true,
+    },
+  });
 }
 
-// ---- Load all models (recursive) ----
+// Load models (recursive)
 const readModels = (dir) => {
   fs.readdirSync(dir).forEach((file) => {
     const fullPath = path.join(dir, file);
@@ -74,7 +74,7 @@ const readModels = (dir) => {
 
 readModels(__dirname);
 
-// ---- Associate ----
+// Associate
 Object.keys(db).forEach((modelName) => {
   if (db[modelName].associate) db[modelName].associate(db);
 });

@@ -14,20 +14,19 @@ module.exports = (sequelize, DataTypes) => {
       groupId: {
         type: DataTypes.INTEGER,
         allowNull: false,
-        field: 'groupId',
       },
       roleId: {
         type: DataTypes.INTEGER,
         allowNull: false,
-        field: 'roleId',
       },
     },
     {
       sequelize,
       modelName: 'GroupRole',
-      tableName: 'grouprole',  // ✅ đổi theo tên bảng THẬT trong DB
+      tableName: 'grouprole', // đổi đúng theo DB bạn
       freezeTableName: true,
       timestamps: false,
+      indexes: [{ fields: ['groupId'] }, { fields: ['roleId'] }],
     }
   );
 
