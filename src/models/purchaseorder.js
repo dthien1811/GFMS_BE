@@ -67,7 +67,9 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'PurchaseOrder',
-    tableName: 'PurchaseOrder', // Đảm bảo tên bảng khớp chính xác với bulkInsert
+    tableName: 'purchaseOrder',
+    freezeTableName: true,
+    timestamps: true // Đảm bảo tên bảng khớp chính xác với bulkInsert
   });
   return PurchaseOrder;
 };
