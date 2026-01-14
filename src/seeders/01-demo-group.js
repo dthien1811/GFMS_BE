@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Group', [ // SỐ ÍT
+    await queryInterface.bulkInsert('group', [ // SỐ ÍT
       {
         name: 'Administrators',
         description: 'System administrators with full access',
@@ -35,6 +35,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Group', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('group', null, {}); // SỐ ÍT
   }
 };

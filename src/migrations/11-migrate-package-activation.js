@@ -1,12 +1,12 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('PackageActivation', {
+    await queryInterface.createTable('packageactivation', {
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       memberId: { type: Sequelize.INTEGER }, // NO FK TEMP
       packageId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Package', key: 'id' }
+        references: { model: 'package', key: 'id' }
       },
       transactionId: { type: Sequelize.INTEGER }, // NO FK TEMP
       activationDate: { type: Sequelize.DATE, defaultValue: Sequelize.NOW },
@@ -25,6 +25,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('PackageActivation');
+    await queryInterface.dropTable('packageactivation');
   }
 };

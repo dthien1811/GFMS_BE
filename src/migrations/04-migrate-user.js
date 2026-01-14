@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('User', { // SỐ ÍT
+    await queryInterface.createTable('user', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       email: { type: Sequelize.STRING, allowNull: false, unique: true },
       password: { type: Sequelize.STRING, allowNull: false },
@@ -11,7 +11,7 @@ module.exports = {
       phone: { type: Sequelize.STRING },
       groupId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Group', key: 'id' } // SỐ ÍT
+        references: { model: 'group', key: 'id' } // SỐ ÍT
       },
       avatar: { type: Sequelize.STRING, defaultValue: 'default-avatar.png' },
       status: { type: Sequelize.ENUM('active', 'inactive', 'suspended'), defaultValue: 'active' },
@@ -24,6 +24,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('User'); // SỐ ÍT
+    await queryInterface.dropTable('user'); // SỐ ÍT
   }
 };

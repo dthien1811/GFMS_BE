@@ -2,7 +2,7 @@
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Quotation', [
+    await queryInterface.bulkInsert('quotation', [
       {
         code: 'QUO-202401-001',
         supplierId: 1,
@@ -55,6 +55,6 @@ module.exports = {
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Quotation', null, {});
+    await queryInterface.bulkDelete('quotation', null, {});
   }
 };

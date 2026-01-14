@@ -2,7 +2,7 @@
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.addColumn('Gym', 'operatingHours', {
+    await queryInterface.addColumn('gym', 'operatingHours', {
       type: Sequelize.TEXT,
       allowNull: true,
       comment: 'Giờ hoạt động của gym (JSON format)'
@@ -10,7 +10,7 @@ module.exports = {
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.removeColumn('Gym', 'operatingHours');
+    await queryInterface.removeColumn('gym', 'operatingHours');
   }
 };
 

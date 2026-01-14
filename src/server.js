@@ -7,6 +7,7 @@ import cors from "cors";
 import initWebRoutes from "./routes/web";
 import authRoute from "./routes/auth";
 import useApi from "./routes/useApi";
+import payosRoute from "./routes/payment/payos.route";
 
 import connectDB from "./config/connectDB";
 
@@ -58,6 +59,9 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // ===== ROUTES =====
 initWebRoutes(app);
+
+// ✅ payOS webhook / payment routes (không cần JWT)
+payosRoute(app);
 
 // ✅ inventory admin (JWT + permission)
 app.use(

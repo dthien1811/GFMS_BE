@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Policy', [ // SỐ ÍT
+    await queryInterface.bulkInsert('policy', [ // SỐ ÍT
       {
         policyType: 'trainer_share',
         name: 'Default Trainer Share Policy',
@@ -35,6 +35,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Policy', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('policy', null, {}); // SỐ ÍT
   }
 };

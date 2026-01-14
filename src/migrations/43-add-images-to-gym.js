@@ -2,7 +2,7 @@
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.addColumn('Gym', 'images', {
+    await queryInterface.addColumn('gym', 'images', {
       type: Sequelize.TEXT,
       allowNull: true,
       comment: 'Danh sách URL hình ảnh của gym (JSON array format)'
@@ -10,7 +10,7 @@ module.exports = {
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.removeColumn('Gym', 'images');
+    await queryInterface.removeColumn('gym', 'images');
   }
 };
 

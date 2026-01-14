@@ -2,7 +2,7 @@
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('EquipmentTransferItem', [
+    await queryInterface.bulkInsert('equipmenttransferitem', [
       // Items for TRF-202402-001 (completed transfer)
       {
         transferId: 1,
@@ -62,6 +62,6 @@ module.exports = {
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('EquipmentTransferItem', null, {});
+    await queryInterface.bulkDelete('equipmenttransferitem', null, {});
   }
 };

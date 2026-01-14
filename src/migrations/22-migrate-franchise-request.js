@@ -1,11 +1,11 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('FranchiseRequest', { // SỐ ÍT
+    await queryInterface.createTable('franchiserequest', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       requesterId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // SỐ ÍT
+        references: { model: 'user', key: 'id' } // SỐ ÍT
       },
       businessName: { type: Sequelize.STRING },
       location: { type: Sequelize.STRING },
@@ -17,7 +17,7 @@ module.exports = {
       status: { type: Sequelize.STRING },
       reviewedBy: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // SỐ ÍT
+        references: { model: 'user', key: 'id' } // SỐ ÍT
       },
       reviewNotes: { type: Sequelize.TEXT },
       approvedDate: { type: Sequelize.DATE },
@@ -27,6 +27,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('FranchiseRequest'); // SỐ ÍT
+    await queryInterface.dropTable('franchiserequest'); // SỐ ÍT
   }
 };

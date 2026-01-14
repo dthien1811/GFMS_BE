@@ -1,19 +1,19 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Review', { // SỐ ÍT
+    await queryInterface.createTable('review', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       memberId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Member', key: 'id' } // SỐ ÍT
+        references: { model: 'member', key: 'id' } // SỐ ÍT
       },
       trainerId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Trainer', key: 'id' } // SỐ ÍT
+        references: { model: 'trainer', key: 'id' } // SỐ ÍT
       },
       bookingId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Booking', key: 'id' } // SỐ ÍT
+        references: { model: 'booking', key: 'id' } // SỐ ÍT
       },
       rating: { type: Sequelize.INTEGER },
       comment: { type: Sequelize.TEXT },
@@ -26,6 +26,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Review'); // SỐ ÍT
+    await queryInterface.dropTable('review'); // SỐ ÍT
   }
 };

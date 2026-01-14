@@ -28,6 +28,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'Policy',
+    tableName: "policy"
   });
   return Policy;
 };

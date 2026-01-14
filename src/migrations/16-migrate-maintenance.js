@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Maintenance', {
+    await queryInterface.createTable('maintenance', {
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       equipmentId: { 
         type: Sequelize.INTEGER,
@@ -10,17 +10,17 @@ module.exports = {
       },
       gymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' }
+        references: { model: 'gym', key: 'id' }
       },
       issueDescription: { type: Sequelize.TEXT },
       priority: { type: Sequelize.STRING },
       requestedBy: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' }
+        references: { model: 'user', key: 'id' }
       },
       assignedTo: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' }
+        references: { model: 'user', key: 'id' }
       },
       estimatedCost: { type: Sequelize.DECIMAL(10, 2) },
       actualCost: { type: Sequelize.DECIMAL(10, 2) },
@@ -33,6 +33,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Maintenance');
+    await queryInterface.dropTable('maintenance');
   }
 };

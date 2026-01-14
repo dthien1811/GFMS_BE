@@ -2,12 +2,12 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.addConstraint('Maintenance', {
+    await queryInterface.addConstraint('maintenance', {
       fields: ['equipmentId'],
       type: 'foreign key',
       name: 'fk_maintenance_equipment',
       references: {
-        table: 'Equipment',
+        table: 'equipment',
         field: 'id'
       },
       onDelete: 'SET NULL',
@@ -15,6 +15,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.removeConstraint('Maintenance', 'fk_maintenance_equipment');
+    await queryInterface.removeConstraint('maintenance', 'fk_maintenance_equipment');
   }
 };

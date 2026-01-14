@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Withdrawal', [ // SỐ ÍT
+    await queryInterface.bulkInsert('withdrawal', [ // SỐ ÍT
       {
         trainerId: 1,
         amount: 5000000,
@@ -17,6 +17,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Withdrawal', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('withdrawal', null, {}); // SỐ ÍT
   }
 };

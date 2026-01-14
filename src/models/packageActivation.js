@@ -27,6 +27,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'PackageActivation',
+    tableName: "packageactivation"
   });
   return PackageActivation;
 };

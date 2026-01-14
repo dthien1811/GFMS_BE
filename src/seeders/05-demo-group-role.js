@@ -2,7 +2,7 @@
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('GroupRole', [
+    await queryInterface.bulkInsert('grouprole', [
       // Administrators
       { groupId: 1, roleId: 1, createdAt: new Date(), updatedAt: new Date() },
 
@@ -21,6 +21,6 @@ module.exports = {
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('GroupRole', null, {});
+    await queryInterface.bulkDelete('grouprole', null, {});
   }
 };
