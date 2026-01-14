@@ -1,23 +1,23 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Commission', { // SỐ ÍT
+    await queryInterface.createTable('commission', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       trainerId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Trainer', key: 'id' } // SỐ ÍT
+        references: { model: 'trainer', key: 'id' } // SỐ ÍT
       },
       bookingId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Booking', key: 'id' } // SỐ ÍT
+        references: { model: 'booking', key: 'id' } // SỐ ÍT
       },
       gymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' } // SỐ ÍT
+        references: { model: 'gym', key: 'id' } // SỐ ÍT
       },
       activationId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'PackageActivation', key: 'id' } // SỐ ÍT
+        references: { model: 'packageactivation', key: 'id' } // SỐ ÍT
       },
       sessionDate: { type: Sequelize.DATE },
       sessionValue: { type: Sequelize.DECIMAL(10, 2) },
@@ -34,6 +34,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Commission'); // SỐ ÍT
+    await queryInterface.dropTable('commission'); // SỐ ÍT
   }
 };

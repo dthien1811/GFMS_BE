@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('PackageActivation', [ // SỐ ÍT
+    await queryInterface.bulkInsert('packageactivation', [ // SỐ ÍT
       {
         memberId: 1,
         packageId: 1,
@@ -20,6 +20,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('PackageActivation', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('packageactivation', null, {}); // SỐ ÍT
   }
 };

@@ -19,7 +19,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'ProjectUser',
-    tableName: 'projectUser',
+    tableName: 'projectuser',
     freezeTableName: true,
     timestamps: true
   });

@@ -1,11 +1,11 @@
 'use strict';
 module.exports = {
-  up: (q) => q.bulkInsert('Notification', [{ userId: 5, title: 'Welcome', message: 'Hi Member', createdAt: new Date(), updatedAt: new Date() }]),
-  down: (q) => q.bulkDelete('Notification', null, {})
+  up: (q) => q.bulkInsert('notification', [{ userId: 5, title: 'Welcome', message: 'Hi Member', createdAt: new Date(), updatedAt: new Date() }]),
+  down: (q) => q.bulkDelete('notification', null, {})
 };'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Notification', [ // SỐ ÍT
+    await queryInterface.bulkInsert('notification', [ // SỐ ÍT
       {
         userId: 2,
         title: 'Welcome to GFMS',
@@ -42,6 +42,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Notification', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('notification', null, {}); // SỐ ÍT
   }
 };

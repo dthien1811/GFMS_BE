@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('EquipmentStock', {
+    await queryInterface.createTable('equipmentstock', {
       id: {
         type: Sequelize.INTEGER,
         primaryKey: true,
@@ -10,7 +10,7 @@ module.exports = {
       equipmentId: {
         type: Sequelize.INTEGER,
         references: {
-          model: 'Equipment',
+          model: 'equipment',
           key: 'id'
         },
         allowNull: false
@@ -18,7 +18,7 @@ module.exports = {
       gymId: {
         type: Sequelize.INTEGER,
         references: {
-          model: 'Gym',
+          model: 'gym',
           key: 'id'
         },
         allowNull: false
@@ -57,12 +57,12 @@ module.exports = {
     });
 
     // Add unique constraint for equipmentId and gymId
-    await queryInterface.addIndex('EquipmentStock', ['equipmentId', 'gymId'], {
+    await queryInterface.addIndex('equipmentstock', ['equipmentId', 'gymId'], {
       unique: true,
       name: 'equipment_stock_unique'
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('EquipmentStock');
+    await queryInterface.dropTable('equipmentstock');
   }
 };

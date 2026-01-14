@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('SessionProgress', [ // SỐ ÍT
+    await queryInterface.bulkInsert('sessionprogress', [ // SỐ ÍT
       {
         memberId: 1,
         bookingId: 1,
@@ -24,6 +24,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('SessionProgress', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('sessionprogress', null, {}); // SỐ ÍT
   }
 };

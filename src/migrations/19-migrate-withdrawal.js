@@ -1,11 +1,11 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Withdrawal', { // SỐ ÍT
+    await queryInterface.createTable('withdrawal', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       trainerId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Trainer', key: 'id' } // SỐ ÍT
+        references: { model: 'trainer', key: 'id' } // SỐ ÍT
       },
       amount: { type: Sequelize.DECIMAL(10, 2) },
       withdrawalMethod: { type: Sequelize.STRING },
@@ -13,7 +13,7 @@ module.exports = {
       status: { type: Sequelize.STRING },
       processedBy: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // SỐ ÍT
+        references: { model: 'user', key: 'id' } // SỐ ÍT
       },
       processedDate: { type: Sequelize.DATE },
       notes: { type: Sequelize.TEXT },
@@ -22,6 +22,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Withdrawal'); // SỐ ÍT
+    await queryInterface.dropTable('withdrawal'); // SỐ ÍT
   }
 };

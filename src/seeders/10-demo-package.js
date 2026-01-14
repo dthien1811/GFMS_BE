@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Package', [ // SỐ ÍT
+    await queryInterface.bulkInsert('package', [ // SỐ ÍT
       {
         name: 'Premium 3 Months',
         description: '3 months unlimited access with 12 PT sessions',
@@ -56,6 +56,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Package', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('package', null, {}); // SỐ ÍT
   }
 };

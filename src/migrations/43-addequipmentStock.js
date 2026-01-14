@@ -3,14 +3,14 @@
 module.exports = {
   up: async (queryInterface, Sequelize) => {
     // EquipmentStock table name trong migration 37 là 'EquipmentStock'
-    await queryInterface.addColumn('EquipmentStock', 'damagedQuantity', {
+    await queryInterface.addColumn('equipmentstock', 'damagedQuantity', {
       type: Sequelize.INTEGER,
       allowNull: false,
       defaultValue: 0,
       after: 'availableQuantity',
     });
 
-    await queryInterface.addColumn('EquipmentStock', 'maintenanceQuantity', {
+    await queryInterface.addColumn('equipmentstock', 'maintenanceQuantity', {
       type: Sequelize.INTEGER,
       allowNull: false,
       defaultValue: 0,
@@ -26,7 +26,7 @@ module.exports = {
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.removeColumn('EquipmentStock', 'maintenanceQuantity');
-    await queryInterface.removeColumn('EquipmentStock', 'damagedQuantity');
+    await queryInterface.removeColumn('equipmentstock', 'maintenanceQuantity');
+    await queryInterface.removeColumn('equipmentstock', 'damagedQuantity');
   },
 };

@@ -14,6 +14,7 @@
   "author": "SE22",
   "license": "ISC",
   "dependencies": {
+    "@payos/node": "^1.0.0",
     "bcrypt": "^5.0.1",
     "bcryptjs": "^3.0.3",
     "bluebird": "3.7.2",

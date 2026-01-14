@@ -2,7 +2,7 @@
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Equipment', [
+    await queryInterface.bulkInsert('equipment', [
       {
         name: 'Commercial Treadmill Pro',
         code: 'EQ-TREADMILL-001',
@@ -153,6 +153,6 @@ module.exports = {
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Equipment', null, {});
+    await queryInterface.bulkDelete('equipment', null, {});
   }
 };

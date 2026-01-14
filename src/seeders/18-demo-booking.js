@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Booking', [ // SỐ ÍT
+    await queryInterface.bulkInsert('booking', [ // SỐ ÍT
       {
         memberId: 1,
         trainerId: 1,
@@ -59,6 +59,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Booking', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('boking', null, {}); // SỐ ÍT
   }
 };

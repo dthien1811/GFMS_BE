@@ -1,11 +1,11 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Notification', { // SỐ ÍT
+    await queryInterface.createTable('notification', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       userId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // SỐ ÍT
+        references: { model: 'user', key: 'id' } // SỐ ÍT
       },
       title: { type: Sequelize.STRING },
       message: { type: Sequelize.TEXT },
@@ -18,6 +18,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Notification'); // SỐ ÍT
+    await queryInterface.dropTable('notification'); // SỐ ÍT
   }
 };

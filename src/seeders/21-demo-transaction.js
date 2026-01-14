@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Transaction', [ // SỐ ÍT
+    await queryInterface.bulkInsert('transaction', [ // SỐ ÍT
       {
         transactionCode: 'TRX202400001',
         memberId: 1,
@@ -26,6 +26,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Transaction', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('transaction', null, {}); // SỐ ÍT
   }
 };

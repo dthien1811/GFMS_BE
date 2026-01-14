@@ -1,15 +1,15 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Member', {
+    await queryInterface.createTable('member', {
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       userId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' }
+        references: { model: 'user', key: 'id' }
       },
       gymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' }
+        references: { model: 'gym', key: 'id' }
       },
       membershipNumber: { type: Sequelize.STRING },
       joinDate: { type: Sequelize.DATE },
@@ -21,7 +21,7 @@ module.exports = {
       notes: { type: Sequelize.TEXT },
       currentPackageId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Package', key: 'id' }
+        references: { model: 'package', key: 'id' }
       },
       packageActivationId: { type: Sequelize.INTEGER }, // NO FK TEMP
       sessionsRemaining: { type: Sequelize.INTEGER },
@@ -31,6 +31,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Member');
+    await queryInterface.dropTable('member');
   }
 };

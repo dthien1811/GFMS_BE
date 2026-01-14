@@ -2,7 +2,7 @@
 
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Receipt', [
+    await queryInterface.bulkInsert('receipt', [
       {
         code: 'REC-202401-001',
         purchaseOrderId: 1,
@@ -59,6 +59,6 @@ module.exports = {
   },
 
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Receipt', null, {});
+    await queryInterface.bulkDelete('receipt', null, {});
   }
 };

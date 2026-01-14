@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Message', [ // SỐ ÍT
+    await queryInterface.bulkInsert('message', [ // SỐ ÍT
       {
         senderId: 4,
         receiverId: 3,
@@ -23,6 +23,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Message', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('message', null, {}); // SỐ ÍT
   }
 };

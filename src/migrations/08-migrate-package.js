@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Package', { // SỐ ÍT
+    await queryInterface.createTable('package', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       name: { type: Sequelize.STRING },
       description: { type: Sequelize.TEXT },
@@ -11,7 +11,7 @@ module.exports = {
       sessions: { type: Sequelize.INTEGER },
       gymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' } // SỐ ÍT
+        references: { model: 'gym', key: 'id' } // SỐ ÍT
       },
       status: { type: Sequelize.STRING },
       // ========== THÊM MỚI ==========
@@ -29,6 +29,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Package'); // SỐ ÍT
+    await queryInterface.dropTable('package'); // SỐ ÍT
   }
 };
