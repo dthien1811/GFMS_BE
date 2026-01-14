@@ -3,3 +3,6 @@
 /.idea
 .idea/
 
+# environment variables
+.env
+.env.*
