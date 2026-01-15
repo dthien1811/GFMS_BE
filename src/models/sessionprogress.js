@@ -25,7 +25,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'SessionProgress',
-    tableName: "'sessionprogress'"
+    tableName: 'sessionprogress'
   });
   return SessionProgress;
 };
