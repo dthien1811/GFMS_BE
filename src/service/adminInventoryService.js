@@ -10,11 +10,15 @@ const pickPage = (query = {}) => {
 };
 
 const tbl = (model, fallback) => {
-  if (!model) return fallback;
-  const t = model.getTableName();
-  if (typeof t === "string") return t;
-  return t?.tableName || fallback;
+  const t = model?.getTableName?.();
+  const name = typeof t === "string" ? t : t?.tableName;
+  if (name) return String(name);
+
+  // ✅ fallback về lowercase vì bảng migration của bạn là lowercase
+  return String(fallback || "").toLowerCase();
 };
+
+
 
 const qLike = (s) => `%${String(s || "").trim()}%`;
 
@@ -155,7 +159,7 @@ const selectById = async (table, id, transaction) => {
 
 // ================= STOCK RAW =================
 const getOrCreateStockRaw = async ({ gymId, equipmentId }, t) => {
-  const stTable = tbl(db.EquipmentStock, "EquipmentStock");
+  const stTable = tbl(db.EquipmentStock, "equipmentstock");
 
   const found = await db.sequelize.query(
     `SELECT * FROM \`${stTable}\`
@@ -218,63 +222,95 @@ const adminInventoryService = {
   },
 
    // ================== EQUIPMENTS ==================
-  async getEquipments(query = {}) {
-    const { page, limit, offset } = pickPage(query);
-    const q = String(query.q || "").trim();
-    const status = query.status && query.status !== "all" ? String(query.status) : null;
-    const categoryId = query.categoryId ? Number(query.categoryId) : null;
+async getEquipments(query = {}) {
+  const { page, limit, offset } = pickPage(query);
+  const q = String(query.q || "").trim();
+  const status = query.status && query.status !== "all" ? String(query.status) : null;
+  const categoryId = query.categoryId ? Number(query.categoryId) : null;
 
-    const eqTable = tbl(db.Equipment, "Equipment");
-    const catTable = db.EquipmentCategory ? tbl(db.EquipmentCategory, "EquipmentCategory") : null;
+  // ✅ dùng đúng tên bảng theo migration (lowercase)
+  const eqTable = "equipment";
+  const catTable = "equipmentcategory";
+  const imgTable = "equipmentimage";
 
-    // NEW: primary image join
-    const imgTable = db.EquipmentImage ? tbl(db.EquipmentImage, "equipmentimage") : null;
+  const where = [];
+  const params = {};
 
-    const where = [];
-    const params = {};
+  if (q) {
+    where.push(`(e.name LIKE :q OR e.code LIKE :q OR e.brand LIKE :q OR e.model LIKE :q)`);
+    params.q = qLike(q);
+  }
+  if (status) {
+    where.push(`e.status = :status`);
+    params.status = status;
+  }
+  if (categoryId) {
+    where.push(`e.categoryId = :categoryId`);
+    params.categoryId = categoryId;
+  }
 
-    if (q) {
-      where.push(`(e.name LIKE :q OR e.code LIKE :q OR e.brand LIKE :q OR e.model LIKE :q)`);
-      params.q = qLike(q);
-    }
-    if (status) {
-      where.push(`e.status = :status`);
-      params.status = status;
-    }
-    if (categoryId) {
-      where.push(`e.categoryId = :categoryId`);
-      params.categoryId = categoryId;
-    }
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const joinCatSql = catTable ? `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId` : "";
-    const joinImgSql = imgTable
-      ? `LEFT JOIN \`${imgTable}\` img ON img.equipmentId = e.id AND img.isPrimary = 1`
-      : "";
+  const joinCatSql = `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId`;
 
-    const [rows, countRows] = await Promise.all([
-      db.sequelize.query(
-        `SELECT 
-            e.*,
-            ${catTable ? "c.name AS categoryName" : "NULL AS categoryName"},
-            ${imgTable ? "img.url AS primaryImageUrl" : "NULL AS primaryImageUrl"}
-         FROM \`${eqTable}\` e
-         ${joinCatSql}
-         ${joinImgSql}
-         ${whereSql}
-         ORDER BY e.id DESC
-         LIMIT :limit OFFSET :offset`,
-        { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
-      ),
-      db.sequelize.query(`SELECT COUNT(*) AS total FROM \`${eqTable}\` e ${whereSql}`, {
-        type: QueryTypes.SELECT,
-        replacements: params,
-      }),
-    ]);
+  // ✅ lấy ảnh đại diện: ưu tiên isPrimary=1, nếu không có thì lấy ảnh đầu tiên theo sortOrder/id
+  // -> tuyệt đối KHÔNG dính gymId
+  const primaryImageSubQuery = `
+    (
+      SELECT i.url
+      FROM \`${imgTable}\` i
+      WHERE i.equipmentId = e.id
+      ORDER BY i.isPrimary DESC, i.sortOrder ASC, i.id ASC
+      LIMIT 1
+    )
+  `;
 
-    const totalItems = Number(countRows?.[0]?.total || 0);
-    return normalizeList(rows, totalItems, page, limit);
-  },
+  const selectSql = `
+    SELECT
+      e.id,
+      e.name,
+      e.code,
+      e.description,
+      e.categoryId,
+      e.brand,
+      e.model,
+      e.specifications,
+      e.unit,
+      e.minStockLevel,
+      e.maxStockLevel,
+      e.status,
+      e.createdAt,
+      e.updatedAt,
+      c.name AS categoryName,
+      ${primaryImageSubQuery} AS primaryImageUrl
+    FROM \`${eqTable}\` e
+    ${joinCatSql}
+    ${whereSql}
+    ORDER BY e.id DESC
+    LIMIT :limit OFFSET :offset
+  `;
+
+  const countSql = `
+    SELECT COUNT(*) AS total
+    FROM \`${eqTable}\` e
+    ${whereSql}
+  `;
+
+  const [rows, countRows] = await Promise.all([
+    db.sequelize.query(selectSql, {
+      type: QueryTypes.SELECT,
+      replacements: { ...params, limit, offset },
+    }),
+    db.sequelize.query(countSql, {
+      type: QueryTypes.SELECT,
+      replacements: params,
+    }),
+  ]);
+
+  const totalItems = Number(countRows?.[0]?.total || 0);
+  return normalizeList(rows, totalItems, page, limit);
+},
+
 
 
   // ================== SUPPLIERS ==================
@@ -718,100 +754,103 @@ const adminInventoryService = {
   },
 
   // =====================================================================
-  // ✅ NHẬT KÝ KHO (JOIN user để có người thao tác)
-  // =====================================================================
-  async getInventoryLogs(query = {}) {
-    const { page, limit, offset } = pickPage(query);
-    const q = String(query.q || "").trim();
-    const transactionType =
-      query.transactionType && query.transactionType !== "all" ? String(query.transactionType) : null;
+// ✅ NHẬT KÝ KHO (KHÔNG JOIN user để tránh lỗi cột gymId trong bảng user)
+// =====================================================================
+async getInventoryLogs(query = {}) {
+  const { page, limit, offset } = pickPage(query);
+  const q = String(query.q || "").trim();
+  const transactionType =
+    query.transactionType && query.transactionType !== "all" ? String(query.transactionType) : null;
 
-    const invTable = tbl(db.Inventory, "Inventory");
-    const eqTable = tbl(db.Equipment, "Equipment");
-    const gymTable = tbl(db.Gym, "Gym");
-    const userTable = tbl(db.User, "User");
+  const invTable = tbl(db.Inventory, "Inventory");
+  const eqTable = tbl(db.Equipment, "Equipment");
+  const gymTable = tbl(db.Gym, "Gym");
 
-    const where = [];
-    const params = {};
+  const where = [];
+  const params = {};
 
-    if (q) {
-      where.push(`(
-        e.name LIKE :q OR e.code LIKE :q OR
-        g.name LIKE :q OR
-        i.transactionType LIKE :q OR
-        i.transactionCode LIKE :q OR
-        i.notes LIKE :q OR
-        u.username LIKE :q OR
-        u.email LIKE :q
-      )`);
-      params.q = qLike(q);
-    }
+  if (q) {
+    where.push(`(
+      e.name LIKE :q OR e.code LIKE :q OR
+      g.name LIKE :q OR
+      i.transactionType LIKE :q OR
+      i.transactionCode LIKE :q OR
+      i.notes LIKE :q
+    )`);
+    params.q = qLike(q);
+  }
 
-    if (transactionType) {
-      where.push(`i.transactionType = :transactionType`);
-      params.transactionType = transactionType;
-    }
+  if (transactionType) {
+    where.push(`i.transactionType = :transactionType`);
+    params.transactionType = transactionType;
+  }
 
-    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    const [rows, countRows] = await Promise.all([
-      db.sequelize.query(
-        `
-        SELECT
-          i.*,
-          e.name AS equipmentName,
-          e.code AS equipmentCode,
-          g.name AS gymName,
-          u.username AS recordedByName,
-          u.email AS recordedByEmail
-        FROM \`${invTable}\` i
-        LEFT JOIN \`${eqTable}\` e ON e.id = i.equipmentId
-        LEFT JOIN \`${gymTable}\` g ON g.id = i.gymId
-        LEFT JOIN \`${userTable}\` u ON u.id = i.recordedBy
-        ${whereSql}
-        ORDER BY i.id DESC
-        LIMIT :limit OFFSET :offset
-        `,
-        { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
-      ),
-      db.sequelize.query(
-        `
-        SELECT COUNT(*) AS total
-        FROM \`${invTable}\` i
-        LEFT JOIN \`${eqTable}\` e ON e.id = i.equipmentId
-        LEFT JOIN \`${gymTable}\` g ON g.id = i.gymId
-        LEFT JOIN \`${userTable}\` u ON u.id = i.recordedBy
-        ${whereSql}
-        `,
-        { type: QueryTypes.SELECT, replacements: params }
-      ),
-    ]);
+  const [rows, countRows] = await Promise.all([
+    db.sequelize.query(
+      `
+      SELECT
+        i.*,
+        e.name AS equipmentName,
+        e.code AS equipmentCode,
+        g.name AS gymName
+      FROM \`${invTable}\` i
+      LEFT JOIN \`${eqTable}\` e ON e.id = i.equipmentId
+      LEFT JOIN \`${gymTable}\` g ON g.id = i.gymId
+      ${whereSql}
+      ORDER BY i.id DESC
+      LIMIT :limit OFFSET :offset
+      `,
+      { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
+    ),
+    db.sequelize.query(
+      `
+      SELECT COUNT(*) AS total
+      FROM \`${invTable}\` i
+      LEFT JOIN \`${eqTable}\` e ON e.id = i.equipmentId
+      LEFT JOIN \`${gymTable}\` g ON g.id = i.gymId
+      ${whereSql}
+      `,
+      { type: QueryTypes.SELECT, replacements: params }
+    ),
+  ]);
 
-    const totalItems = Number(countRows?.[0]?.total || 0);
-    return normalizeList(rows, totalItems, page, limit);
-  },
-    // ================== EQUIPMENT IMAGES ==================
-  async getEquipmentImages(equipmentId) {
-    const id = Number(equipmentId);
-    if (!id) throw new Error("Invalid equipmentId");
+  const totalItems = Number(countRows?.[0]?.total || 0);
+  return normalizeList(rows, totalItems, page, limit);
+},
 
-    const equipment = await db.Equipment.findByPk(id);
-    if (!equipment) throw new Error("Equipment not found");
+  // ================== EQUIPMENT IMAGES ==================
+// ================== EQUIPMENT IMAGES ==================
+async getEquipmentImages(equipmentId) {
+  const id = Number(equipmentId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("Invalid equipmentId");
 
-    const rows = await db.EquipmentImage.findAll({
-      where: { equipmentId: id },
-      order: [["isPrimary", "DESC"], ["sortOrder", "ASC"], ["id", "ASC"]],
-    });
+  // ✅ CHỈ LẤY id để tránh Sequelize tự select gymId (do association)
+  const equipment = await db.Equipment.findByPk(id, { attributes: ["id"] });
+  if (!equipment) throw new Error("Equipment not found");
 
-    return { data: rows };
-  },
+  const rows = await db.EquipmentImage.findAll({
+    where: { equipmentId: id },
+    order: [
+      ["isPrimary", "DESC"],
+      ["sortOrder", "ASC"],
+      ["id", "ASC"],
+    ],
+  });
+
+  return { data: rows };
+},
+
+
 
   async uploadEquipmentImages(equipmentId, files = []) {
     const id = Number(equipmentId);
     if (!id) throw new Error("Invalid equipmentId");
     if (!files.length) throw new Error("No files uploaded");
 
-    const equipment = await db.Equipment.findByPk(id);
+    const equipment = await db.Equipment.findByPk(id, { attributes: ["id"] });
+
     if (!equipment) throw new Error("Equipment not found");
 
     const hasPrimary = await db.EquipmentImage.count({
