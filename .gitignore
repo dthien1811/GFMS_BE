@@ -4,6 +4,5 @@
 .idea/
 
 # environment variables
-.env
-.env.*
+
 
