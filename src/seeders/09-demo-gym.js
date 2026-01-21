@@ -12,7 +12,7 @@ module.exports = {
           email: 'powerfit@gmail.com',
           description: 'Phòng gym hiện đại, đầy đủ thiết bị.',
           status: 'ACTIVE',
-          ownerId: 1, // ⚠️ ĐẢM BẢO User id = 1 TỒN TẠI
+          ownerId: 1, // ⚠️ User 2 = gymowner1
           franchiseRequestId: null,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -24,7 +24,7 @@ module.exports = {
           email: 'ironparadise@gmail.com',
           description: 'Gym chuyên bodybuilding và powerlifting.',
           status: 'ACTIVE',
-          ownerId: 1, // hoặc owner khác nếu bạn có
+          ownerId: 1, // User 2 = gymowner1
           franchiseRequestId: null,
           createdAt: new Date(),
           updatedAt: new Date(),

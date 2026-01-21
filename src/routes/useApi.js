@@ -5,6 +5,10 @@ import useApiController from "../controllers/useApiController";
 import ownerPackageRoute from "./owner/package.route";
 import ownerPolicyRoute from "./owner/policy.route";
 import ownerGymRoute from "./owner/gym.route";
+import ownerMaintenanceRoute from "./owner/maintenance.route";
+import ownerEquipmentRoute from "./owner/equipment.route";
+import ownerInventoryRoute from "./owner/inventory.route";
+import ownerTransferRoute from "./owner/transfer.route";
 import memberBookingRoute from "./member/booking.route";
 import memberPackageRoute from "./member/package.route";
 import memberMyPackagesRoute from "./member/myPackages.route";
@@ -22,6 +26,10 @@ const useApi = (app) => {
   router.use("/owner/packages", ownerPackageRoute);
   router.use("/owner/policies", ownerPolicyRoute);
   router.use("/owner/gyms", ownerGymRoute);
+  router.use("/owner/maintenances", ownerMaintenanceRoute);
+  router.use("/owner/equipment", ownerEquipmentRoute);
+  router.use("/owner/inventory", ownerInventoryRoute);
+  router.use("/owner/transfers", ownerTransferRoute);
 
   router.use("/member/bookings", memberBookingRoute);
   router.use("/member/packages", memberPackageRoute);

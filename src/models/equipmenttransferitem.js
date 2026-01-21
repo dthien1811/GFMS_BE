@@ -45,7 +45,7 @@ module.exports = (sequelize, DataTypes) => {
     {
       sequelize,
       modelName: 'EquipmentTransferItem',
-      tableName: 'equipmenttransferItem', // ✅ đúng tên bảng theo migration 40
+      tableName: 'equipmenttransferitem', // ✅ đúng tên bảng theo migration 40
       freezeTableName: true,
     }
   );
