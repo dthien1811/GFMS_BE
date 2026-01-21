@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Role', { // SỐ ÍT
+    await queryInterface.createTable('role', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       url: { type: Sequelize.STRING }, // GIỮ NGUYÊN như model cũ
       description: { type: Sequelize.STRING },
@@ -10,6 +10,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Role'); // SỐ ÍT
+    await queryInterface.dropTable('role'); // SỐ ÍT
   }
 };

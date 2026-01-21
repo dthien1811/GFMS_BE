@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('EquipmentCategory', {
+    await queryInterface.createTable('equipmentcategory', {
       id: {
         type: Sequelize.INTEGER,
         primaryKey: true,
@@ -21,7 +21,7 @@ module.exports = {
       parentId: {
         type: Sequelize.INTEGER,
         references: {
-          model: 'EquipmentCategory',
+          model: 'equipmentcategory',
           key: 'id'
         }
       },
@@ -36,6 +36,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('EquipmentCategory');
+    await queryInterface.dropTable('equipmentcategory');
   }
 };

@@ -1,4 +1,3 @@
-// Cần thêm file: policy.js
 'use strict';
 const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
@@ -28,9 +27,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'Policy',
-    tableName: 'policy',
-    freezeTableName: true,
-    timestamps: true
+    tableName: "policy"
   });
   return Policy;
 };

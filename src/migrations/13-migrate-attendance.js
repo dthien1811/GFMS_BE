@@ -1,19 +1,19 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Attendance', { // SỐ ÍT
+    await queryInterface.createTable('attendance', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       userId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // SỐ ÍT
+        references: { model: 'user', key: 'id' } // SỐ ÍT
       },
       gymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' } // SỐ ÍT
+        references: { model: 'gym', key: 'id' } // SỐ ÍT
       },
       bookingId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Booking', key: 'id' } // SỐ ÍT
+        references: { model: 'booking', key: 'id' } // SỐ ÍT
       },
       checkInTime: { type: Sequelize.DATE },
       checkOutTime: { type: Sequelize.DATE },
@@ -25,6 +25,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Attendance'); // SỐ ÍT
+    await queryInterface.dropTable('attendance'); // SỐ ÍT
   }
 };

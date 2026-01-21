@@ -27,9 +27,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'PackageActivation',
-    tableName: 'packageActivation',
-    freezeTableName: true,
-    timestamps: true
+    tableName: "packageactivation"
   });
   return PackageActivation;
 };

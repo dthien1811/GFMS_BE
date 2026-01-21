@@ -1,5 +1,6 @@
 import db from "../../models";
 import { Op } from "sequelize";
+import payosService from "../payment/payos.service";
 
 function genCode(prefix = "TX") {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -21,7 +22,7 @@ async function getActiveActivation(memberId) {
   });
 }
 
-const ALLOWED_PAYMENT = new Set(["cash", "momo", "vnpay"]);
+const ALLOWED_PAYMENT = new Set(["cash", "momo", "vnpay", "payos"]);
 
 const memberPackageService = {
   async listPackages(userId) {
@@ -73,14 +74,63 @@ const memberPackageService = {
       // ✅ validate payment method (MVP)
       const paymentMethod = String(payload?.paymentMethod || "cash").toLowerCase();
       if (!ALLOWED_PAYMENT.has(paymentMethod)) {
-        const err = new Error("paymentMethod không hợp lệ. Chỉ hỗ trợ: cash/momo/vnpay (MVP).");
+        const err = new Error(
+          "paymentMethod không hợp lệ. Hỗ trợ: cash / momo / vnpay / payos (MVP)."
+        );
         err.statusCode = 400;
         throw err;
       }
 
       const trainerId = payload?.trainerId || null;
 
-      // ✅ Transaction: MVP coi như paid ngay
+      // Nhánh thanh toán qua payOS: tạo Transaction pending + tạo link thanh toán
+      if (paymentMethod === "payos") {
+        const tx = await db.Transaction.create(
+          {
+            transactionCode: genCode("PKG"),
+            memberId: member.id,
+            trainerId,
+            gymId: member.gymId,
+            packageId: pkg.id,
+            amount: pkg.price,
+            transactionType: "package_purchase",
+            paymentMethod,
+            paymentStatus: "pending",
+            description: `Thanh toán gói (payOS): ${pkg.name}`,
+            processedBy: userId,
+          },
+          { transaction: t }
+        );
+
+        // Dùng id giao dịch làm orderCode để webhook tra ngược
+        const payosResp = await payosService.createPackagePaymentLink({
+          orderCode: tx.id,
+          amount: pkg.price,
+          description: `Thanh toán gói ${pkg.name} cho member #${member.id}`,
+        });
+
+        await tx.update(
+          {
+            metadata: {
+              ...(tx.metadata || {}),
+              payos: {
+                orderCode: payosResp.orderCode,
+                checkoutUrl: payosResp.checkoutUrl,
+              },
+            },
+          },
+          { transaction: t }
+        );
+
+        await t.commit();
+        return {
+          transaction: tx,
+          paymentProvider: "payos",
+          paymentUrl: payosResp.checkoutUrl,
+        };
+      }
+
+      // ✅ Transaction: các phương thức khác coi như paid ngay
       const tx = await db.Transaction.create(
         {
           transactionCode: genCode("PKG"),

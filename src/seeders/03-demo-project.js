@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('Project', [ // SỐ ÍT
+    await queryInterface.bulkInsert('project', [ // SỐ ÍT
       {
         name: 'GFMS Development',
         description: 'Gym Franchise Management System',
@@ -13,6 +13,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('Project', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('project', null, {}); // SỐ ÍT
   }
 };

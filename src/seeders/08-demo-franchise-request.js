@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkInsert('FranchiseRequest', [ // SỐ ÍT
+    await queryInterface.bulkInsert('franchiserequest', [ // SỐ ÍT
       {
         requesterId: 2,
         businessName: 'FitLife Gym Da Nang',
@@ -22,6 +22,6 @@ module.exports = {
     ], {});
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.bulkDelete('FranchiseRequest', null, {}); // SỐ ÍT
+    await queryInterface.bulkDelete('franchiserequest', null, {}); // SỐ ÍT
   }
 };

@@ -1,24 +1,24 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Transaction', { // SỐ ÍT
+    await queryInterface.createTable('transaction', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       transactionCode: { type: Sequelize.STRING },
       memberId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Member', key: 'id' } // SỐ ÍT
+        references: { model: 'member', key: 'id' } // SỐ ÍT
       },
       trainerId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Trainer', key: 'id' } // SỐ ÍT
+        references: { model: 'trainer', key: 'id' } // SỐ ÍT
       },
       gymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' } // SỐ ÍT
+        references: { model: 'gym', key: 'id' } // SỐ ÍT
       },
       packageId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Package', key: 'id' } // SỐ ÍT
+        references: { model: 'package', key: 'id' } // SỐ ÍT
       },
       amount: { type: Sequelize.DECIMAL(10, 2) },
       transactionType: { type: Sequelize.STRING },
@@ -30,11 +30,11 @@ module.exports = {
       // ========== THÊM MỚI ==========
       packageActivationId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'PackageActivation', key: 'id' } // SỐ ÍT
+        references: { model: 'packageactivation', key: 'id' } // SỐ ÍT
       },
       processedBy: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // SỐ ÍT
+        references: { model: 'user', key: 'id' } // SỐ ÍT
       },
       commissionAmount: { type: Sequelize.DECIMAL(10, 2) },
       ownerAmount: { type: Sequelize.DECIMAL(10, 2) },
@@ -45,6 +45,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Transaction'); // SỐ ÍT
+    await queryInterface.dropTable('transaction'); // SỐ ÍT
   }
 };

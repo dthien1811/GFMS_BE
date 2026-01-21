@@ -3,7 +3,7 @@
 module.exports = {
   async up(queryInterface, Sequelize) {
     await queryInterface.bulkInsert(
-      'Gym',
+      'gym',
       [
         {
           name: 'Power Fit Gym',
@@ -35,6 +35,6 @@ module.exports = {
   },
 
   async down(queryInterface, Sequelize) {
-    await queryInterface.bulkDelete('Gym', null, {});
+    await queryInterface.bulkDelete('gym', null, {});
   },
 };

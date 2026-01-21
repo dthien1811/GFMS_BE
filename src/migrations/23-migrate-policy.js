@@ -1,7 +1,7 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('Policy', { // SỐ ÍT
+    await queryInterface.createTable('policy', { // SỐ ÍT
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       policyType: { 
         type: Sequelize.ENUM('trainer_share', 'commission', 'cancellation', 'refund', 'membership') 
@@ -13,7 +13,7 @@ module.exports = {
       appliesTo: { type: Sequelize.ENUM('system', 'gym', 'trainer') },
       gymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' } // SỐ ÍT
+        references: { model: 'gym', key: 'id' } // SỐ ÍT
       },
       effectiveFrom: { type: Sequelize.DATE },
       effectiveTo: { type: Sequelize.DATE },
@@ -22,6 +22,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('Policy'); // SỐ ÍT
+    await queryInterface.dropTable('policy'); // SỐ ÍT
   }
 };

@@ -1,19 +1,19 @@
 'use strict';
 module.exports = {
   up: async (queryInterface, Sequelize) => {
-    await queryInterface.createTable('TrainerShare', {
+    await queryInterface.createTable('trainershare', {
       id: { type: Sequelize.INTEGER, primaryKey: true, autoIncrement: true },
       trainerId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Trainer', key: 'id' } // OK
+        references: { model: 'trainer', key: 'id' } // OK
       },
       fromGymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' } // OK
+        references: { model: 'gym', key: 'id' } // OK
       },
       toGymId: { 
         type: Sequelize.INTEGER,
-        references: { model: 'Gym', key: 'id' } // OK
+        references: { model: 'gym', key: 'id' } // OK
       },
       shareType: { type: Sequelize.STRING },
       startDate: { type: Sequelize.DATE },
@@ -22,11 +22,11 @@ module.exports = {
       status: { type: Sequelize.STRING },
       requestedBy: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // OK
+        references: { model: 'user', key: 'id' } // OK
       },
       approvedBy: { 
         type: Sequelize.INTEGER,
-        references: { model: 'User', key: 'id' } // OK
+        references: { model: 'user', key: 'id' } // OK
       },
       notes: { type: Sequelize.TEXT },
       policyId: { 
@@ -39,6 +39,6 @@ module.exports = {
     });
   },
   down: async (queryInterface, Sequelize) => {
-    await queryInterface.dropTable('TrainerShare');
+    await queryInterface.dropTable('trainershare');
   }
 };

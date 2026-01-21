@@ -1,8 +1,19 @@
 import adminInventoryService from "../service/adminInventoryService";
 
 const ok = (res, data) => res.status(200).json(data);
-const bad = (res, err) =>
-  res.status(400).json({ message: err?.message || String(err || "Bad Request") });
+
+// ✅ CHỈ SỬA: log chi tiết để biết lỗi thật ở đâu (đặc biệt lỗi SQL)
+const bad = (res, err, ctx = "") => {
+  try {
+    console.error("=== API ERROR ===", ctx);
+    console.error("message:", err?.message);
+    console.error("sql:", err?.sql);
+    console.error("original:", err?.original);
+    console.error("stack:", err?.stack);
+  } catch (_) {}
+
+  return res.status(400).json({ message: err?.message || String(err || "Bad Request") });
+};
 
 const adminInventoryController = {
   // ✅ gyms
@@ -11,7 +22,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.getGyms(req.query);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "GET /gyms");
     }
   },
 
@@ -21,7 +32,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.getEquipmentCategories();
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "GET /equipment-categories");
     }
   },
 
@@ -31,7 +42,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.getEquipments(req.query);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "GET /equipments");
     }
   },
 
@@ -40,7 +51,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.createEquipment(req.body);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "POST /equipments");
     }
   },
 
@@ -49,7 +60,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.updateEquipment(req.params.id, req.body);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "PUT /equipments/:id");
     }
   },
 
@@ -58,7 +69,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.discontinueEquipment(req.params.id);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "PATCH /equipments/:id/discontinue");
     }
   },
 
@@ -70,7 +81,8 @@ const adminInventoryController = {
       const data = await adminInventoryService.getEquipmentImages(req.params.id);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      // ✅ log rõ endpoint đang fail đúng lúc bấm "Ảnh"
+      return bad(res, e, `GET /equipments/${req.params.id}/images`);
     }
   },
 
@@ -80,7 +92,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.uploadEquipmentImages(req.params.id, files);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, `POST /equipments/${req.params.id}/images`);
     }
   },
 
@@ -92,7 +104,7 @@ const adminInventoryController = {
       );
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, `PATCH /equipments/${req.params.id}/images/${req.params.imageId}/primary`);
     }
   },
 
@@ -104,7 +116,7 @@ const adminInventoryController = {
       );
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, `DELETE /equipments/${req.params.id}/images/${req.params.imageId}`);
     }
   },
 
@@ -114,7 +126,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.getSuppliers(req.query);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "GET /suppliers");
     }
   },
 
@@ -123,7 +135,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.createSupplier(req.body);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "POST /suppliers");
     }
   },
 
@@ -132,7 +144,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.updateSupplier(req.params.id, req.body);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "PUT /suppliers/:id");
     }
   },
 
@@ -145,7 +157,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.setSupplierActive(id, isActive);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "PATCH /suppliers/:id/active");
     }
   },
 
@@ -155,7 +167,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.getStocks(req.query);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "GET /stocks");
     }
   },
 
@@ -166,7 +178,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.createReceipt(req.body, auditMeta);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "POST /receipts");
     }
   },
 
@@ -177,7 +189,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.createExport(req.body, auditMeta);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "POST /exports");
     }
   },
 
@@ -187,7 +199,7 @@ const adminInventoryController = {
       const data = await adminInventoryService.getInventoryLogs(req.query);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e);
+      return bad(res, e, "GET /inventory-logs");
     }
   },
 };

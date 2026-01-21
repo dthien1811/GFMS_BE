@@ -67,7 +67,7 @@ module.exports = (sequelize, DataTypes) => {
   }, {
     sequelize,
     modelName: 'PurchaseOrder',
-    tableName: 'purchaseOrder',
+    tableName: 'purchaseorder',
     freezeTableName: true,
     timestamps: true // Đảm bảo tên bảng khớp chính xác với bulkInsert
   });
