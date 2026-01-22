@@ -540,52 +540,88 @@ class AdminAdminCoreService {
    * ====================================================== */
 
   async getFranchiseRequests(req) {
-    const { page, limit, offset } = parsePaging(req.query);
-    const { status, q } = req.query;
+  const { page, limit, offset } = parsePaging(req.query);
+  const { status, q } = req.query;
 
-    const where = {};
-    if (status) where.status = status;
+  const where = {};
+  if (status) where.status = status;
 
-    if (q) {
-      where[Op.or] = [
-        { businessName: { [Op.like]: `%${q}%` } },
-        { location: { [Op.like]: `%${q}%` } },
-        { contactPerson: { [Op.like]: `%${q}%` } },
-        { contactPhone: { [Op.like]: `%${q}%` } },
-        { contactEmail: { [Op.like]: `%${q}%` } },
-      ];
-    }
-
-    const { rows, count } = await FranchiseRequest.findAndCountAll({
-      where,
-      include: [
-        { model: User, as: "requester", required: false },
-        { model: User, as: "reviewer", required: false },
-      ],
-      order: [["createdAt", "DESC"]],
-      limit,
-      offset,
-    });
-
-    return {
-      data: rows,
-      meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
-    };
+  if (q) {
+    where[Op.or] = [
+      { businessName: { [Op.like]: `%${q}%` } },
+      { location: { [Op.like]: `%${q}%` } },
+      { contactPerson: { [Op.like]: `%${q}%` } },
+      { contactPhone: { [Op.like]: `%${q}%` } },
+      { contactEmail: { [Op.like]: `%${q}%` } },
+    ];
   }
+
+  const { rows, count } = await FranchiseRequest.findAndCountAll({
+    where,
+    include: [
+      {
+        model: User,
+        as: "requester",
+        required: false,
+        attributes: ["id", "username", "email"],
+      },
+      {
+        model: User,
+        as: "reviewer",
+        required: false,
+        attributes: ["id", "username", "email"],
+      },
+      {
+        // ✅ show "Gym created" on list
+        model: Gym,
+        as: "createdGym",
+        required: false,
+        attributes: ["id", "name", "status", "ownerId"],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit,
+    offset,
+  });
+
+  return {
+    data: rows,
+    meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
+  };
+}
+
 
   async getFranchiseRequestDetail(req) {
-    const id = Number(req.params.id);
-    ensure(id, "Invalid franchise request id");
+  const id = Number(req.params.id);
+  ensure(id, "Invalid franchise request id");
 
-    const fr = await FranchiseRequest.findByPk(id, {
-      include: [
-        { model: User, as: "requester", required: false },
-        { model: User, as: "reviewer", required: false },
-      ],
-    });
-    ensure(fr, "FranchiseRequest not found", 404);
-    return fr;
-  }
+  const fr = await FranchiseRequest.findByPk(id, {
+    include: [
+      {
+        model: User,
+        as: "requester",
+        required: false,
+        attributes: ["id", "username", "email", "phone"],
+      },
+      {
+        model: User,
+        as: "reviewer",
+        required: false,
+        attributes: ["id", "username", "email"],
+      },
+      {
+        model: Gym,
+        as: "createdGym",
+        required: false,
+        attributes: ["id", "name", "address", "status", "ownerId"],
+      },
+    ],
+  });
+
+  ensure(fr, "FranchiseRequest not found", 404);
+  return fr;
+}
+
 
   async approveFranchiseRequest(req) {
     const id = Number(req.params.id);
@@ -714,20 +750,34 @@ class AdminAdminCoreService {
    * ====================================================== */
 
   async getPolicies(req) {
-    const { policyType, gymId, isActive } = req.query;
+  const { policyType, gymId, isActive } = req.query;
 
-    const where = {};
-    if (policyType) where.policyType = policyType;
-    if (gymId !== undefined && gymId !== "") where.gymId = Number(gymId);
-    if (isActive !== undefined && isActive !== "") where.isActive = String(isActive) === "true";
+  const where = {};
+  if (policyType) where.policyType = policyType;
 
-    const rows = await Policy.findAll({
-      where,
-      order: [["createdAt", "DESC"]],
-    });
-
-    return { data: rows };
+  // gymId filter: cho phép "null"/"" để lấy system
+  if (gymId !== undefined && gymId !== "") {
+    // nếu frontend gửi "null" nghĩa là muốn system policies
+    if (String(gymId).toLowerCase() === "null") where.gymId = null;
+    else where.gymId = Number(gymId);
   }
+
+  if (isActive !== undefined && isActive !== "") {
+    where.isActive = String(isActive) === "true";
+  }
+
+  const rows = await Policy.findAll({
+    where,
+    include: [
+      // ✅ trả về gym name cho FE
+      { model: Gym, as: "gym", required: false, attributes: ["id", "name"] },
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  return { data: rows };
+}
+
 
   async createPolicy(req) {
     const actorId = getActorId(req);

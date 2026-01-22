@@ -25,40 +25,6 @@ module.exports = {
         allowNull: true,
       },
 
-      email: {
-        type: Sequelize.STRING,
-        allowNull: true,
-      },
-
-      description: {
-        type: Sequelize.TEXT,
-        allowNull: true,
-      },
-
-      status: {
-        type: Sequelize.STRING,
-        allowNull: false,
-        defaultValue: 'ACTIVE',
-      },
-
-      ownerId: {
-        type: Sequelize.INTEGER,
-        allowNull: false,
-        references: {
-          model: 'user', // ⚠️ đúng tên bảng User
-          key: 'id',
-        },
-        onUpdate: 'CASCADE',
-        onDelete: 'RESTRICT',
-      },
-
-      franchiseRequestId: {
-        type: Sequelize.INTEGER,
-        allowNull: true,
-        // ❗ CỐ TÌNH KHÔNG references ở đây
-        // vì bạn nói sẽ thêm FK ở migration sau
-      },
-
       createdAt: {
         type: Sequelize.DATE,
         allowNull: false,
@@ -76,6 +42,7 @@ module.exports = {
   },
 
   async down(queryInterface) {
-    await queryInterface.dropTable('Gym');
+    // FIX: đúng tên bảng là 'gym'
+    await queryInterface.dropTable('gym');
   },
 };
