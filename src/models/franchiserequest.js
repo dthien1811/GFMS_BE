@@ -13,6 +13,13 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'reviewedBy',
         as: 'reviewer',
       });
+
+      // ✅ One franchise request can create one gym after approval
+      // Gym table stores franchiseRequestId
+      FranchiseRequest.hasOne(models.Gym, {
+        foreignKey: 'franchiseRequestId',
+        as: 'createdGym',
+      });
     }
   }
 

@@ -109,6 +109,9 @@ router.patch("/maintenances/:id/assign", adminAdminCoreController.assignMaintena
 router.patch("/maintenances/:id/start", adminAdminCoreController.startMaintenance);
 router.patch("/maintenances/:id/complete", adminAdminCoreController.completeMaintenance);
 
+// ✅ NEW: dropdown technicians
+router.get("/technicians", adminAdminCoreController.getTechnicians);
+
 // ===== MODULE 3: FRANCHISE APPROVAL =====
 router.get("/franchise-requests", adminAdminCoreController.getFranchiseRequests);
 router.get("/franchise-requests/:id", adminAdminCoreController.getFranchiseRequestDetail);

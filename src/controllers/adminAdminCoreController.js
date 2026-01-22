@@ -23,6 +23,9 @@ module.exports = {
   startMaintenance: wrap((req) => adminAdminCoreService.startMaintenance(req)),
   completeMaintenance: wrap((req) => adminAdminCoreService.completeMaintenance(req)),
 
+  // ✅ NEW: get technicians (for dropdown assign)
+  getTechnicians: wrap((req) => adminAdminCoreService.getTechnicians(req)),
+
   // ========== MODULE 3: FRANCHISE ==========
   getFranchiseRequests: wrap((req) => adminAdminCoreService.getFranchiseRequests(req)),
   getFranchiseRequestDetail: wrap((req) => adminAdminCoreService.getFranchiseRequestDetail(req)),

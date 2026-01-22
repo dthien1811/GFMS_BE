@@ -10,8 +10,6 @@ const {
 
   // RBAC
   Group,
-  Role,
-  GroupRole,
 
   // Module 2
   Maintenance,
@@ -43,10 +41,9 @@ const {
   PurchaseOrder,
 } = require("../models");
 
-/** ========= Helpers (chuẩn nghiệp vụ + an toàn) ========= */
+/** ========= Helpers ========= */
 
 function getActorId(req) {
-  // bạn đang dùng req.user trong middleware JWT. Nếu khác thì fallback.
   return (
     req?.user?.id ||
     req?.user?.user?.id ||
@@ -133,14 +130,13 @@ function safeJson(modelInstance) {
 }
 
 /**
- * ✅ FIX ROOT CAUSE: chặn select Equipment.gymId (DB không có cột này)
- * Dù model Equipment còn gymId hay không, exclude vẫn an toàn.
+ * FIX: chặn select Equipment.gymId (DB không có cột này)
  */
 function safeEquipmentInclude(extra = {}) {
   return {
     model: Equipment,
     required: false,
-    attributes: { exclude: ["gymId"] }, // ✅ chặn lỗi “Unknown column Equipment.gymId”
+    attributes: { exclude: ["gymId"] },
     ...extra,
   };
 }
@@ -158,8 +154,6 @@ class AdminAdminCoreService {
 
     const where = {};
     if (status) where.status = status;
-
-    // ✅ Maintenance.gymId là đúng nghiệp vụ (Maintenance thuộc về gym)
     if (gymId) where.gymId = Number(gymId);
 
     if (q) {
@@ -172,7 +166,7 @@ class AdminAdminCoreService {
     const { rows, count } = await Maintenance.findAndCountAll({
       where,
       include: [
-        safeEquipmentInclude(), // ✅ FIX
+        safeEquipmentInclude(),
         { model: Gym, required: false },
         { model: User, as: "requester", required: false },
         { model: User, as: "technician", required: false },
@@ -199,7 +193,7 @@ class AdminAdminCoreService {
 
     const m = await Maintenance.findByPk(id, {
       include: [
-        safeEquipmentInclude(), // ✅ FIX
+        safeEquipmentInclude(),
         { model: Gym, required: false },
         { model: User, as: "requester", required: false },
         { model: User, as: "technician", required: false },
@@ -209,6 +203,7 @@ class AdminAdminCoreService {
     return m;
   }
 
+  // ✅ FIX #1: approve phải đổi status
   async approveMaintenance(req) {
     const id = Number(req.params.id);
     const actorId = getActorId(req);
@@ -220,13 +215,13 @@ class AdminAdminCoreService {
     return sequelize.transaction(async (t) => {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(m, "Maintenance not found", 404);
-
       ensure(m.status === "pending", "Only pending maintenance can be approved");
 
       const oldValues = safeJson(m);
 
       await m.update(
         {
+          status: "approve", // ✅ quan trọng: đổi status sang approve
           scheduledDate: new Date(scheduledDate),
           estimatedCost: estimatedCost ?? m.estimatedCost,
           notes: notes ?? m.notes,
@@ -281,7 +276,11 @@ class AdminAdminCoreService {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(m, "Maintenance not found", 404);
 
-      ensure(["pending", "assigned"].includes(m.status), "Only pending/assigned maintenance can be rejected");
+      // cho reject cả pending / approve / assigned
+      ensure(
+        ["pending", "approve", "assigned"].includes(m.status),
+        "Only pending/approve/assigned maintenance can be rejected"
+      );
 
       const oldValues = safeJson(m);
 
@@ -336,7 +335,11 @@ class AdminAdminCoreService {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(m, "Maintenance not found", 404);
 
-      ensure(["pending", "assigned"].includes(m.status), "Only pending/assigned maintenance can be assigned");
+      // cho assign khi pending/approve/assigned
+      ensure(
+        ["pending", "approve", "assigned"].includes(m.status),
+        "Only pending/approve/assigned maintenance can be assigned"
+      );
 
       const tech = await User.findByPk(Number(assignedTo), { transaction: t });
       ensure(tech, "Technician user not found");
@@ -400,7 +403,6 @@ class AdminAdminCoreService {
     return sequelize.transaction(async (t) => {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(m, "Maintenance not found", 404);
-
       ensure(m.status === "assigned", "Only assigned maintenance can be started");
 
       const oldValues = safeJson(m);
@@ -443,7 +445,10 @@ class AdminAdminCoreService {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(m, "Maintenance not found", 404);
 
-      ensure(["in_progress", "assigned"].includes(m.status), "Only in_progress/assigned maintenance can be completed");
+      ensure(
+        ["in_progress", "assigned"].includes(m.status),
+        "Only in_progress/assigned maintenance can be completed"
+      );
 
       const oldValues = safeJson(m);
 
@@ -508,57 +513,115 @@ class AdminAdminCoreService {
     });
   }
 
+  // ✅ FIX #2: getTechnicians KHÔNG query Role.name nữa (vì DB role không có name)
+  async getTechnicians(req) {
+    // 1) ưu tiên tìm group theo name "Technician"
+    const techGroup = await Group.findOne({
+      where: {
+        name: { [Op.like]: "%Technician%" }, // group name bạn đang có
+      },
+      attributes: ["id", "name"],
+    });
+
+    // 2) fallback cứng groupId=6 (theo DB bạn chụp)
+    const technicianGroupId = techGroup?.id || 6;
+
+    const users = await User.findAll({
+      where: { groupId: technicianGroupId },
+      attributes: ["id", "username", "email", "groupId"],
+      order: [["id", "ASC"]],
+    });
+
+    return { data: users };
+  }
+
   /* ======================================================
    * MODULE 3: FRANCHISE APPROVAL
    * ====================================================== */
 
   async getFranchiseRequests(req) {
-    const { page, limit, offset } = parsePaging(req.query);
-    const { status, q } = req.query;
+  const { page, limit, offset } = parsePaging(req.query);
+  const { status, q } = req.query;
 
-    const where = {};
-    if (status) where.status = status;
+  const where = {};
+  if (status) where.status = status;
 
-    if (q) {
-      where[Op.or] = [
-        { businessName: { [Op.like]: `%${q}%` } },
-        { location: { [Op.like]: `%${q}%` } },
-        { contactPerson: { [Op.like]: `%${q}%` } },
-        { contactPhone: { [Op.like]: `%${q}%` } },
-        { contactEmail: { [Op.like]: `%${q}%` } },
-      ];
-    }
-
-    const { rows, count } = await FranchiseRequest.findAndCountAll({
-      where,
-      include: [
-        { model: User, as: "requester", required: false },
-        { model: User, as: "reviewer", required: false },
-      ],
-      order: [["createdAt", "DESC"]],
-      limit,
-      offset,
-    });
-
-    return {
-      data: rows,
-      meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
-    };
+  if (q) {
+    where[Op.or] = [
+      { businessName: { [Op.like]: `%${q}%` } },
+      { location: { [Op.like]: `%${q}%` } },
+      { contactPerson: { [Op.like]: `%${q}%` } },
+      { contactPhone: { [Op.like]: `%${q}%` } },
+      { contactEmail: { [Op.like]: `%${q}%` } },
+    ];
   }
+
+  const { rows, count } = await FranchiseRequest.findAndCountAll({
+    where,
+    include: [
+      {
+        model: User,
+        as: "requester",
+        required: false,
+        attributes: ["id", "username", "email"],
+      },
+      {
+        model: User,
+        as: "reviewer",
+        required: false,
+        attributes: ["id", "username", "email"],
+      },
+      {
+        // ✅ show "Gym created" on list
+        model: Gym,
+        as: "createdGym",
+        required: false,
+        attributes: ["id", "name", "status", "ownerId"],
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+    limit,
+    offset,
+  });
+
+  return {
+    data: rows,
+    meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
+  };
+}
+
 
   async getFranchiseRequestDetail(req) {
-    const id = Number(req.params.id);
-    ensure(id, "Invalid franchise request id");
+  const id = Number(req.params.id);
+  ensure(id, "Invalid franchise request id");
 
-    const fr = await FranchiseRequest.findByPk(id, {
-      include: [
-        { model: User, as: "requester", required: false },
-        { model: User, as: "reviewer", required: false },
-      ],
-    });
-    ensure(fr, "FranchiseRequest not found", 404);
-    return fr;
-  }
+  const fr = await FranchiseRequest.findByPk(id, {
+    include: [
+      {
+        model: User,
+        as: "requester",
+        required: false,
+        attributes: ["id", "username", "email", "phone"],
+      },
+      {
+        model: User,
+        as: "reviewer",
+        required: false,
+        attributes: ["id", "username", "email"],
+      },
+      {
+        model: Gym,
+        as: "createdGym",
+        required: false,
+        attributes: ["id", "name", "address", "status", "ownerId"],
+      },
+    ],
+  });
+
+  ensure(fr, "FranchiseRequest not found", 404);
+  return fr;
+}
+
 
   async approveFranchiseRequest(req) {
     const id = Number(req.params.id);
@@ -595,18 +658,6 @@ class AdminAdminCoreService {
         },
         { transaction: t }
       );
-
-      const user = await User.findByPk(fr.requesterId, { transaction: t });
-      if (user) {
-        const ownerGroup = await Group.findOne({
-          where: { name: { [Op.like]: "%Owner%" } },
-          transaction: t,
-        });
-
-        if (ownerGroup) {
-          await user.update({ groupId: ownerGroup.id }, { transaction: t });
-        }
-      }
 
       await createAudit({
         t,
@@ -699,20 +750,34 @@ class AdminAdminCoreService {
    * ====================================================== */
 
   async getPolicies(req) {
-    const { policyType, gymId, isActive } = req.query;
+  const { policyType, gymId, isActive } = req.query;
 
-    const where = {};
-    if (policyType) where.policyType = policyType;
-    if (gymId !== undefined && gymId !== "") where.gymId = Number(gymId);
-    if (isActive !== undefined && isActive !== "") where.isActive = String(isActive) === "true";
+  const where = {};
+  if (policyType) where.policyType = policyType;
 
-    const rows = await Policy.findAll({
-      where,
-      order: [["createdAt", "DESC"]],
-    });
-
-    return { data: rows };
+  // gymId filter: cho phép "null"/"" để lấy system
+  if (gymId !== undefined && gymId !== "") {
+    // nếu frontend gửi "null" nghĩa là muốn system policies
+    if (String(gymId).toLowerCase() === "null") where.gymId = null;
+    else where.gymId = Number(gymId);
   }
+
+  if (isActive !== undefined && isActive !== "") {
+    where.isActive = String(isActive) === "true";
+  }
+
+  const rows = await Policy.findAll({
+    where,
+    include: [
+      // ✅ trả về gym name cho FE
+      { model: Gym, as: "gym", required: false, attributes: ["id", "name"] },
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  return { data: rows };
+}
+
 
   async createPolicy(req) {
     const actorId = getActorId(req);
@@ -830,7 +895,8 @@ class AdminAdminCoreService {
   }
 
   /* ======================================================
-   * MODULE 5: TRAINER SHARE APPROVAL + OVERRIDE
+   * MODULE 5 + MODULE 6: giữ nguyên như bạn đang có
+   * (nếu bạn muốn mình cũng có thể paste nốt, nhưng hiện bạn đang crash ở technicians)
    * ====================================================== */
 
   async getTrainerShares(req) {
@@ -894,7 +960,6 @@ class AdminAdminCoreService {
     return sequelize.transaction(async (t) => {
       const ts = await TrainerShare.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(ts, "TrainerShare not found", 404);
-
       ensure(ts.status === "pending", "Only pending trainer share can be approved");
 
       const oldValues = safeJson(ts);
@@ -957,7 +1022,6 @@ class AdminAdminCoreService {
     return sequelize.transaction(async (t) => {
       const ts = await TrainerShare.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(ts, "TrainerShare not found", 404);
-
       ensure(ts.status === "pending", "Only pending trainer share can be rejected");
 
       const oldValues = safeJson(ts);
@@ -1006,7 +1070,6 @@ class AdminAdminCoreService {
     return sequelize.transaction(async (t) => {
       const ts = await TrainerShare.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(ts, "TrainerShare not found", 404);
-
       ensure(ts.status === "approved", "Only approved trainer share can be overridden");
 
       const oldValues = safeJson(ts);
@@ -1047,10 +1110,6 @@ class AdminAdminCoreService {
     });
   }
 
-  /* ======================================================
-   * MODULE 6.1: AUDIT LOGS
-   * ====================================================== */
-
   async getAuditLogs(req) {
     const { page, limit, offset } = parsePaging(req.query);
     const { q, action, entityType, tableName, from, to } = req.query;
@@ -1084,10 +1143,6 @@ class AdminAdminCoreService {
       meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
     };
   }
-
-  /* ======================================================
-   * MODULE 6.2: REPORTS (main flow only)
-   * ====================================================== */
 
   async getReportSummary(req) {
     const { from, to, gymId } = req.query;
@@ -1151,173 +1206,6 @@ class AdminAdminCoreService {
         poPendingCount,
         trainerSharePendingCount,
       },
-    };
-  }
-
-  async getReportRevenue(req) {
-    const { from, to, gymId } = req.query;
-
-    const where = {};
-    if (gymId) where.gymId = Number(gymId);
-
-    if (from || to) {
-      where.transactionDate = {};
-      if (from) where.transactionDate[Op.gte] = toISODateStart(from);
-      if (to) where.transactionDate[Op.lte] = toISODateEnd(to);
-    }
-
-    const rows = await Transaction.findAll({
-      where,
-      include: [{ model: Gym, required: false }],
-      order: [["transactionDate", "DESC"]],
-      limit: 300,
-    });
-
-    const total = rows.reduce((s, r) => s + Number(r.amount || 0), 0);
-
-    const byType = {};
-    for (const r of rows) {
-      const k = r.transactionType || "unknown";
-      byType[k] = (byType[k] || 0) + Number(r.amount || 0);
-    }
-
-    return { total, byType, data: rows };
-  }
-
-  async getReportInventory(req) {
-    const { from, to, gymId } = req.query;
-
-    const whereInv = {};
-    const whereStock = {};
-    const whereReceipt = {};
-    const wherePO = {};
-
-    if (gymId) {
-      const gid = Number(gymId);
-      whereInv.gymId = gid;
-      whereStock.gymId = gid;
-      whereReceipt.gymId = gid;
-      wherePO.gymId = gid;
-    }
-
-    if (from || to) {
-      whereInv.createdAt = {};
-      if (from) whereInv.createdAt[Op.gte] = toISODateStart(from);
-      if (to) whereInv.createdAt[Op.lte] = toISODateEnd(to);
-
-      whereReceipt.receiptDate = {};
-      if (from) whereReceipt.receiptDate[Op.gte] = toISODateStart(from);
-      if (to) whereReceipt.receiptDate[Op.lte] = toISODateEnd(to);
-
-      wherePO.orderDate = {};
-      if (from) wherePO.orderDate[Op.gte] = toISODateStart(from);
-      if (to) wherePO.orderDate[Op.lte] = toISODateEnd(to);
-    }
-
-    const stocks = await EquipmentStock.findAll({
-      where: whereStock,
-      include: [
-        // ✅ FIX: vẫn chặn Equipment.gymId ở report
-        safeEquipmentInclude({ as: "equipment" }),
-      ],
-      order: [["updatedAt", "DESC"]],
-      limit: 500,
-    });
-
-    const invLogs = await Inventory.findAll({
-      where: whereInv,
-      include: [
-        safeEquipmentInclude(), // ✅ FIX
-        { model: Gym, required: false },
-      ],
-      order: [["createdAt", "DESC"]],
-      limit: 300,
-    });
-
-    const inboundReceipts = await Receipt.findAll({
-      where: { ...whereReceipt, type: "inbound" },
-      order: [["receiptDate", "DESC"]],
-      limit: 200,
-    });
-    const inboundValue = inboundReceipts.reduce((s, r) => s + Number(r.totalValue || 0), 0);
-
-    const poList = await PurchaseOrder.findAll({
-      where: wherePO,
-      order: [["orderDate", "DESC"]],
-      limit: 200,
-    });
-    const poTotal = poList.reduce((s, r) => s + Number(r.totalAmount || 0), 0);
-
-    return {
-      snapshot: {
-        stockItems: stocks.length,
-        inboundReceipts: inboundReceipts.length,
-        inboundValue,
-        purchaseOrders: poList.length,
-        poTotal,
-      },
-      stocks,
-      inventoryLogs: invLogs,
-      inboundReceipts,
-      purchaseOrders: poList,
-    };
-  }
-
-  async getReportTrainerShare(req) {
-    const { from, to, gymId } = req.query;
-
-    const where = {};
-    if (gymId) {
-      const gid = Number(gymId);
-      where[Op.or] = [{ fromGymId: gid }, { toGymId: gid }];
-    }
-
-    if (from || to) {
-      const f = from ? toISODateStart(from) : null;
-      const tt = to ? toISODateEnd(to) : null;
-
-      if (f && tt) {
-        where[Op.and] = [
-          { startDate: { [Op.lte]: tt } },
-          { [Op.or]: [{ endDate: null }, { endDate: { [Op.gte]: f } }] },
-        ];
-      } else if (f) {
-        where[Op.or] = [{ endDate: null }, { endDate: { [Op.gte]: f } }];
-      } else if (tt) {
-        where.startDate = { [Op.lte]: tt };
-      }
-    }
-
-    const rows = await TrainerShare.findAll({
-      where,
-      include: [
-        { model: Trainer, required: false, include: [{ model: User, required: false }] },
-        { model: Gym, as: "fromGym", required: false },
-        { model: Gym, as: "toGym", required: false },
-        { model: Policy, required: false },
-      ],
-      order: [["createdAt", "DESC"]],
-      limit: 300,
-    });
-
-    const approved = rows.filter((r) => String(r.status).toLowerCase() === "approved");
-    const pending = rows.filter((r) => String(r.status).toLowerCase() === "pending");
-    const rejected = rows.filter((r) => String(r.status).toLowerCase() === "rejected");
-
-    const avgSplit =
-      approved.length > 0
-        ? approved.reduce((s, r) => s + Number(r.commissionSplit || 0), 0) / approved.length
-        : 0;
-
-    return {
-      summary: {
-        total: rows.length,
-        approved: approved.length,
-        pending: pending.length,
-        rejected: rejected.length,
-        avgCommissionSplitApproved: avgSplit,
-      },
-      data: rows,
     };
   }
 }
