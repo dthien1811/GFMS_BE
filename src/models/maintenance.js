@@ -17,7 +17,7 @@ module.exports = (sequelize, DataTypes) => {
       equipmentId: { type: DataTypes.INTEGER, allowNull: false },
       gymId: { type: DataTypes.INTEGER, allowNull: false },
 
-      issueDescription: { type: DataTypes.TEXT, allowNull: false },
+      issueDescription: { type: DataTypes.TEXT, allowNull: true },
 
       priority: {
         type: DataTypes.ENUM('low', 'medium', 'high', 'urgent'),

@@ -24,6 +24,7 @@ const ownerTransferController = {
       const data = await ownerTransferService.createTransfer(req.user.id, req.body);
       return res.status(201).json({ data });
     } catch (e) {
+      console.error("Create transfer error:", e);
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
@@ -54,8 +55,7 @@ const ownerTransferController = {
     try {
       const data = await ownerTransferService.completeTransfer(req.user.id, req.params.id);
       return res.status(200).json({ data });
-    } catch (e) {
-      return res.status(e.statusCode || 500).json({ message: e.message });
+    } catch (e) {      console.error("Create transfer error:", e);      return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
 };

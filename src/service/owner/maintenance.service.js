@@ -112,33 +112,39 @@ const ownerMaintenanceService = {
 
     ensure(gymId, "gymId is required");
     ensure(equipmentId, "equipmentId is required");
-    ensure(issueDescription && String(issueDescription).trim(), "issueDescription is required");
 
     // Check if gym belongs to owner
-    const gym = await Gym.findByPk(Number(gymId));
+    const gym = await Gym.findByPk(Number(gymId), {
+      attributes: ["id", "name", "ownerId"]
+    });
     ensure(gym, "Gym not found", 404);
     ensure(gym.ownerId === ownerUserId, "Not authorized", 403);
 
-    // Check if equipment exists and belongs to gym
-    const equipment = await Equipment.findOne({
-      where: { id: Number(equipmentId), gymId: Number(gymId) },
+    // Check if equipment exists
+    const equipment = await Equipment.findByPk(Number(equipmentId), {
+      attributes: ["id", "name", "code"]
     });
-    ensure(equipment, "Equipment not found in this gym", 404);
+    ensure(equipment, "Equipment not found", 404);
 
-    return sequelize.transaction(async (t) => {
-      const m = await Maintenance.create(
-        {
-          gymId: Number(gymId),
-          equipmentId: Number(equipmentId),
-          issueDescription: String(issueDescription).trim(),
-          status: "pending",
-          requestedBy: ownerUserId,
-        },
-        { transaction: t }
-      );
+    try {
+      return await sequelize.transaction(async (t) => {
+        const m = await Maintenance.create(
+          {
+            gymId: Number(gymId),
+            equipmentId: Number(equipmentId),
+            issueDescription: issueDescription ? String(issueDescription).trim() : "",
+            status: "pending",
+            requestedBy: ownerUserId,
+          },
+          { transaction: t }
+        );
 
-      return m;
-    });
+        return m;
+      });
+    } catch (error) {
+      console.error("Maintenance creation error:", error);
+      throw { message: error.message || "Failed to create maintenance request", statusCode: 500 };
+    }
   },
 
   // Cancel maintenance request (owner hủy nếu chưa được duyệt)

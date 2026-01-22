@@ -6,7 +6,8 @@ const ownerInventoryController = {
       const data = await ownerInventoryService.getInventory(req.user.id, req.query);
       return res.status(200).json(data);
     } catch (e) {
-      return res.status(e.statusCode || 500).json({ message: e.message });
+      console.error("Get inventory error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message || "Internal server error" });
     }
   },
 
@@ -15,7 +16,8 @@ const ownerInventoryController = {
       const data = await ownerInventoryService.getInventoryDetail(req.user.id, req.params.id);
       return res.status(200).json({ data });
     } catch (e) {
-      return res.status(e.statusCode || 500).json({ message: e.message });
+      console.error("Get inventory detail error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message || "Internal server error" });
     }
   },
 };

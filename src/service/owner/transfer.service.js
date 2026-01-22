@@ -57,7 +57,13 @@ const ownerTransferService = {
       include: [
         { model: Gym, as: "fromGym", required: false, attributes: ["id", "name", "ownerId"] },
         { model: Gym, as: "toGym", required: false, attributes: ["id", "name", "ownerId"] },
-        { model: EquipmentTransferItem, as: "items", required: false },
+        {
+          model: EquipmentTransferItem,
+          as: "items",
+          required: false,
+          attributes: ["id", "transferId", "equipmentId", "quantity"],
+          include: [{ model: Equipment, as: "equipment", attributes: ["id", "name", "code"] }],
+        },
       ],
       order: [["createdAt", "DESC"]],
       limit,
@@ -91,6 +97,7 @@ const ownerTransferService = {
         {
           model: EquipmentTransferItem,
           as: "items",
+          attributes: ["id", "transferId", "equipmentId", "quantity"],
           include: [{ model: Equipment, as: "equipment", attributes: ["id", "name", "code"] }],
         },
       ],
@@ -113,61 +120,73 @@ const ownerTransferService = {
 
   // Create transfer request
   async createTransfer(ownerUserId, payload) {
-    const { fromGymId, toGymId, items, notes } = payload;
+    try {
+      const { fromGymId, toGymId, items, notes } = payload;
 
-    ensure(fromGymId, "fromGymId is required");
-    ensure(toGymId, "toGymId is required");
-    ensure(items && Array.isArray(items) && items.length > 0, "items must be non-empty array");
+      ensure(fromGymId, "fromGymId is required");
+      ensure(toGymId, "toGymId is required");
+      ensure(items && Array.isArray(items) && items.length > 0, "items must be non-empty array");
 
-    // Check both gyms belong to owner
-    const [fromGym, toGym] = await Promise.all([
-      Gym.findByPk(Number(fromGymId)),
-      Gym.findByPk(Number(toGymId)),
-    ]);
+      // Check both gyms belong to owner
+      const [fromGym, toGym] = await Promise.all([
+        Gym.findByPk(Number(fromGymId)),
+        Gym.findByPk(Number(toGymId)),
+      ]);
 
-    ensure(fromGym && fromGym.ownerId === ownerUserId, "fromGym not found or not authorized", 403);
-    ensure(toGym && toGym.ownerId === ownerUserId, "toGym not found or not authorized", 403);
-    ensure(fromGymId !== toGymId, "From and To gym must be different");
+      ensure(fromGym && fromGym.ownerId === ownerUserId, "fromGym not found or not authorized", 403);
+      ensure(toGym && toGym.ownerId === ownerUserId, "toGym not found or not authorized", 403);
+      ensure(fromGymId !== toGymId, "From and To gym must be different");
 
-    // Validate stock availability for all items
-    const { EquipmentStock } = db;
-    for (const item of items) {
-      const stock = await EquipmentStock.findOne({
-        where: {
-          gymId: Number(fromGymId),
+      // Validate stock availability for all items
+      const { EquipmentStock } = db;
+      for (const item of items) {
+        const stock = await EquipmentStock.findOne({
+          attributes: ["id", "quantity", "availableQuantity", "reservedQuantity"],
+          where: {
+            gymId: Number(fromGymId),
+            equipmentId: Number(item.equipmentId),
+          },
+        });
+
+        ensure(
+          stock && stock.availableQuantity >= Number(item.quantity),
+          `Equipment ${item.equipmentId} không có đủ số lượng trong kho (yêu cầu: ${item.quantity}, có: ${stock?.availableQuantity || 0})`,
+          400
+        );
+      }
+
+      return sequelize.transaction(async (t) => {
+        // Generate transfer code
+        const count = await EquipmentTransfer.count();
+        const code = `TRANSFER-${Date.now()}-${count + 1}`;
+
+        const transfer = await EquipmentTransfer.create(
+          {
+            code,
+            transferDate: new Date(),
+            fromGymId: Number(fromGymId),
+            toGymId: Number(toGymId),
+            status: "pending",
+            notes: notes || "",
+          },
+          { transaction: t }
+        );
+
+        // Create transfer items
+        const transferItems = items.map((item) => ({
+          transferId: transfer.id,
           equipmentId: Number(item.equipmentId),
-        },
+          quantity: Number(item.quantity),
+        }));
+
+        await EquipmentTransferItem.bulkCreate(transferItems, { transaction: t });
+
+        return transfer;
       });
-
-      ensure(
-        stock && stock.availableQuantity >= Number(item.quantity),
-        `Equipment ${item.equipmentId} không có đủ số lượng trong kho (yêu cầu: ${item.quantity}, có: ${stock?.availableQuantity || 0})`,
-        400
-      );
+    } catch (error) {
+      console.error("createTransfer error:", error);
+      throw error;
     }
-
-    return sequelize.transaction(async (t) => {
-      const transfer = await EquipmentTransfer.create(
-        {
-          fromGymId: Number(fromGymId),
-          toGymId: Number(toGymId),
-          status: "pending",
-          notes: notes || "",
-        },
-        { transaction: t }
-      );
-
-      // Create transfer items
-      const transferItems = items.map((item) => ({
-        transferId: transfer.id,
-        equipmentId: Number(item.equipmentId),
-        quantity: Number(item.quantity),
-      }));
-
-      await EquipmentTransferItem.bulkCreate(transferItems, { transaction: t });
-
-      return transfer;
-    });
   },
 
   // Approve transfer
@@ -220,6 +239,12 @@ const ownerTransferService = {
     const transfer = await EquipmentTransfer.findByPk(transferId, {
       include: [
         { model: Gym, as: "toGym" },
+        { model: Gym, as: "fromGym" },
+        {
+          model: EquipmentTransferItem,
+          as: "items",
+          attributes: ["id", "equipmentId", "quantity"],
+        },
       ],
     });
 
@@ -238,6 +263,58 @@ const ownerTransferService = {
     );
 
     return sequelize.transaction(async (t) => {
+      // Update stock for each item
+      const { EquipmentStock } = db;
+      for (const item of transfer.items) {
+        // Decrease from gym stock
+        await EquipmentStock.update(
+          {
+            quantity: db.sequelize.literal(`quantity - ${item.quantity}`),
+            availableQuantity: db.sequelize.literal(`availableQuantity - ${item.quantity}`),
+          },
+          {
+            where: {
+              gymId: transfer.fromGymId,
+              equipmentId: item.equipmentId,
+            },
+            transaction: t,
+          }
+        );
+
+        // Increase to gym stock (or create if doesn't exist)
+        const toGymStock = await EquipmentStock.findOne({
+          attributes: ["id", "gymId", "equipmentId", "quantity", "availableQuantity", "reservedQuantity"],
+          where: {
+            gymId: transfer.toGymId,
+            equipmentId: item.equipmentId,
+          },
+          transaction: t,
+        });
+
+        if (toGymStock) {
+          await toGymStock.update(
+            {
+              quantity: db.sequelize.literal(`quantity + ${item.quantity}`),
+              availableQuantity: db.sequelize.literal(`availableQuantity + ${item.quantity}`),
+            },
+            { transaction: t }
+          );
+        } else {
+          // Create new stock record if doesn't exist
+          await EquipmentStock.create(
+            {
+              gymId: transfer.toGymId,
+              equipmentId: item.equipmentId,
+              quantity: item.quantity,
+              availableQuantity: item.quantity,
+              reservedQuantity: 0,
+            },
+            { transaction: t }
+          );
+        }
+      }
+
+      // Update transfer status
       await transfer.update({ status: "completed" }, { transaction: t });
       return transfer;
     });

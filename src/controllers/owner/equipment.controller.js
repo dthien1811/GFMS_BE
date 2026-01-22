@@ -6,7 +6,8 @@ const ownerEquipmentController = {
       const data = await ownerEquipmentService.getEquipments(req.user.id, req.query);
       return res.status(200).json(data);
     } catch (e) {
-      return res.status(e.statusCode || 500).json({ message: e.message });
+      console.error("Get equipments error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message || "Internal server error" });
     }
   },
 
@@ -15,7 +16,8 @@ const ownerEquipmentController = {
       const data = await ownerEquipmentService.getEquipmentDetail(req.user.id, req.params.id);
       return res.status(200).json({ data });
     } catch (e) {
-      return res.status(e.statusCode || 500).json({ message: e.message });
+      console.error("Get equipment detail error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message || "Internal server error" });
     }
   },
 
@@ -24,7 +26,8 @@ const ownerEquipmentController = {
       const data = await ownerEquipmentService.getCategories();
       return res.status(200).json({ data });
     } catch (e) {
-      return res.status(e.statusCode || 500).json({ message: e.message });
+      console.error("Get categories error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message || "Internal server error" });
     }
   },
 };

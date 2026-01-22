@@ -37,9 +37,10 @@ const ownerMaintenanceController = {
       );
       return res.status(201).json({ data });
     } catch (e) {
+      console.error("Create maintenance error:", e);
       return res
         .status(e.statusCode || 500)
-        .json({ message: e.message });
+        .json({ message: e.message || "Internal server error" });
     }
   },
 

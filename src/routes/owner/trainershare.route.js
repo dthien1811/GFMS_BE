@@ -1,0 +1,22 @@
+import express from "express";
+import ownerTrainerShareController from "../../controllers/owner/trainershare.controller";
+import jwtAction from "../../middleware/JWTAction";
+import { requireGroupName } from "../../middleware/role";
+
+const router = express.Router();
+
+// JWT đã được check ở useApi.js
+router.use(jwtAction.checkUserJWT);
+
+// Chỉ owner mới được tạo trainer share request
+router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owners"]));
+
+// Routes cho trainer shares
+router.get("/available-trainers/:gymId", ownerTrainerShareController.getAvailableTrainers);
+router.post("/", ownerTrainerShareController.createTrainerShare);
+router.get("/", ownerTrainerShareController.getMyTrainerShares);
+router.get("/:id", ownerTrainerShareController.getMyTrainerShareDetail);
+router.put("/:id", ownerTrainerShareController.updateMyTrainerShare);
+router.delete("/:id", ownerTrainerShareController.deleteMyTrainerShare);
+
+export default router;

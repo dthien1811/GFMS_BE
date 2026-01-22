@@ -50,13 +50,14 @@ const ownerEquipmentService = {
     }
 
     const { rows, count } = await EquipmentStock.findAndCountAll({
+      attributes: ["id", "equipmentId", "gymId", "quantity", "availableQuantity", "reservedQuantity"],
       where,
       include: [
         {
           model: Equipment,
           as: "equipment",
           required: true,
-          attributes: ["id", "name", "code", "categoryId", "status", "description"],
+          attributes: ["id", "name", "code", "categoryId", "status", "description", "price"],
           where: equipmentWhere,
           include: [
             { model: EquipmentCategory, as: "category", required: false, attributes: ["id", "name"] },
@@ -77,6 +78,7 @@ const ownerEquipmentService = {
       code: stock.equipment.code,
       status: stock.equipment.status,
       description: stock.equipment.description,
+      price: stock.equipment.price,
       categoryId: stock.equipment.categoryId,
       EquipmentCategory: stock.equipment.category,
       Gym: stock.gym,
@@ -124,8 +126,8 @@ const ownerEquipmentService = {
           model: Equipment,
           as: "equipment",
           required: true,
-          attributes: ["id", "name", "code", "categoryId", "status", "description", "brand", "model"],
-          include: [{ model: EquipmentCategory, as: "category", required: false }],
+          attributes: ["id", "name", "code", "categoryId", "status", "description", "brand", "model", "price"],
+          include: [{ model: EquipmentCategory, as: "category", required: false, attributes: ["id", "name"] }],
         },
         { model: Gym, as: "gym", required: false, attributes: ["id", "name"] },
       ],

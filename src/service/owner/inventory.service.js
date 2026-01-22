@@ -27,7 +27,7 @@ const ownerInventoryService = {
       return { data: [], meta: { page, limit, totalItems: 0, totalPages: 0 } };
     }
 
-    const where = { gymId: { gymId: gymIds } };
+    const where = { gymId: { [db.Sequelize.Op.in]: gymIds } };
 
     if (gymId) {
       where.gymId = Number(gymId);
@@ -42,10 +42,11 @@ const ownerInventoryService = {
     }
 
     const { rows, count } = await EquipmentStock.findAndCountAll({
+      attributes: ["id", "equipmentId", "gymId", "quantity", "reservedQuantity", "availableQuantity", "location", "reorderPoint", "lastRestocked"],
       where: { gymId: { [db.Sequelize.Op.in]: gymIds }, ...query_search },
       include: [
         { model: Gym, as: "gym", required: false, attributes: ["id", "name"] },
-        { model: Equipment, as: "equipment", required: false, attributes: ["id", "name", "code"] },
+        { model: Equipment, as: "equipment", required: false, attributes: ["id", "name", "code", "minStockLevel"] },
       ],
       order: [["createdAt", "DESC"]],
       limit,
@@ -68,7 +69,7 @@ const ownerInventoryService = {
     const stock = await EquipmentStock.findByPk(stockId, {
       include: [
         { model: Gym, as: "gym", required: false, attributes: ["id", "name", "ownerId"] },
-        { model: Equipment, as: "equipment", required: false },
+        { model: Equipment, as: "equipment", required: false, attributes: ["id", "name", "code", "minStockLevel"] },
       ],
     });
 

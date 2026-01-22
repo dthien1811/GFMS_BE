@@ -68,6 +68,8 @@ module.exports = (sequelize, DataTypes) => {
 
       unit: { type: DataTypes.STRING, allowNull: false, defaultValue: 'piece' },
 
+      price: { type: DataTypes.DECIMAL(15, 2), allowNull: false, defaultValue: 0 },
+
       minStockLevel: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
       maxStockLevel: { type: DataTypes.INTEGER, allowNull: true },
 

@@ -6,6 +6,7 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       // 1-1 / 1-n core
       if (models.User) Trainer.belongsTo(models.User, { foreignKey: 'userId' });
+      if (models.Gym) Trainer.belongsTo(models.Gym, { foreignKey: 'gymId' });
 
       if (models.Booking) Trainer.hasMany(models.Booking, { foreignKey: 'trainerId' });
       if (models.Transaction) Trainer.hasMany(models.Transaction, { foreignKey: 'trainerId' });
@@ -20,21 +21,13 @@ module.exports = (sequelize, DataTypes) => {
 
       if (models.Commission) Trainer.hasMany(models.Commission, { foreignKey: 'trainerId' });
       if (models.Review) Trainer.hasMany(models.Review, { foreignKey: 'trainerId' });
-
-      /**
-       * IMPORTANT:
-       * - DB hiện tại KHÔNG có bảng TrainerGym
-       * - Trainer cũng KHÔNG có cột gymId
-       * => Không dùng belongsToMany( Gym <-> Trainer ) qua TrainerGym nữa.
-       * 
-       * Khi nào bạn tạo bảng TrainerGym thật sự thì mới bật lại.
-       */
     }
   }
 
   Trainer.init(
     {
       userId: DataTypes.INTEGER,
+      gymId: DataTypes.INTEGER,
       specialization: DataTypes.STRING,
       certification: DataTypes.STRING,
       experienceYears: DataTypes.INTEGER,
