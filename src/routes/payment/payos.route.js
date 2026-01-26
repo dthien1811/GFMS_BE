@@ -1,20 +1,19 @@
 import express from "express";
 import payosController from "../../controllers/payment/payos.controller";
+import payosCreateController from "../../controllers/payment/payos.create.controller";
+import auth from "../../middleware/auth";
 
 const router = express.Router();
 
 const payosRoute = (app) => {
-  // Webhook không cần JWT
+  // FE → tạo thanh toán (có JWT)
+  router.post("/create", auth, payosCreateController.create);
+
+  // PayOS → webhook (không JWT)
   router.post("/webhook", payosController.webhook);
 
-  // Mount route chính: /api/payment/payos/webhook
   app.use("/api/payment/payos", router);
-  
-  // ✅ Alias ngắn hơn: /api/payment/webhook (để dễ nhớ)
-  app.post("/api/payment/webhook", payosController.webhook);
-
   return router;
 };
 
 export default payosRoute;
-
