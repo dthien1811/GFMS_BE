@@ -66,7 +66,9 @@ async function createPackagePaymentLink({ orderCode, amount, description }) {
     orderCode: Number(orderCode),
     amount: Math.round(Number(amount)),
     description: shortDesc,
-    returnUrl: "http://localhost:3000/member/my-packages?payos=success",
+    returnUrl: `http://localhost:3000/member/my-packages?payos=success&orderCode=${encodeURIComponent(
+      orderCode
+    )}`,
     cancelUrl: "http://localhost:3000/member/packages?payos=cancel",
   };
 
@@ -79,6 +81,7 @@ async function createPackagePaymentLink({ orderCode, amount, description }) {
     return {
       checkoutUrl: response.checkoutUrl,
       orderCode: response.orderCode,
+      paymentLinkId: response.paymentLinkId || response.id,
     };
   } catch (error) {
     console.error("❌ Create payment error:", error.message);
@@ -101,7 +104,24 @@ function verifyWebhook(webhookBody) {
   return webhookBody;
 }
 
+async function getPaymentLinkInformation(id) {
+  const client = getPayOS();
+  if (!client) return null;
+
+  try {
+    if (client.paymentRequests && typeof client.paymentRequests.get === "function") {
+      return await client.paymentRequests.get(id);
+    }
+  } catch (e) {
+    const detail = e?.message || e;
+    console.error("❌ PayOS getPaymentLinkInformation error:", detail);
+  }
+
+  return null;
+}
+
 module.exports = {
   createPackagePaymentLink,
   verifyWebhook,
+  getPaymentLinkInformation,
 };

@@ -63,11 +63,25 @@ const payosCreateController = {
       /* =========================
          4️⃣ CREATE PAYOS LINK
       ========================= */
-      const { checkoutUrl } = await payosService.createPackagePaymentLink({
+      const { checkoutUrl, orderCode, paymentLinkId } = await payosService.createPackagePaymentLink({
         orderCode: tx.id, // ✅ dùng transaction.id
         amount: pkg.price,
         description: `Thanh toán ${pkg.name}`,
       });
+
+      await tx.update(
+        {
+          metadata: {
+            ...(tx.metadata || {}),
+            payos: {
+              orderCode,
+              checkoutUrl,
+              paymentLinkId,
+            },
+          },
+        },
+        { transaction: t }
+      );
 
       await t.commit();
       return res.status(200).json({

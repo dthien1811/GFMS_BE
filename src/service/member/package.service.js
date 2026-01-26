@@ -114,6 +114,7 @@ const memberPackageService = {
               payos: {
                 orderCode: payosResp.orderCode,
                 checkoutUrl: payosResp.checkoutUrl,
+                paymentLinkId: payosResp.paymentLinkId,
               },
             },
           },
