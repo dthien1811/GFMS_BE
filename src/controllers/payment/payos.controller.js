@@ -5,16 +5,27 @@ const payosController = {
   // Webhook payOS gọi về khi thanh toán thay đổi trạng thái
   async webhook(req, res) {
     try {
-      const verified = payosService.verifyWebhook(req.body || {});
-      const data = verified.data || verified;
+      const rawBody = req.body || {};
+      console.log("[payOS webhook] received:", JSON.stringify(rawBody));
+      const verified = payosService.verifyWebhook(rawBody);
+      const data = verified?.data || rawBody?.data || verified || rawBody;
 
-      const orderCode = data.orderCode;
-      const amount = Number(data.amount || 0);
+      const orderCode = data.orderCode || rawBody?.data?.orderCode;
+      const amount = Number(data.amount || rawBody?.data?.amount || 0);
       const status = data.status || data.paymentStatus || "";
+      const success =
+        data.success === true ||
+        data.code === "00" ||
+        rawBody?.success === true ||
+        rawBody?.code === "00" ||
+        (verified?.success === true) ||
+        (verified?.code === "00");
 
       if (!orderCode) {
-        return res.status(400).json({ message: "orderCode không hợp lệ" });
+        // PayOS có thể gửi request xác thực webhook không kèm orderCode
+        return res.status(200).json({ message: "OK (no orderCode)" });
       }
+      console.log("[payOS webhook] orderCode:", orderCode);
 
       // Hiện tại ta dùng transaction.id làm orderCode khi tạo link
       const tx = await db.Transaction.findByPk(orderCode);
@@ -29,11 +40,18 @@ const payosController = {
 
       // Chỉ xử lý khi trạng thái thành công
       const normalized = String(status).toUpperCase();
-      if (normalized !== "PAID" && normalized !== "SUCCESS" && normalized !== "SUCCEEDED") {
+      const isPaid =
+        normalized === "PAID" ||
+        normalized === "SUCCESS" ||
+        normalized === "SUCCEEDED" ||
+        success;
+      console.log("[payOS webhook] normalized:", normalized, "isPaid:", isPaid, "success:", success);
+
+      if (!isPaid) {
         // Có thể log thêm trạng thái khác nếu cần
         await tx.update(
           {
-            paymentStatus: normalized.toLowerCase(),
+            paymentStatus: normalized ? normalized.toLowerCase() : "pending",
             metadata: {
               ...(tx.metadata || {}),
               payosWebhook: data,
