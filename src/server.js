@@ -1,4 +1,4 @@
-// 🚨 BẮT BUỘC: dotenv phải ở TRÊN CÙNG
+
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -37,13 +37,6 @@ try {
 const app = express();
 const PORT = process.env.PORT || 8080;
 const HOSTNAME = process.env.HOSTNAME || "localhost";
-
-// ===== DEBUG ENV (chỉ để test, xong có thể xóa) =====
-console.log("🔎 PAYOS ENV CHECK:", {
-  PAYOS_CLIENT_ID: process.env.PAYOS_CLIENT_ID,
-  PAYOS_API_KEY: process.env.PAYOS_API_KEY,
-  PAYOS_CHECKSUM_KEY: process.env.PAYOS_CHECKSUM_KEY,
-});
 
 
 // ===== CORS =====
