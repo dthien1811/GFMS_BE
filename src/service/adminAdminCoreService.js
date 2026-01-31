@@ -560,139 +560,138 @@ class AdminAdminCoreService {
     return fr;
   }
 
-  async approveFranchiseRequest(req) {
-    const id = Number(req.params.id);
-    const actorId = getActorId(req);
-    ensure(actorId, "Missing actor (req.user)", 401);
+async approveFranchiseRequest(req) {
+  /**
+   * ✅ Enterprise rule:
+   * - Approve KHÔNG tạo gym
+   * - Chỉ set approvedAt + reviewedBy + reviewNotes
+   * - Chuẩn bị contractStatus = not_sent (nếu chưa có)
+   */
+  const id = Number(req.params.id);
+  const actorId = getActorId(req);
+  ensure(actorId, "Missing actor (req.user)", 401);
 
-    return sequelize.transaction(async (t) => {
-      const fr = await FranchiseRequest.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
-      ensure(fr, "FranchiseRequest not found", 404);
-      ensure(fr.status === "pending", "Only pending franchise request can be approved");
+  const { reviewNotes } = req.body || {};
 
-      const oldValues = safeJson(fr);
+  return sequelize.transaction(async (t) => {
+    const fr = await FranchiseRequest.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    ensure(fr, "FranchiseRequest not found", 404);
+    ensure(fr.status === "pending", "Only pending franchise request can be approved");
 
-      const gym = await Gym.create(
-        {
-          name: fr.businessName,
-          address: fr.location,
-          phone: fr.contactPhone || null,
-          email: fr.contactEmail || null,
-          description: fr.businessPlan || null,
-          ownerId: fr.requesterId,
-          franchiseRequestId: fr.id,
-          status: "active",
-        },
-        { transaction: t }
-      );
+    const oldValues = safeJson(fr);
 
-      await fr.update(
-        {
-          status: "approved",
-          reviewedBy: actorId,
-          approvedDate: new Date(),
-          reviewNotes: fr.reviewNotes || null,
-        },
-        { transaction: t }
-      );
+    await fr.update(
+      {
+        status: "approved",
+        reviewedBy: actorId,
+        reviewNotes: reviewNotes ?? fr.reviewNotes ?? null,
+        approvedAt: new Date(),
 
-      const user = await User.findByPk(fr.requesterId, { transaction: t });
-      if (user) {
-        const ownerGroup = await Group.findOne({
-          where: { name: { [Op.like]: "%Owner%" } },
-          transaction: t,
-        });
+        // reset reject fields
+        rejectedAt: null,
+        rejectionReason: null,
 
-        if (ownerGroup) {
-          await user.update({ groupId: ownerGroup.id }, { transaction: t });
-        }
-      }
+        // contract defaults
+        contractStatus: fr.contractStatus || "not_sent",
+        signProvider: fr.signProvider || "signnow", // default enterprise
+      },
+      { transaction: t }
+    );
 
-      await createAudit({
-        t,
-        req,
-        action: "FRANCHISE_APPROVED",
-        tableName: "franchiserequest",
-        recordId: fr.id,
-        oldValues,
-        newValues: { ...safeJson(fr), createdGymId: gym.id },
-      });
-
-      await notifyUser({
-        t,
-        userId: fr.requesterId,
-        title: "Yêu cầu nhượng quyền được duyệt",
-        message: `Yêu cầu nhượng quyền #${fr.id} đã được duyệt. Gym mới: ${gym.name}.`,
-        notificationType: "FRANCHISE",
-        relatedType: "franchiserequest",
-        relatedId: fr.id,
-      });
-
-      await sendMessage({
-        t,
-        senderId: actorId,
-        receiverId: fr.requesterId,
-        content: `Chúc mừng! Yêu cầu nhượng quyền #${fr.id} đã được duyệt. Gym mới: ${gym.name}.`,
-      });
-
-      return { franchiseRequest: fr, gym };
+    await createAudit({
+      t,
+      req,
+      action: "FRANCHISE_APPROVED",
+      tableName: "franchiserequest",
+      recordId: fr.id,
+      oldValues,
+      newValues: safeJson(fr),
     });
-  }
 
-  async rejectFranchiseRequest(req) {
-    const id = Number(req.params.id);
-    const actorId = getActorId(req);
-    ensure(actorId, "Missing actor (req.user)", 401);
-
-    const { reviewNotes } = req.body || {};
-    ensure(reviewNotes && String(reviewNotes).trim(), "reviewNotes is required");
-
-    return sequelize.transaction(async (t) => {
-      const fr = await FranchiseRequest.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
-      ensure(fr, "FranchiseRequest not found", 404);
-      ensure(fr.status === "pending", "Only pending franchise request can be rejected");
-
-      const oldValues = safeJson(fr);
-
-      await fr.update(
-        {
-          status: "rejected",
-          reviewedBy: actorId,
-          reviewNotes,
-        },
-        { transaction: t }
-      );
-
-      await createAudit({
-        t,
-        req,
-        action: "FRANCHISE_REJECTED",
-        tableName: "franchiserequest",
-        recordId: fr.id,
-        oldValues,
-        newValues: safeJson(fr),
-      });
-
-      await notifyUser({
-        t,
-        userId: fr.requesterId,
-        title: "Yêu cầu nhượng quyền bị từ chối",
-        message: `Yêu cầu #${fr.id} bị từ chối. Ghi chú: ${reviewNotes}`,
-        notificationType: "FRANCHISE",
-        relatedType: "franchiserequest",
-        relatedId: fr.id,
-      });
-
-      await sendMessage({
-        t,
-        senderId: actorId,
-        receiverId: fr.requesterId,
-        content: `Yêu cầu nhượng quyền #${fr.id} bị từ chối. Lý do: ${reviewNotes}`,
-      });
-
-      return fr;
+    await notifyUser({
+      t,
+      userId: fr.requesterId,
+      title: "Yêu cầu nhượng quyền đã được duyệt",
+      message: `Yêu cầu #${fr.id} đã được duyệt. Vui lòng chờ hợp đồng được gửi để ký.`,
+      notificationType: "FRANCHISE",
+      relatedType: "franchiserequest",
+      relatedId: fr.id,
     });
-  }
+
+    await sendMessage({
+      t,
+      senderId: actorId,
+      receiverId: fr.requesterId,
+      content: `Yêu cầu nhượng quyền #${fr.id} đã được duyệt. Bước tiếp theo: ký hợp đồng nhượng quyền.`,
+    });
+
+    return fr;
+  });
+}
+
+
+async rejectFranchiseRequest(req) {
+  /**
+   * ✅ Enterprise rule:
+   * - Rejected -> set rejectedAt + rejectionReason
+   * - Không tạo gym
+   */
+  const id = Number(req.params.id);
+  const actorId = getActorId(req);
+  ensure(actorId, "Missing actor (req.user)", 401);
+
+  const { rejectionReason } = req.body || {};
+  ensure(rejectionReason && String(rejectionReason).trim(), "rejectionReason is required");
+
+  return sequelize.transaction(async (t) => {
+    const fr = await FranchiseRequest.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    ensure(fr, "FranchiseRequest not found", 404);
+    ensure(fr.status === "pending", "Only pending franchise request can be rejected");
+
+    const oldValues = safeJson(fr);
+
+    await fr.update(
+      {
+        status: "rejected",
+        reviewedBy: actorId,
+        reviewNotes: rejectionReason,   // để FE cũ vẫn hiển thị được
+        rejectionReason,
+        rejectedAt: new Date(),
+        approvedAt: null,
+      },
+      { transaction: t }
+    );
+
+    await createAudit({
+      t,
+      req,
+      action: "FRANCHISE_REJECTED",
+      tableName: "franchiserequest",
+      recordId: fr.id,
+      oldValues,
+      newValues: safeJson(fr),
+    });
+
+    await notifyUser({
+      t,
+      userId: fr.requesterId,
+      title: "Yêu cầu nhượng quyền bị từ chối",
+      message: `Yêu cầu #${fr.id} bị từ chối. Lý do: ${rejectionReason}`,
+      notificationType: "FRANCHISE",
+      relatedType: "franchiserequest",
+      relatedId: fr.id,
+    });
+
+    await sendMessage({
+      t,
+      senderId: actorId,
+      receiverId: fr.requesterId,
+      content: `Yêu cầu nhượng quyền #${fr.id} bị từ chối. Lý do: ${rejectionReason}`,
+    });
+
+    return fr;
+  });
+}
 
   /* ======================================================
    * MODULE 4: POLICIES

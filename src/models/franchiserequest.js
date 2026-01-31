@@ -1,104 +1,77 @@
-'use strict';
-const { Model } = require('sequelize');
-
 module.exports = (sequelize, DataTypes) => {
-  class FranchiseRequest extends Model {
-    static associate(models) {
-      FranchiseRequest.belongsTo(models.User, {
-        foreignKey: 'requesterId',
-        as: 'requester',
-      });
-
-      FranchiseRequest.belongsTo(models.User, {
-        foreignKey: 'reviewedBy',
-        as: 'reviewer',
-      });
-    }
-  }
-
-  FranchiseRequest.init(
+  const FranchiseRequest = sequelize.define(
+    "FranchiseRequest",
     {
-      requesterId: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-      },
+      id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
 
-      businessName: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
+      requesterId: { type: DataTypes.INTEGER, allowNull: false },
 
-      location: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
+      businessName: DataTypes.STRING,
+      location: DataTypes.STRING,
+      contactPerson: DataTypes.STRING,
+      contactPhone: DataTypes.STRING,
+      contactEmail: DataTypes.STRING,
+      investmentAmount: DataTypes.DECIMAL(15, 2),
+      businessPlan: DataTypes.TEXT,
 
-      contactPerson: {
-        type: DataTypes.STRING,
-        allowNull: false,
-      },
-
-      contactPhone: {
-        type: DataTypes.STRING,
-        allowNull: true,
-        validate: {
-          is: /^[0-9]{10,11}$/,
-        },
-      },
-
-      contactEmail: {
-        type: DataTypes.STRING,
-        allowNull: true,
-        validate: {
-          isEmail: true,
-        },
-      },
-
-      investmentAmount: {
-        type: DataTypes.DECIMAL(15, 2),
-        allowNull: true,
-      },
-
-      businessPlan: {
-        type: DataTypes.TEXT,
-        allowNull: true,
-      },
-
+      // BUSINESS STATUS
       status: {
-        type: DataTypes.ENUM('pending', 'approved', 'rejected'),
-        allowNull: false,
-        defaultValue: 'pending',
+        type: DataTypes.ENUM("pending", "approved", "rejected"),
+        defaultValue: "pending",
       },
 
-      reviewedBy: {
-        type: DataTypes.INTEGER,
-        allowNull: true,
+      reviewedBy: DataTypes.INTEGER,
+      reviewNotes: DataTypes.TEXT,
+      approvedAt: DataTypes.DATE,
+      rejectedAt: DataTypes.DATE,
+      rejectionReason: DataTypes.TEXT,
+
+      // CONTRACT FLOW
+      contractStatus: {
+        type: DataTypes.ENUM("not_sent", "sent", "signed", "completed"),
+        defaultValue: "not_sent",
       },
 
-      reviewNotes: {
-        type: DataTypes.TEXT,
-        allowNull: true,
-      },
+      signProvider: DataTypes.STRING,
+      signNowDocumentId: DataTypes.STRING,
+      signNowInviteId: DataTypes.STRING,
+      contractUrl: DataTypes.TEXT,
 
-      approvedDate: {
-        type: DataTypes.DATE,
-        allowNull: true,
-      },
+      contractSigned: { type: DataTypes.BOOLEAN, defaultValue: false },
+      contractSignedAt: DataTypes.DATE,
+      contractCompletedAt: DataTypes.DATE,
 
-      contractSigned: {
-        type: DataTypes.BOOLEAN,
-        allowNull: false,
-        defaultValue: false,
-      },
+      // RESULT
+      gymId: DataTypes.INTEGER,
+      gymCreatedAt: DataTypes.DATE,
     },
     {
-      sequelize,
-      modelName: 'FranchiseRequest',
-      tableName: 'franchiserequest',
-      freezeTableName: true,
+      tableName: "franchiserequest",
       timestamps: true,
     }
   );
+
+  /**
+   * ✅ FIX: khai báo association để Sequelize hiểu "requester" và "reviewer"
+   * Lưu ý: alias PHẢI trùng với as trong include ở service:
+   * as: "requester" và as: "reviewer"
+   */
+  FranchiseRequest.associate = (models) => {
+    // Người tạo request
+    FranchiseRequest.belongsTo(models.User, {
+      as: "requester",
+      foreignKey: "requesterId",
+    });
+
+    // Người duyệt (admin)
+    FranchiseRequest.belongsTo(models.User, {
+      as: "reviewer",
+      foreignKey: "reviewedBy",
+    });
+
+    // Nếu bạn có model Gym và muốn include gym:
+    // FranchiseRequest.belongsTo(models.Gym, { as: "gym", foreignKey: "gymId" });
+  };
 
   return FranchiseRequest;
 };
