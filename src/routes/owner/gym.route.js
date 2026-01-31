@@ -13,5 +13,7 @@ router.use(jwtAction.checkUserJWT);
 router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owners"]));
 
 router.get("/", ownerGymController.getMyGyms);
+router.get("/:id", ownerGymController.getGymDetail);
+router.put("/:id", ownerGymController.updateGym);
 
 export default router;

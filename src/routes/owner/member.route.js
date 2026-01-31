@@ -12,6 +12,10 @@ router.get("/available-users", ownerMemberController.getAvailableUsers);
 router.post("/", ownerMemberController.createMember);
 router.get("/", ownerMemberController.getMyMembers);
 router.get("/:id", ownerMemberController.getMemberDetail);
+router.put("/:id", ownerMemberController.updateMember);
 router.delete("/:id", ownerMemberController.deleteMember);
+
+// Gia hạn gói cho member
+router.post("/:id/renew-package", ownerMemberController.renewMemberPackage);
 
 export default router;

@@ -79,6 +79,28 @@ const ownerMemberController = {
   },
 
   /**
+   * PUT /api/owner/members/:id
+   * Cập nhật thông tin member
+   */
+  async updateMember(req, res) {
+    try {
+      const userId = req.user.id;
+      const memberId = req.params.id;
+      const data = req.body;
+
+      const member = await ownerMemberService.updateMember(userId, memberId, data);
+
+      return res.status(200).json({
+        data: member,
+        message: "Cập nhật hội viên thành công",
+      });
+    } catch (e) {
+      console.error('Error in updateMember controller:', e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  /**
    * DELETE /api/owner/members/:id
    * Xóa member
    */
@@ -93,6 +115,36 @@ const ownerMemberController = {
     } catch (e) {
       console.error('Error in deleteMember controller:', e);
       return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  /**
+   * POST /api/owner/members/:id/renew-package
+   * Gia hạn gói cho member
+   */
+  async renewMemberPackage(req, res) {
+    try {
+      const userId = req.user.id;
+      const memberId = req.params.id;
+      const { packageId } = req.body;
+
+      if (!packageId) {
+        return res.status(400).json({ message: "Vui lòng chọn gói cần gia hạn" });
+      }
+
+      const result = await ownerMemberService.renewMemberPackage(userId, memberId, packageId);
+
+      return res.status(200).json({
+        success: true,
+        data: result,
+        message: result.message,
+      });
+    } catch (e) {
+      console.error('Error in renewMemberPackage controller:', e);
+      return res.status(e.statusCode || 500).json({ 
+        success: false,
+        message: e.message 
+      });
     }
   },
 };

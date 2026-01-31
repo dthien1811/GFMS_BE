@@ -53,24 +53,56 @@ const payosController = {
           .json({ message: "Thiếu member hoặc package cho giao dịch này. Không thể kích hoạt gói." });
       }
 
-      // Tính expiryDate và tạo PackageActivation (same logic như mua trực tiếp)
+      // Kiểm tra loại giao dịch
+      const isRenewal = tx.transactionType === 'package_renewal';
+      
+      // Tính expiryDate
       let expiryDate = null;
-      if (pkg.durationDays && pkg.durationDays > 0) {
-        expiryDate = new Date();
-        expiryDate.setDate(expiryDate.getDate() + pkg.durationDays);
+      let activationDate = new Date();
+      
+      if (isRenewal) {
+        // Nếu là gia hạn, tìm gói activation cũ
+        const oldActivation = await db.PackageActivation.findOne({
+          where: { 
+            memberId: member.id,
+            packageId: pkg.id,
+          },
+          order: [['createdAt', 'DESC']],
+        });
+
+        // Nếu gói cũ còn hiệu lực, cộng dồn thời gian
+        const now = new Date();
+        if (oldActivation && oldActivation.status === 'active' && new Date(oldActivation.expiryDate) > now) {
+          expiryDate = new Date(oldActivation.expiryDate);
+          expiryDate.setDate(expiryDate.getDate() + pkg.durationDays);
+          
+          // Đánh dấu gói cũ là completed
+          await oldActivation.update({ status: 'completed' });
+        } else {
+          // Nếu gói đã hết hạn, tính từ hôm nay
+          expiryDate = new Date();
+          expiryDate.setDate(expiryDate.getDate() + pkg.durationDays);
+        }
+      } else {
+        // Mua mới - tính từ hôm nay
+        if (pkg.durationDays && pkg.durationDays > 0) {
+          expiryDate = new Date();
+          expiryDate.setDate(expiryDate.getDate() + pkg.durationDays);
+        }
       }
 
       const activation = await db.PackageActivation.create({
         memberId: member.id,
         packageId: pkg.id,
         transactionId: tx.id,
-        activationDate: new Date(),
+        activationDate,
         expiryDate,
         totalSessions: pkg.sessions,
         sessionsUsed: 0,
         sessionsRemaining: pkg.sessions,
         pricePerSession: pkg.sessions ? pkg.price / pkg.sessions : null,
         status: "active",
+        notes: isRenewal ? 'Gia hạn gói qua PayOS' : 'Kích hoạt gói qua PayOS',
       });
 
       await tx.update(

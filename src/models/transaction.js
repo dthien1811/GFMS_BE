@@ -18,9 +18,19 @@ module.exports = (sequelize, DataTypes) => {
     gymId: DataTypes.INTEGER,
     packageId: DataTypes.INTEGER,
     amount: DataTypes.DECIMAL,
-    transactionType: DataTypes.STRING,
+    transactionType: {
+      type: DataTypes.STRING,
+      validate: {
+        isIn: [['package_purchase', 'package_renewal', 'booking_payment', 'refund', 'commission', 'withdrawal', 'other']]
+      }
+    },
     paymentMethod: DataTypes.STRING,
-    paymentStatus: DataTypes.STRING,
+    paymentStatus: {
+      type: DataTypes.STRING,
+      validate: {
+        isIn: [['pending', 'completed', 'failed', 'refunded', 'cancelled']]
+      }
+    },
     description: DataTypes.TEXT,
     metadata: DataTypes.JSON,
     transactionDate: DataTypes.DATE,

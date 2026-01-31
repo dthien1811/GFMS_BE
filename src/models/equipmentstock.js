@@ -20,9 +20,6 @@ module.exports = (sequelize, DataTypes) => {
       quantity: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
       reservedQuantity: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
       availableQuantity: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
-      damagedQuantity: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
-      maintenanceQuantity: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
-      minStockLevel: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0 },
 
       location: { type: DataTypes.STRING, allowNull: true },
       reorderPoint: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 10 },
