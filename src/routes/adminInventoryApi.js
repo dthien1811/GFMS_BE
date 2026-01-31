@@ -1,17 +1,60 @@
-// src/routes/adminInventoryApi.js
+"use strict";
+
 const express = require("express");
+const router = express.Router();
+
+// Controllers
 const adminInventoryController = require("../controllers/adminInventoryController");
 const adminPurchaseWorkflowController = require("../controllers/adminPurchaseWorkflowController");
 const adminAdminCoreController = require("../controllers/adminAdminCoreController");
+const adminFranchiseContractController = require("../controllers/adminFranchiseContractController");
+
+// Middleware
 const jwtAction = require("../middleware/JWTAction");
 const { checkUserPermission } = require("../middleware/permission");
 
-const uploadEquipmentImages = require("../middleware/uploadEquipmentImages");
+// ===== FIX UPLOAD MIDDLEWARE: normalize export =====
+const uploadModule = require("../middleware/uploadEquipmentImages");
 
-const router = express.Router();
+/**
+ * Trả về middleware function hợp lệ cho Express.
+ * - module.exports = function (req,res,next) {}
+ * - module.exports = { uploadEquipmentImages: fn }
+ * - module.exports = multer()  (object có .array/.single/.fields)
+ */
+function resolveUploadMiddleware(mod) {
+  // 1) Export trực tiếp là function
+  if (typeof mod === "function") return mod;
+
+  // 2) Export object có key uploadEquipmentImages
+  if (mod && typeof mod.uploadEquipmentImages === "function") return mod.uploadEquipmentImages;
+
+  // 3) Export theo kiểu ESModule transpile: { default: fn }
+  if (mod && typeof mod.default === "function") return mod.default;
+
+  // 4) Export multer instance (object) -> chuyển thành middleware bằng .array()
+  //    Bạn có thể đổi field name "images" theo FE nếu khác.
+  if (mod && typeof mod.array === "function") {
+    return mod.array("images", 10);
+  }
+  if (mod && typeof mod.single === "function") {
+    // fallback nếu bạn chỉ upload 1 ảnh (đổi field name nếu cần)
+    return mod.single("image");
+  }
+
+  // 5) Không match -> bỏ qua để server không crash
+  console.warn(
+    "[WARN] uploadEquipmentImages is not a middleware function. Got:",
+    typeof mod,
+    mod && Object.keys(mod)
+  );
+  return (req, res, next) => next();
+}
+
+const uploadEquipmentImages = resolveUploadMiddleware(uploadModule);
 
 // ========================
-// PROTECT ALL ADMIN INVENTORY ROUTES
+// PROTECT ALL ROUTES
 // ========================
 router.use(jwtAction.checkUserJWT);
 router.use(
@@ -23,84 +66,66 @@ router.use(
   })
 );
 
-// gyms (dropdown)
+// ========================
+// MODULE 1: INVENTORY / EQUIPMENT
+// ========================
 router.get("/gyms", adminInventoryController.getGyms);
-
-// categories
 router.get("/equipment-categories", adminInventoryController.getEquipmentCategories);
-
-// equipments
 router.get("/equipments", adminInventoryController.getEquipments);
-router.post("/equipments", adminInventoryController.createEquipment);
-router.put("/equipments/:id", adminInventoryController.updateEquipment);
+
+// ✅ FIXED: uploadEquipmentImages giờ luôn là function middleware
+router.post("/equipments", uploadEquipmentImages, adminInventoryController.createEquipment);
+router.put("/equipments/:id", uploadEquipmentImages, adminInventoryController.updateEquipment);
 router.patch("/equipments/:id/discontinue", adminInventoryController.discontinueEquipment);
 
-// images
+// Images
 router.get("/equipments/:id/images", adminInventoryController.getEquipmentImages);
-router.post(
-  "/equipments/:id/images",
-  uploadEquipmentImages.array("images", 10),
-  adminInventoryController.uploadEquipmentImages
-);
-router.patch(
-  "/equipments/:id/images/:imageId/primary",
-  adminInventoryController.setPrimaryEquipmentImage
-);
+router.post("/equipments/:id/images", uploadEquipmentImages, adminInventoryController.uploadEquipmentImages);
+router.patch("/equipments/:id/images/:imageId/primary", adminInventoryController.setPrimaryEquipmentImage);
 router.delete("/equipments/:id/images/:imageId", adminInventoryController.deleteEquipmentImage);
 
-// suppliers
+// Suppliers
 router.get("/suppliers", adminInventoryController.getSuppliers);
 router.post("/suppliers", adminInventoryController.createSupplier);
 router.put("/suppliers/:id", adminInventoryController.updateSupplier);
 router.patch("/suppliers/:id/active", adminInventoryController.setSupplierActive);
 
-// stocks
+// Stocks + logs
 router.get("/stocks", adminInventoryController.getStocks);
-
-// nhập kho / xuất kho (cũ)
 router.post("/receipts", adminInventoryController.createReceipt);
 router.post("/exports", adminInventoryController.createExport);
-
-// nhật ký kho
 router.get("/inventory-logs", adminInventoryController.getInventoryLogs);
 
-/* =========================================================
-   PURCHASE WORKFLOW (1.1 -> 1.4)
-========================================================= */
-
-// QUOTATIONS
+// ========================
+// MODULE 2: PURCHASE WORKFLOW
+// ========================
 router.get("/quotations", adminPurchaseWorkflowController.getQuotations);
 router.get("/quotations/:id", adminPurchaseWorkflowController.getQuotationDetail);
 router.patch("/quotations/:id/quote", adminPurchaseWorkflowController.quoteQuotation);
 router.patch("/quotations/:id/approve", adminPurchaseWorkflowController.approveQuotation);
 router.patch("/quotations/:id/reject", adminPurchaseWorkflowController.rejectQuotation);
+router.post("/quotations/:id/convert-to-po", adminPurchaseWorkflowController.createPOFromQuotation);
 
-// PURCHASE ORDERS
-router.post(
-  "/purchase-orders/from-quotation/:quotationId",
-  adminPurchaseWorkflowController.createPOFromQuotation
-);
+// PO
 router.get("/purchase-orders", adminPurchaseWorkflowController.getPurchaseOrders);
 router.get("/purchase-orders/:id", adminPurchaseWorkflowController.getPurchaseOrderDetail);
 router.patch("/purchase-orders/:id/approve", adminPurchaseWorkflowController.approvePurchaseOrder);
 router.patch("/purchase-orders/:id/order", adminPurchaseWorkflowController.orderPurchaseOrder);
 router.patch("/purchase-orders/:id/cancel", adminPurchaseWorkflowController.cancelPurchaseOrder);
 
-// RECEIPTS (inbound theo PO)
+// Receipts
 router.get("/receipts", adminPurchaseWorkflowController.getReceipts);
 router.get("/receipts/:id", adminPurchaseWorkflowController.getReceiptDetail);
-
-router.post(
-  "/receipts/inbound-from-po/:purchaseOrderId",
-  adminPurchaseWorkflowController.createInboundReceiptFromPO
-);
+router.post("/purchase-orders/:id/receipts/inbound", adminPurchaseWorkflowController.createInboundReceiptFromPO);
 router.patch("/receipts/:id/complete", adminPurchaseWorkflowController.completeReceipt);
 
-// PAYMENTS
-router.post("/purchase-orders/:id/payments", adminPurchaseWorkflowController.createPOPayment);
+// Payments
 router.get("/purchase-orders/:id/payments", adminPurchaseWorkflowController.getPOPayments);
+router.post("/purchase-orders/:id/payments", adminPurchaseWorkflowController.createPOPayment);
 
-// ===== MODULE 2: MAINTENANCE =====
+// ========================
+// MODULE 3: MAINTENANCE + FRANCHISE + POLICY + TRAINER SHARE + REPORT
+// ========================
 router.get("/maintenances", adminAdminCoreController.getMaintenances);
 router.get("/maintenances/:id", adminAdminCoreController.getMaintenanceDetail);
 router.patch("/maintenances/:id/approve", adminAdminCoreController.approveMaintenance);
@@ -109,34 +134,37 @@ router.patch("/maintenances/:id/assign", adminAdminCoreController.assignMaintena
 router.patch("/maintenances/:id/start", adminAdminCoreController.startMaintenance);
 router.patch("/maintenances/:id/complete", adminAdminCoreController.completeMaintenance);
 
-// ✅ NEW: dropdown technicians
-router.get("/technicians", adminAdminCoreController.getTechnicians);
-
-// ===== MODULE 3: FRANCHISE APPROVAL =====
+// Franchise Requests
 router.get("/franchise-requests", adminAdminCoreController.getFranchiseRequests);
 router.get("/franchise-requests/:id", adminAdminCoreController.getFranchiseRequestDetail);
 router.patch("/franchise-requests/:id/approve", adminAdminCoreController.approveFranchiseRequest);
 router.patch("/franchise-requests/:id/reject", adminAdminCoreController.rejectFranchiseRequest);
 
-// ===== MODULE 4: SHARING POLICIES =====
+// Franchise Contract
+router.patch("/franchise-contract/:id/send", adminFranchiseContractController.sendContract);
+router.get("/franchise-contract/:id/status", adminFranchiseContractController.getStatus);
+router.patch("/franchise-contract/:id/mock/viewed", adminFranchiseContractController.mockMarkViewed);
+router.patch("/franchise-contract/:id/mock/signed", adminFranchiseContractController.mockMarkSigned);
+router.patch("/franchise-contract/:id/mock/completed", adminFranchiseContractController.mockMarkCompleted);
+
+// Policies
 router.get("/policies", adminAdminCoreController.getPolicies);
 router.post("/policies", adminAdminCoreController.createPolicy);
 router.put("/policies/:id", adminAdminCoreController.updatePolicy);
 router.patch("/policies/:id/toggle", adminAdminCoreController.togglePolicy);
 
-// ===== MODULE 5: TRAINER SHARE =====
+// Trainer Shares
 router.get("/trainer-shares", adminAdminCoreController.getTrainerShares);
 router.get("/trainer-shares/:id", adminAdminCoreController.getTrainerShareDetail);
 router.patch("/trainer-shares/:id/approve", adminAdminCoreController.approveTrainerShare);
 router.patch("/trainer-shares/:id/reject", adminAdminCoreController.rejectTrainerShare);
 router.patch("/trainer-shares/:id/override", adminAdminCoreController.overrideTrainerShare);
 
-// ===== MODULE 6.1: AUDIT LOGS =====
+// Audit logs + reports
 router.get("/audit-logs", adminAdminCoreController.getAuditLogs);
-
-// ===== MODULE 6.2: REPORTS =====
 router.get("/reports/summary", adminAdminCoreController.getReportSummary);
 router.get("/reports/revenue", adminAdminCoreController.getReportRevenue);
 router.get("/reports/inventory", adminAdminCoreController.getReportInventory);
 router.get("/reports/trainer-share", adminAdminCoreController.getReportTrainerShare);
+
 module.exports = router;
