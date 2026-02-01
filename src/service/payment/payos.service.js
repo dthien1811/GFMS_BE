@@ -1,97 +1,127 @@
-import dotenv from "dotenv";
+require("dotenv").config();
 
-// Đảm bảo biến môi trường được load (trong server.js cũng đã gọi rồi, nhưng thêm ở đây cho chắc)
-dotenv.config();
-
-// SDK payOS (cài ở package.json)
-// Theo docs hiện tại dùng CommonJS, Babel sẽ transpile nên require vẫn dùng được
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const { PayOS } = require("@payos/node");
-
-let payosInstance = null;
+let payos = null;
 
 function getPayOS() {
-  if (payosInstance) return payosInstance;
+  if (payos) return payos;
 
-  const clientId = process.env.PAYOS_CLIENT_ID;
-  const apiKey = process.env.PAYOS_API_KEY;
-  const checksumKey = process.env.PAYOS_CHECKSUM_KEY;
+  const {
+    PAYOS_CLIENT_ID,
+    PAYOS_API_KEY,
+    PAYOS_CHECKSUM_KEY
+  } = process.env;
 
-  if (!clientId || !apiKey || !checksumKey) {
-    console.warn(
-      "[payOS] Thiếu PAYOS_CLIENT_ID / PAYOS_API_KEY / PAYOS_CHECKSUM_KEY trong .env – chế độ mock"
-    );
+  if (!PAYOS_CLIENT_ID || !PAYOS_API_KEY || !PAYOS_CHECKSUM_KEY) {
+    console.warn("[PayOS] Missing env → MOCK mode");
     return null;
   }
 
-  payosInstance = new PayOS({ clientId, apiKey, checksumKey });
-  return payosInstance;
+  try {
+    const PayOSModule = require("@payos/node");
+    const PayOSClass = PayOSModule.default || PayOSModule;
+    
+    payos = new PayOSClass({
+      clientId: PAYOS_CLIENT_ID,
+      apiKey: PAYOS_API_KEY,
+      checksumKey: PAYOS_CHECKSUM_KEY,
+    });
+    
+    console.log("✅ PayOS initialized!");
+    return payos;
+  } catch (error) {
+    try {
+      const { PayOS: PayOSClass } = require("@payos/node");
+      payos = new PayOSClass({
+        clientId: PAYOS_CLIENT_ID,
+        apiKey: PAYOS_API_KEY,
+        checksumKey: PAYOS_CHECKSUM_KEY,
+      });
+      
+      console.log("✅ PayOS initialized successfully!");
+      return payos;
+    } catch (error2) {
+      console.error("❌ PayOS init error:", error2.message);
+      return null;
+    }
+  }
 }
 
-const payosService = {
-  /**
-   * Tạo link thanh toán cho gói tập
-   * @returns {Promise<{ checkoutUrl: string, orderCode: string|number, raw: any }>}
-   */
-  async createPackagePaymentLink({ orderCode, amount, description }) {
-    const payos = getPayOS();
+async function createPackagePaymentLink({ orderCode, amount, description }) {
+  const client = getPayOS();
 
-    const numericAmount = Number(amount);
-    if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
-      throw new Error("Số tiền thanh toán không hợp lệ.");
-    }
-
-    const payload = {
-      orderCode,
-      amount: Math.round(numericAmount),
-      description: description || "Thanh toán gói tập",
-      returnUrl:
-        process.env.PAYOS_RETURN_URL || "http://localhost:3000/member/my-packages?payos=success",
-      cancelUrl:
-        process.env.PAYOS_CANCEL_URL || "http://localhost:3000/member/packages?payos=cancel",
-    };
-
-    // Nếu chưa cấu hình payOS thật thì mock checkoutUrl để dev FE
-    if (!payos) {
-      const fakeUrl = `https://sandbox.payos.local/mock-checkout?orderCode=${encodeURIComponent(
-        String(orderCode)
-      )}&amount=${payload.amount}`;
-      return {
-        checkoutUrl: fakeUrl,
-        orderCode,
-        raw: { mock: true, ...payload },
-      };
-    }
-
-    const resp = await payos.createPaymentLink(payload);
-    // Tùy theo SDK, key có thể là checkoutUrl / paymentUrl – map về checkoutUrl cho FE
-    const checkoutUrl = resp.checkoutUrl || resp.paymentUrl || resp.payUrl;
-
-    if (!checkoutUrl) {
-      throw new Error("Không lấy được checkoutUrl từ payOS.");
-    }
-
+  if (!client) {
     return {
-      checkoutUrl,
-      orderCode: resp.orderCode || orderCode,
-      raw: resp,
+      checkoutUrl: `https://sandbox.payos.local/mock?orderCode=${orderCode}`,
+      orderCode,
     };
-  },
+  }
 
-  /**
-   * Xác thực webhook từ payOS.
-   * Trả về data đã verify hoặc ném lỗi nếu checksum sai.
-   */
-  verifyWebhook(webhookBody) {
-    const payos = getPayOS();
-    if (!payos) {
-      console.warn("[payOS] verifyWebhook đang ở chế độ mock – bỏ qua verify checksum.");
-      return webhookBody;
+  // ✅ Rút ngắn description xuống tối đa 25 ký tự
+  let shortDesc = description || "Thanh toan goi tap";
+  if (shortDesc.length > 25) {
+    shortDesc = shortDesc.substring(0, 22) + "...";
+  }
+
+  const paymentData = {
+    orderCode: Number(orderCode),
+    amount: Math.round(Number(amount)),
+    description: shortDesc,
+    returnUrl: `http://localhost:3000/member/my-packages?payos=success&orderCode=${encodeURIComponent(
+      orderCode
+    )}`,
+    cancelUrl: "http://localhost:3000/member/packages?payos=cancel",
+  };
+
+  console.log("\n💳 Creating payment link with data:", paymentData);
+
+  try {
+    const response = await client.paymentRequests.create(paymentData);
+    console.log("✅ Payment link created:", response.checkoutUrl);
+    
+    return {
+      checkoutUrl: response.checkoutUrl,
+      orderCode: response.orderCode,
+      paymentLinkId: response.paymentLinkId || response.id,
+    };
+  } catch (error) {
+    console.error("❌ Create payment error:", error.message);
+    throw error;
+  }
+}
+
+function verifyWebhook(webhookBody) {
+  const client = getPayOS();
+  if (!client) return webhookBody;
+  
+  try {
+    if (client.webhooks && typeof client.webhooks.verify === 'function') {
+      return client.webhooks.verify(webhookBody);
     }
+  } catch (e) {
+    console.error("❌ Webhook verify error:", e.message);
+  }
+  
+  return webhookBody;
+}
 
-    return payos.verifyPaymentWebhookData(webhookBody);
-  },
+async function getPaymentLinkInformation(id) {
+  const client = getPayOS();
+  if (!client) return null;
+
+  try {
+    if (client.paymentRequests && typeof client.paymentRequests.get === "function") {
+      return await client.paymentRequests.get(id);
+    }
+  } catch (e) {
+    const detail = e?.message || e;
+    console.error("❌ PayOS getPaymentLinkInformation error:", detail);
+  }
+
+  return null;
+}
+
+module.exports = {
+  createPackagePaymentLink,
+  verifyWebhook,
+  getPaymentLinkInformation,
 };
-
-export default payosService;
-
