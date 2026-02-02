@@ -1,3 +1,7 @@
+
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
@@ -14,7 +18,7 @@ import connectDB from "./config/connectDB";
 import jwtAction from "./middleware/JWTAction";
 import { checkUserPermission } from "./middleware/permission";
 
-// Nếu file route này là CommonJS
+// CommonJS route
 const adminInventoryApi = require("./routes/adminInventoryApi");
 
 // ===== OPTIONAL ROUTES =====
@@ -30,13 +34,12 @@ try {
   trainerRoutes = trainerRoutes.default || trainerRoutes;
 } catch (e) {}
 
-require("dotenv").config();
-
 const app = express();
 const PORT = process.env.PORT || 8080;
 const HOSTNAME = process.env.HOSTNAME || "localhost";
 
-// ===== CORS (chuẩn cho cookie JWT) =====
+
+// ===== CORS =====
 app.use(
   cors({
     origin: "http://localhost:3000",
@@ -60,10 +63,10 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 // ===== ROUTES =====
 initWebRoutes(app);
 
-// ✅ payOS webhook / payment routes (không cần JWT)
+// ✅ PAYOS (create + webhook)
 payosRoute(app);
 
-// ✅ inventory admin (JWT + permission)
+// ✅ inventory admin
 app.use(
   "/api/admin/inventory",
   jwtAction.checkUserJWT,
@@ -79,46 +82,44 @@ app.use(
 // ✅ auth
 authRoute(app);
 
+// ✅ trainer routes
 if (trainerRoutes) {
-  // ✅ Trainer API: siết JWT + permission và map /api/pt -> /trainer
   app.use(
     "/api/pt",
     jwtAction.checkUserJWT,
     checkUserPermission({
       getPath: (req) => {
-        const fullPath = `${req.baseUrl}${req.path}`; // /api/pt/me
-        return fullPath.replace(/^\/api\/pt/, "/trainer"); // /trainer/me
+        const fullPath = `${req.baseUrl}${req.path}`;
+        return fullPath.replace(/^\/api\/pt/, "/trainer");
       },
     }),
     trainerRoutes
   );
 
-  // (optional) nếu bạn vẫn giữ route /pt cho test/dev thì cũng map tương tự
   app.use(
     "/pt",
     jwtAction.checkUserJWT,
     checkUserPermission({
       getPath: (req) => {
-        const fullPath = `${req.baseUrl}${req.path}`; // /pt/me
-        return fullPath.replace(/^\/pt/, "/trainer");  // /trainer/me
+        const fullPath = `${req.baseUrl}${req.path}`;
+        return fullPath.replace(/^\/pt/, "/trainer");
       },
     }),
     trainerRoutes
   );
 }
 
-// ✅ admin/user CRUD (api chung)
+// ✅ common api
 useApi(app);
 
-
-
-
+// optional
 if (typeof gymRoute === "function") gymRoute(app);
 if (typeof uploadRoute === "function") uploadRoute(app);
 
-// ===== DB CONNECT =====
+// ===== DB =====
 connectDB();
 
+// ===== START =====
 app.listen(PORT, () => {
-  console.log(`Server running at: http://${HOSTNAME}:${PORT}`);
+  console.log(`🚀 Server running at: http://${HOSTNAME}:${PORT}`);
 });
