@@ -4,6 +4,7 @@ module.exports = (sequelize, DataTypes) => {
   class Package extends Model {
     static associate(models) {
       Package.belongsTo(models.Gym, { foreignKey: 'gymId' });
+       if (models.Trainer) Package.belongsTo(models.Trainer, { foreignKey: 'trainerId' });
       Package.hasMany(models.Booking, { foreignKey: 'packageId' });
       Package.hasMany(models.Transaction, { foreignKey: 'packageId' });
       Package.hasMany(models.PackageActivation, { foreignKey: 'packageId' });
@@ -17,6 +18,7 @@ module.exports = (sequelize, DataTypes) => {
     price: DataTypes.DECIMAL,
     sessions: DataTypes.INTEGER,
     gymId: DataTypes.INTEGER,
+    trainerId: DataTypes.INTEGER,
     status: DataTypes.STRING,
     // ========== THÊM MỚI ==========
     pricePerSession: DataTypes.DECIMAL, // = price / sessions

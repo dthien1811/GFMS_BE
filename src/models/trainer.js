@@ -7,6 +7,9 @@ module.exports = (sequelize, DataTypes) => {
       // 1-1 / 1-n core
       if (models.User) Trainer.belongsTo(models.User, { foreignKey: 'userId' });
 
+      if (models.Gym) Trainer.belongsTo(models.Gym, { foreignKey: 'gymId' });
+
+
       if (models.Booking) Trainer.hasMany(models.Booking, { foreignKey: 'trainerId' });
       if (models.Transaction) Trainer.hasMany(models.Transaction, { foreignKey: 'trainerId' });
       if (models.Withdrawal) Trainer.hasMany(models.Withdrawal, { foreignKey: 'trainerId' });
@@ -16,7 +19,8 @@ module.exports = (sequelize, DataTypes) => {
 
       // Optional relations
       if (models.SessionProgress) Trainer.hasMany(models.SessionProgress, { foreignKey: 'trainerId' });
-      if (models.TrainerShare) Trainer.hasMany(models.TrainerShare, { foreignKey: 'trainerId' });
+      if (models.Package) Trainer.hasMany(models.Package, { foreignKey: 'trainerId' });
+     
 
       if (models.Commission) Trainer.hasMany(models.Commission, { foreignKey: 'trainerId' });
       if (models.Review) Trainer.hasMany(models.Review, { foreignKey: 'trainerId' });
@@ -35,6 +39,10 @@ module.exports = (sequelize, DataTypes) => {
   Trainer.init(
     {
       userId: DataTypes.INTEGER,
+      gymId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
       specialization: DataTypes.STRING,
       certification: DataTypes.STRING,
       experienceYears: DataTypes.INTEGER,
