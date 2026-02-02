@@ -147,6 +147,24 @@ const ownerMemberController = {
       });
     }
   },
+
+  /**
+   * PATCH /api/owner/members/:id/toggle-status
+   * Toggle member status (active/inactive)
+   */
+  async toggleMemberStatus(req, res) {
+    try {
+      const userId = req.user.id;
+      const memberId = req.params.id;
+      
+      const result = await ownerMemberService.toggleMemberStatus(userId, memberId);
+      
+      return res.status(200).json(result);
+    } catch (e) {
+      console.error('Error in toggleMemberStatus controller:', e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerMemberController;

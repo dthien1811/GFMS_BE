@@ -15,6 +15,9 @@ router.get("/:id", ownerMemberController.getMemberDetail);
 router.put("/:id", ownerMemberController.updateMember);
 router.delete("/:id", ownerMemberController.deleteMember);
 
+// Toggle member status
+router.patch("/:id/toggle-status", ownerMemberController.toggleMemberStatus);
+
 // Gia hạn gói cho member
 router.post("/:id/renew-package", ownerMemberController.renewMemberPackage);
 

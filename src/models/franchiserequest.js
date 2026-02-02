@@ -69,8 +69,11 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: "reviewedBy",
     });
 
-    // Nếu bạn có model Gym và muốn include gym:
-    // FranchiseRequest.belongsTo(models.Gym, { as: "gym", foreignKey: "gymId" });
+    // Gym được tạo sau khi approve
+    FranchiseRequest.belongsTo(models.Gym, { 
+      as: "createdGym", 
+      foreignKey: "gymId" 
+    });
   };
 
   return FranchiseRequest;

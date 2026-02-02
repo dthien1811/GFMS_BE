@@ -259,10 +259,30 @@ const updateMember = async (userId, memberId, data) => {
   // Cập nhật member
   const updateData = {};
   if (gymId) updateData.gymId = gymId;
-  if (currentPackageId !== undefined) updateData.currentPackageId = currentPackageId || null;
+  if (currentPackageId !== undefined) {
+    updateData.currentPackageId = currentPackageId || null;
+    // Nếu chọn gói mới (không null), tự động set status = active
+    if (currentPackageId && currentPackageId !== "" && currentPackageId !== null) {
+      updateData.status = "active";
+    }
+  }
   if (status) updateData.status = status;
 
   await member.update(updateData);
+
+  // Nếu xóa gói (set currentPackageId = null), tự động cancel các gói đang active
+  if (currentPackageId === "" || currentPackageId === null) {
+    await PackageActivation.update(
+      { status: "cancelled" },
+      {
+        where: {
+          memberId,
+          status: "active",
+        },
+      }
+    );
+    console.log("Auto-cancelled active packages for member:", memberId);
+  }
 
   // Load lại với relations
   const updatedMember = await Member.findByPk(member.id, {
@@ -440,6 +460,70 @@ const renewMemberPackage = async (userId, memberId, packageId) => {
   };
 };
 
+/**
+ * Toggle member status (active/inactive)
+ */
+const toggleMemberStatus = async (userId, memberId) => {
+  console.log("=== toggleMemberStatus ===");
+  console.log("userId:", userId, "memberId:", memberId);
+
+  // Get owner's gyms
+  const myGymIds = await Gym.findAll({
+    where: { ownerId: userId },
+    attributes: ["id"],
+  }).then((gyms) => gyms.map((g) => g.id));
+
+  // Find member
+  const member = await Member.findOne({
+    where: {
+      id: memberId,
+      gymId: { [db.Sequelize.Op.in]: myGymIds },
+    },
+  });
+
+  if (!member) {
+    const error = new Error("Không tìm thấy hội viên hoặc bạn không có quyền");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  // If trying to deactivate, check for active package
+  if (member.status === "active") {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const activePackages = await PackageActivation.findAll({
+      where: {
+        memberId,
+        status: "active",
+        expiryDate: { [db.Sequelize.Op.gte]: today },
+      },
+      include: [{ model: Package, attributes: ['name'] }],
+    });
+
+    console.log("Active packages for member:", activePackages.length, activePackages.map(p => ({ id: p.id, status: p.status, expiryDate: p.expiryDate, package: p.Package?.name })));
+
+    if (activePackages.length > 0) {
+      const error = new Error("Không thể vô hiệu hóa! Hội viên còn gói tập đang hoạt động.");
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  // Toggle status
+  const newStatus = member.status === "active" ? "inactive" : "active";
+  member.status = newStatus;
+  await member.save();
+
+  console.log("Updated member status:", member.status);
+
+  const message = member.status === "active"
+    ? "Đã kích hoạt hội viên thành công" 
+    : "Đã vô hiệu hóa hội viên thành công";
+
+  return { message, status: member.status };
+};
+
 export default {
   getAvailableUsers,
   createMember,
@@ -448,4 +532,5 @@ export default {
   updateMember,
   deleteMember,
   renewMemberPackage,
+  toggleMemberStatus,
 };

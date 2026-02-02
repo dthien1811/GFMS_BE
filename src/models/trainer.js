@@ -98,6 +98,11 @@ module.exports = (sequelize, DataTypes) => {
       bankAccountInfo: {
         type: DataTypes.JSON,
         defaultValue: {}
+      },
+
+      isActive: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: true
       }
     },
     {

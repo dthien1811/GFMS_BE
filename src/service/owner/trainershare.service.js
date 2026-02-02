@@ -6,7 +6,7 @@ const { TrainerShare, Trainer, Gym, User, Policy } = db;
  * Owner tạo yêu cầu chia sẻ trainer
  */
 const createTrainerShare = async (userId, data) => {
-  const { trainerId, fromGymId, toGymId, shareType, startDate, endDate, commissionSplit, notes } = data;
+  const { trainerId, fromGymId, toGymId, shareType, startDate, endDate, startTime, endTime, commissionSplit, notes } = data;
 
   // Validate required fields
   if (!trainerId || !fromGymId || !toGymId) {
@@ -32,6 +32,36 @@ const createTrainerShare = async (userId, data) => {
     throw error;
   }
 
+  // Validate time conflict nếu có startDate và startTime/endTime
+  if (startDate && startTime && endTime) {
+    const { Booking } = db;
+    
+    // Lấy tất cả bookings của trainer trong ngày
+    const existingBookings = await Booking.findAll({
+      where: {
+        trainerId,
+        bookingDate: startDate,
+        status: {
+          [db.Sequelize.Op.notIn]: ['cancelled', 'no_show']
+        }
+      },
+      attributes: ['id', 'startTime', 'endTime', 'bookingDate'],
+      raw: true
+    });
+
+    // Check overlap bằng JavaScript
+    const hasConflict = existingBookings.some(b => {
+      // (start1 < end2) AND (end1 > start2)
+      return startTime < b.endTime && endTime > b.startTime;
+    });
+
+    if (hasConflict) {
+      const error = new Error("Trainer đã có lịch trong khoảng thời gian này");
+      error.statusCode = 409;
+      throw error;
+    }
+  }
+
   // Tạo trainer share request
   const trainerShare = await TrainerShare.create({
     trainerId,
@@ -40,6 +70,8 @@ const createTrainerShare = async (userId, data) => {
     shareType: shareType || "temporary",
     startDate,
     endDate,
+    startTime,
+    endTime,
     commissionSplit: commissionSplit || 0.7,
     status: "pending",
     requestedBy: userId,
@@ -220,8 +252,42 @@ const updateMyTrainerShare = async (userId, shareId, data) => {
     throw error;
   }
 
+  // Validate time conflict nếu có thay đổi startDate hoặc startTime/endTime
+  const newStartDate = data.startDate || trainerShare.startDate;
+  const newStartTime = data.startTime !== undefined ? data.startTime : trainerShare.startTime;
+  const newEndTime = data.endTime !== undefined ? data.endTime : trainerShare.endTime;
+
+  if (newStartDate && newStartTime && newEndTime) {
+    const { Booking } = db;
+    
+    // Lấy tất cả bookings của trainer trong ngày
+    const existingBookings = await Booking.findAll({
+      where: {
+        trainerId: trainerShare.trainerId,
+        bookingDate: newStartDate,
+        status: {
+          [db.Sequelize.Op.notIn]: ['cancelled', 'no_show']
+        }
+      },
+      attributes: ['id', 'startTime', 'endTime', 'bookingDate'],
+      raw: true
+    });
+
+    // Check overlap bằng JavaScript
+    const hasConflict = existingBookings.some(b => {
+      // (start1 < end2) AND (end1 > start2)
+      return newStartTime < b.endTime && newEndTime > b.startTime;
+    });
+
+    if (hasConflict) {
+      const error = new Error("Trainer đã có lịch trong khoảng thời gian này");
+      error.statusCode = 409;
+      throw error;
+    }
+  }
+
   // Update các trường được phép
-  const allowedFields = ["shareType", "startDate", "endDate", "commissionSplit", "notes"];
+  const allowedFields = ["shareType", "startDate", "endDate", "startTime", "endTime", "commissionSplit", "notes"];
 
   for (const field of allowedFields) {
     if (data[field] !== undefined) {
@@ -265,31 +331,28 @@ const deleteMyTrainerShare = async (userId, shareId) => {
 
 /**
  * Owner lấy danh sách trainers có sẵn cho gym
+ * Trả về trainers thuộc gym này (để share đi)
  */
 const getAvailableTrainers = async (userId, gymId) => {
-  // Lấy trainers đang được share đến gym này
-  const trainerShares = await TrainerShare.findAll({
+  // Lấy trainers thuộc gym này
+  const trainers = await Trainer.findAll({
     where: {
-      toGymId: gymId,
-      status: 'approved',
+      gymId: gymId,
     },
     include: [
       {
-        model: Trainer,
-        attributes: ["id", "specialization", "certification"],
-        include: [
-          {
-            model: User,
-            attributes: ["id", "username", "email"],
-          },
-        ],
+        model: User,
+        attributes: ["id", "username", "email"],
+      },
+      {
+        model: Gym,
+        attributes: ["id", "name"],
       },
     ],
+    attributes: ["id", "specialization", "certification", "gymId"],
   });
 
-  const trainers = trainerShares.map(ts => ts.Trainer).filter(Boolean);
-  
-  return trainers;
+  return { trainers };
 };
 
 export default {

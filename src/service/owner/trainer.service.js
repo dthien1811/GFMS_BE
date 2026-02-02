@@ -1,5 +1,5 @@
 import db from "../../models";
-const { User, Trainer, Gym, Group, Booking, Member, Package } = db;
+const { User, Trainer, Gym, Group, Booking, Member, Package, Review } = db;
 
 // Get all trainers (users with PT role) in owner's gyms
 const getMyTrainers = async (userId, query = {}) => {
@@ -387,6 +387,143 @@ const getTrainerSchedule = async (userId, trainerId, query = {}) => {
   }
 };
 
+// Get trainer detail with statistics
+const getTrainerDetail = async (userId, trainerId) => {
+  console.log("=== getTrainerDetail ===");
+  console.log("userId:", userId, "trainerId:", trainerId);
+
+  // Get owner's gyms
+  const myGymIds = await Gym.findAll({
+    where: { ownerId: userId },
+    attributes: ["id"],
+  }).then((gyms) => gyms.map((g) => g.id));
+
+  // Find trainer
+  const trainer = await Trainer.findOne({
+    where: {
+      id: trainerId,
+      gymId: { [db.Sequelize.Op.in]: myGymIds },
+    },
+    include: [
+      {
+        model: User,
+        attributes: ["id", "username", "email", "phone"],
+      },
+      {
+        model: Gym,
+        attributes: ["id", "name", "address"],
+      },
+    ],
+  });
+
+  if (!trainer) {
+    const error = new Error("Không tìm thấy trainer hoặc bạn không có quyền xem");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  // Get statistics
+  const totalBookings = await Booking.count({
+    where: { trainerId },
+  });
+
+  const completedBookings = await Booking.count({
+    where: {
+      trainerId,
+      status: "completed",
+    },
+  });
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const upcomingBookings = await Booking.count({
+    where: {
+      trainerId,
+      bookingDate: { [db.Sequelize.Op.gte]: today },
+      status: { [db.Sequelize.Op.in]: ["pending", "confirmed", "in_progress"] },
+    },
+  });
+
+  // Calculate average rating (if reviews exist)
+  const reviews = await Review.findAll({
+    where: { trainerId },
+    attributes: ["rating"],
+    raw: true,
+  });
+
+  const averageRating = reviews.length > 0
+    ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length
+    : null;
+
+  return {
+    ...trainer.toJSON(),
+    totalBookings,
+    completedBookings,
+    upcomingBookings,
+    averageRating,
+  };
+};
+
+// Toggle trainer status (activate/deactivate)
+const toggleTrainerStatus = async (userId, trainerId) => {
+  console.log("=== toggleTrainerStatus ===");
+  console.log("userId:", userId, "trainerId:", trainerId);
+
+  // Get owner's gyms
+  const myGymIds = await Gym.findAll({
+    where: { ownerId: userId },
+    attributes: ["id"],
+  }).then((gyms) => gyms.map((g) => g.id));
+
+  // Find trainer
+  const trainer = await Trainer.findOne({
+    where: {
+      id: trainerId,
+      gymId: { [db.Sequelize.Op.in]: myGymIds },
+    },
+  });
+
+  if (!trainer) {
+    const error = new Error("Không tìm thấy trainer hoặc bạn không có quyền");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  // If trying to deactivate, check for upcoming bookings
+  if (trainer.isActive !== false && trainer.isActive !== 0) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const upcomingBookings = await Booking.count({
+      where: {
+        trainerId,
+        bookingDate: { [db.Sequelize.Op.gte]: today },
+        status: { [db.Sequelize.Op.in]: ["confirmed", "in_progress"] },
+      },
+    });
+
+    if (upcomingBookings > 0) {
+      const error = new Error(`Không thể vô hiệu hóa! PT còn ${upcomingBookings} lịch hẹn sắp tới.`);
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  // Toggle status - convert to explicit 0/1
+  const currentStatus = trainer.isActive !== false && trainer.isActive !== 0;
+  trainer.isActive = currentStatus ? 0 : 1;
+  await trainer.save();
+
+  console.log("Updated trainer isActive:", trainer.isActive);
+
+  const message = trainer.isActive 
+    ? "Đã kích hoạt PT thành công" 
+    : "Đã vô hiệu hóa PT thành công";
+
+  return { message, isActive: trainer.isActive };
+};
+
 export default {
   getMyTrainers,
   getUsersWithoutPTRole,
@@ -394,4 +531,6 @@ export default {
   updateTrainer,
   deleteTrainer,
   getTrainerSchedule,
+  getTrainerDetail,
+  toggleTrainerStatus,
 };

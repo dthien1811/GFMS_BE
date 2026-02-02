@@ -111,9 +111,9 @@ const ownerTrainerShareController = {
       const userId = req.user.id;
       const gymId = req.params.gymId;
 
-      const trainers = await ownerTrainerShareService.getAvailableTrainers(userId, gymId);
+      const result = await ownerTrainerShareService.getAvailableTrainers(userId, gymId);
 
-      return res.status(200).json({ trainers });
+      return res.status(200).json(result);
     } catch (e) {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }

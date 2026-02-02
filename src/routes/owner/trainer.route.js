@@ -11,8 +11,10 @@ router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owner
 router.get("/", ownerTrainerController.getMyTrainers);
 router.get("/users-without-pt", ownerTrainerController.getUsersWithoutPTRole);
 router.post("/", ownerTrainerController.createTrainer);
+router.get("/:id/detail", ownerTrainerController.getTrainerDetail);
+router.get("/:id/schedule", ownerTrainerController.getTrainerSchedule);
+router.patch("/:id/toggle-status", ownerTrainerController.toggleTrainerStatus);
 router.put("/:id", ownerTrainerController.updateTrainer);
 router.delete("/:id", ownerTrainerController.deleteTrainer);
-router.get("/:id/schedule", ownerTrainerController.getTrainerSchedule);
 
 export default router;

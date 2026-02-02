@@ -86,6 +86,28 @@ const ownerTrainerController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+
+  async getTrainerDetail(req, res) {
+    try {
+      const userId = req.user.id;
+      const trainerId = req.params.id;
+      const result = await ownerTrainerService.getTrainerDetail(userId, trainerId);
+      return res.status(200).json({ data: result });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async toggleTrainerStatus(req, res) {
+    try {
+      const userId = req.user.id;
+      const trainerId = req.params.id;
+      const result = await ownerTrainerService.toggleTrainerStatus(userId, trainerId);
+      return res.status(200).json(result);
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerTrainerController;
