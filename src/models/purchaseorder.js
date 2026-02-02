@@ -1,75 +1,56 @@
 // models/purchaseorder.js
-'use strict';
-const { Model } = require('sequelize');
+"use strict";
+const { Model } = require("sequelize");
 
 module.exports = (sequelize, DataTypes) => {
   class PurchaseOrder extends Model {
     static associate(models) {
-      // Khớp với trường supplierId trong seeder
-      PurchaseOrder.belongsTo(models.Supplier, { foreignKey: 'supplierId' });
-      
-      // Đổi createdBy thành requestedBy để khớp với file seeder
-      PurchaseOrder.belongsTo(models.User, { foreignKey: 'requestedBy', as: 'requester' });
-      
-      // Giữ lại approvedBy vì seeder có dùng trường này
-      PurchaseOrder.belongsTo(models.User, { foreignKey: 'approvedBy', as: 'approver' });
-      
-      PurchaseOrder.belongsTo(models.Gym, { foreignKey: 'gymId' });
-      
-      // Thêm quan hệ với Quotation vì seeder có quotationId
-      PurchaseOrder.belongsTo(models.Quotation, { foreignKey: 'quotationId' });
-      
-      PurchaseOrder.hasMany(models.PurchaseOrderItem, { foreignKey: 'purchaseOrderId' });
-      PurchaseOrder.hasMany(models.Receipt, { foreignKey: 'purchaseOrderId' });
-    }
-  };
+      PurchaseOrder.belongsTo(models.Supplier, { foreignKey: "supplierId", as: "supplier" });
+      PurchaseOrder.belongsTo(models.Gym, { foreignKey: "gymId", as: "gym" });
+      PurchaseOrder.belongsTo(models.User, { foreignKey: "requestedBy", as: "requester" });
+      PurchaseOrder.belongsTo(models.User, { foreignKey: "approvedBy", as: "approver" });
 
-  PurchaseOrder.init({
-    // Đổi orderNumber thành code để khớp với Seeder
-    code: { 
-      type: DataTypes.STRING,
-      unique: true 
+      PurchaseOrder.belongsTo(models.Quotation, { foreignKey: "quotationId", as: "quotation" });
+
+      PurchaseOrder.hasMany(models.PurchaseOrderItem, { foreignKey: "purchaseOrderId", as: "items" });
+      PurchaseOrder.hasMany(models.Receipt, { foreignKey: "purchaseOrderId", as: "receipts" });
+    }
+  }
+
+  PurchaseOrder.init(
+    {
+      id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+
+      code: { type: DataTypes.STRING, allowNull: false, unique: true },
+      quotationId: { type: DataTypes.INTEGER, allowNull: true },
+
+      supplierId: { type: DataTypes.INTEGER, allowNull: true },
+      gymId: { type: DataTypes.INTEGER, allowNull: true },
+
+      requestedBy: { type: DataTypes.INTEGER, allowNull: true },
+      approvedBy: { type: DataTypes.INTEGER, allowNull: true },
+
+      // ✅ migration: orderDate required
+      orderDate: { type: DataTypes.DATE, allowNull: false },
+      expectedDeliveryDate: { type: DataTypes.DATE, allowNull: true },
+
+      // ✅ migration status only these values
+      status: {
+        type: DataTypes.ENUM("pending", "approved", "ordered", "delivered", "cancelled"),
+        defaultValue: "pending",
+      },
+
+      totalAmount: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 },
+      notes: { type: DataTypes.TEXT, allowNull: true },
     },
-    // Thêm quotationId vì seeder có sử dụng
-    quotationId: DataTypes.INTEGER,
-    supplierId: DataTypes.INTEGER,
-    gymId: DataTypes.INTEGER,
-    orderDate: DataTypes.DATE,
-    expectedDeliveryDate: DataTypes.DATE,
-    actualDeliveryDate: DataTypes.DATE,
-    status: {
-      type: DataTypes.ENUM('draft', 'pending', 'approved', 'ordered', 'delivered', 'cancelled', 'closed'),
-      defaultValue: 'pending' // Chỉnh lại mặc định để khớp với logic seeder
-    },
-    totalAmount: DataTypes.DECIMAL(15, 2),
-    discount: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 },
-    tax: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 },
-    finalAmount: DataTypes.DECIMAL(15, 2),
-    depositAmount: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 },
-    balanceAmount: DataTypes.DECIMAL(15, 2),
-    paymentStatus: {
-      type: DataTypes.ENUM('unpaid', 'partial', 'paid'),
-      defaultValue: 'unpaid'
-    },
-    deliveryStatus: {
-      type: DataTypes.ENUM('pending', 'processing', 'shipped', 'delivered', 'returned'),
-      defaultValue: 'pending'
-    },
-    notes: DataTypes.TEXT,
-    termsConditions: DataTypes.TEXT,
-    // Đổi createdBy thành requestedBy theo seeder
-    requestedBy: DataTypes.INTEGER,
-    approvedBy: DataTypes.INTEGER,
-    approvedAt: DataTypes.DATE,
-    cancelledBy: DataTypes.INTEGER,
-    cancelledAt: DataTypes.DATE,
-    cancellationReason: DataTypes.TEXT
-  }, {
-    sequelize,
-    modelName: 'PurchaseOrder',
-    tableName: 'purchaseorder',
-    freezeTableName: true,
-    timestamps: true // Đảm bảo tên bảng khớp chính xác với bulkInsert
-  });
+    {
+      sequelize,
+      modelName: "PurchaseOrder",
+      tableName: "purchaseorder",
+      freezeTableName: true,
+      timestamps: true,
+    }
+  );
+
   return PurchaseOrder;
 };

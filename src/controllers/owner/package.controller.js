@@ -31,11 +31,15 @@ const packageController = {
       const packages = await Package.findAll({
         where: {
           gymId: gymIds, // Sequelize tự hiểu IN (...)
+          name: { [db.Sequelize.Op.ne]: null }, // Loại bỏ các bản ghi có tên NULL
         },
         order: [["createdAt", "DESC"]],
       });
 
-      return res.status(200).json({ data: packages });
+      // Filter thêm lần nữa để chắc chắn không có bản ghi NULL
+      const validPackages = packages.filter(p => p.name && p.id);
+
+      return res.status(200).json({ data: validPackages });
 
     } catch (error) {
       console.error(error);
@@ -71,7 +75,7 @@ const packageController = {
         sessions,
         durationDays,
         gymId,
-        isActive: false, // mặc định chưa công bố
+        status: 'INACTIVE', // mặc định chưa công bố
       });
 
       return res.status(201).json({ data: newPackage });
@@ -118,7 +122,7 @@ const packageController = {
         });
       }
 
-      pkg.isActive = !pkg.isActive;
+      pkg.status = pkg.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
       await pkg.save();
 
       return res.json({ data: pkg });

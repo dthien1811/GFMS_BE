@@ -1,49 +1,49 @@
 // models/quotation.js
-'use strict';
-const { Model } = require('sequelize');
+"use strict";
+const { Model } = require("sequelize");
+
 module.exports = (sequelize, DataTypes) => {
   class Quotation extends Model {
     static associate(models) {
-      Quotation.belongsTo(models.Supplier, { foreignKey: 'supplierId' });
-      Quotation.belongsTo(models.User, { foreignKey: 'requestedBy', as: 'requester' });
-      Quotation.belongsTo(models.User, { foreignKey: 'reviewedBy', as: 'reviewer' });
-      Quotation.belongsTo(models.Gym, { foreignKey: 'gymId' });
-      Quotation.hasMany(models.QuotationItem, { foreignKey: 'quotationId' });
+      Quotation.belongsTo(models.Supplier, { foreignKey: "supplierId", as: "supplier" });
+      Quotation.belongsTo(models.Gym, { foreignKey: "gymId", as: "gym" });
+      Quotation.belongsTo(models.User, { foreignKey: "requestedBy", as: "requester" });
+
+      Quotation.hasMany(models.QuotationItem, { foreignKey: "quotationId", as: "items" });
     }
-  };
-  Quotation.init({
-    quotationNumber: { 
-      type: DataTypes.STRING,
-      unique: true 
+  }
+
+  Quotation.init(
+    {
+      id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
+
+      // ✅ migration dùng code (NOT quotationNumber)
+      code: { type: DataTypes.STRING, allowNull: false, unique: true },
+
+      supplierId: { type: DataTypes.INTEGER, allowNull: true },
+      gymId: { type: DataTypes.INTEGER, allowNull: true },
+      requestedBy: { type: DataTypes.INTEGER, allowNull: true },
+
+      // ✅ migration dùng validUntil
+      validUntil: { type: DataTypes.DATE, allowNull: true },
+
+      // ✅ migration status: pending/approved/rejected/expired
+      status: {
+        type: DataTypes.ENUM("pending", "approved", "rejected", "expired"),
+        defaultValue: "pending",
+      },
+
+      totalAmount: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 },
+      notes: { type: DataTypes.TEXT, allowNull: true },
     },
-    supplierId: DataTypes.INTEGER,
-    gymId: DataTypes.INTEGER,
-    requestDate: DataTypes.DATE,
-    validityDate: DataTypes.DATE,
-    status: {
-      type: DataTypes.ENUM('requested', 'quoted', 'approved', 'rejected', 'expired'),
-      defaultValue: 'requested'
-    },
-    totalAmount: DataTypes.DECIMAL(15, 2),
-    discount: DataTypes.DECIMAL(15, 2),
-    tax: DataTypes.DECIMAL(15, 2),
-    finalAmount: DataTypes.DECIMAL(15, 2),
-    deliveryTime: DataTypes.STRING,
-    paymentTerms: DataTypes.TEXT,
-    warranty: DataTypes.TEXT,
-    notes: DataTypes.TEXT,
-    requestedBy: DataTypes.INTEGER,
-    reviewedBy: DataTypes.INTEGER,
-    reviewedAt: DataTypes.DATE,
-    rejectionReason: DataTypes.TEXT,
-    convertedToPurchaseOrder: { type: DataTypes.BOOLEAN, defaultValue: false },
-    purchaseOrderId: DataTypes.INTEGER
-  }, {
-    sequelize,
-    modelName: 'Quotation',
-    tableName: 'quotation',
-    freezeTableName: true,
-    timestamps: true
-  });
+    {
+      sequelize,
+      modelName: "Quotation",
+      tableName: "quotation",
+      freezeTableName: true,
+      timestamps: true,
+    }
+  );
+
   return Quotation;
 };

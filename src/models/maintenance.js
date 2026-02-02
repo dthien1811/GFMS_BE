@@ -17,7 +17,7 @@ module.exports = (sequelize, DataTypes) => {
       equipmentId: { type: DataTypes.INTEGER, allowNull: false },
       gymId: { type: DataTypes.INTEGER, allowNull: false },
 
-      issueDescription: { type: DataTypes.TEXT, allowNull: false },
+      issueDescription: { type: DataTypes.TEXT, allowNull: true },
 
       priority: {
         type: DataTypes.ENUM('low', 'medium', 'high', 'urgent'),
@@ -32,7 +32,7 @@ module.exports = (sequelize, DataTypes) => {
       actualCost: { type: DataTypes.DECIMAL(15, 2), allowNull: true },
 
       status: {
-        type: DataTypes.ENUM('pending', 'assigned', 'in_progress', 'completed', 'cancelled'),
+        type: DataTypes.ENUM('pending','approve', 'assigned', 'in_progress', 'completed', 'cancelled'),
         allowNull: false,
         defaultValue: 'pending',
       },

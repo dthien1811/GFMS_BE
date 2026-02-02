@@ -487,14 +487,20 @@ const normalizeCreatePayload = (payload = {}) => {
 exports.getTrainers = async (req, res) => {
   try {
     mustHaveModel(TrainerModel, 'Trainer');
+    mustHaveModel(UserModel, 'User');
 
     const trainers = await TrainerModel.findAll({
       attributes: TRAINER_ATTRIBUTES,
+      include: [
+        {
+          model: UserModel,
+          attributes: ['id', 'username', 'email', 'phone'],
+        },
+      ],
       order: [['id', 'DESC']],
-      raw: true,
     });
 
-    return res.status(200).json(trainers);
+    return res.status(200).json({ trainers });
   } catch (error) {
     console.error('[getTrainers] Error:', error);
     return res.status(500).json({ message: 'Error fetching trainers', error: error.message });
