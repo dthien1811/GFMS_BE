@@ -2,12 +2,18 @@ import db from "../../models";
 import payosService from "../../service/payment/payos.service";
 
 const PAID_STATUSES = new Set(["PAID", "SUCCESS", "SUCCEEDED"]);
+const ALLOWED_STATUSES = new Set(["pending", "completed", "failed", "refunded", "cancelled"]);
+
+const toAllowedStatus = (raw) => {
+  const v = String(raw || "").toLowerCase();
+  return ALLOWED_STATUSES.has(v) ? v : "pending";
+};
 
 async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
   if (tx.packageActivationId) {
     await tx.update(
       {
-        paymentStatus: "paid",
+        paymentStatus: "completed",
         transactionDate: new Date(),
         amount: amount || tx.amount,
         metadata: {
@@ -50,7 +56,7 @@ async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
 
   await tx.update(
     {
-      paymentStatus: "paid",
+      paymentStatus: "completed",
       transactionDate: new Date(),
       packageActivationId: activation.id,
       amount: amount || tx.amount,
@@ -98,7 +104,7 @@ const payosController = {
       }
 
       // Nếu đã paid thì idempotent
-      if (tx.paymentStatus === "paid") {
+      if (tx.paymentStatus === "completed") {
         return res.status(200).json({ message: "OK (đã xử lý trước đó)" });
       }
 
@@ -113,7 +119,7 @@ const payosController = {
         // Có thể log thêm trạng thái khác nếu cần
         await tx.update(
           {
-            paymentStatus: normalized ? normalized.toLowerCase() : "pending",
+            paymentStatus: toAllowedStatus(normalized),
             metadata: {
               ...(tx.metadata || {}),
               payosWebhook: data,
@@ -157,7 +163,7 @@ const payosController = {
         }
       }
 
-      if (tx.paymentStatus === "paid") {
+      if (tx.paymentStatus === "completed") {
         return res.status(200).json({ message: "OK (đã xử lý trước đó)", activationId: tx.packageActivationId });
       }
 
@@ -185,7 +191,7 @@ const payosController = {
       if (!isPaid) {
         await tx.update(
           {
-            paymentStatus: normalized ? normalized.toLowerCase() : "pending",
+            paymentStatus: toAllowedStatus(normalized),
             metadata: {
               ...(tx.metadata || {}),
               payosConfirm: info,

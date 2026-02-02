@@ -94,7 +94,7 @@ const memberPackageService = {
             amount: pkg.price,
             transactionType: "package_purchase",
             paymentMethod,
-            paymentStatus: "pending",
+          paymentStatus: "pending",
             description: `Thanh toán gói (PayOS): ${pkg.name}`,
             processedBy: userId,          // ✅ user.id
           },
@@ -142,7 +142,7 @@ const memberPackageService = {
           amount: pkg.price,
           transactionType: "package_purchase",
           paymentMethod,
-          paymentStatus: "paid",
+          paymentStatus: "completed",
           description: `Mua gói: ${pkg.name}`,
           transactionDate: new Date(),
           processedBy: userId,            // ✅ user.id

@@ -468,7 +468,7 @@ class AdminAdminCoreService {
           amount: actualCost,
           transactionType: "maintenance",
           paymentMethod: "manual",
-          paymentStatus: "paid",
+          paymentStatus: "completed",
           description: `Maintenance completed for maintenanceId=${m.id}`,
           metadata: { maintenanceId: m.id },
           transactionDate: new Date(),
