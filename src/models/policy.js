@@ -1,14 +1,11 @@
-// src/models/policy.js
 'use strict';
 const { Model } = require('sequelize');
-
 module.exports = (sequelize, DataTypes) => {
   class Policy extends Model {
     static associate(models) {
-      // ✅ Gym-specific policies (appliesTo = 'gym') có gymId
-      Policy.belongsTo(models.Gym, { foreignKey: 'gymId', as: 'gym' });
+      // Optional: belongTo Gym for gym-specific policies
     }
-  }
+  };
 
   Policy.init(
     {
