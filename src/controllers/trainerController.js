@@ -6,6 +6,16 @@ const TrainerModel = db.Trainer || db.trainer;
 const UserModel = db.User || db.user;
 const TrainerShareModel = db.TrainerShare || db.trainershare;
 const SessionProgressModel = db.SessionProgress || db.sessionprogress;
+const CommissionModel = db.Commission || db.commission;
+const PayrollItemModel = db.PayrollItem || db.payrollitem;
+const PayrollPeriodModel = db.PayrollPeriod || db.payrollperiod;
+const GymModel = db.Gym || db.gym;
+const PackageActivationModel = db.PackageActivation || db.packageactivation;
+const PackageModel = db.Package || db.package;
+const WithdrawalModel = db.Withdrawal || db.withdrawal;
+const ExcelJS = require("exceljs");
+const socketModule = require("../socket");
+const { emitToUser, emitToTrainer } = socketModule.default || socketModule;
 
 const mustHaveModel = (Model, name) => {
   if (!Model) {
@@ -13,6 +23,20 @@ const mustHaveModel = (Model, name) => {
       `Missing Sequelize model: ${name}. Check ../models/index.js export name (Trainer vs trainer).`
     );
   }
+};
+
+const getTrainerByUserId = async (userId) => {
+  mustHaveModel(TrainerModel, 'Trainer');
+  const trainer = await TrainerModel.findOne({
+    where: { userId },
+    attributes: ['id', 'userId', 'gymId'],
+  });
+  if (!trainer) {
+    const err = new Error('Trainer profile not found');
+    err.statusCode = 404;
+    throw err;
+  }
+  return trainer;
 };
 
 // Danh sách cột đúng theo DB của bạn (tránh Sequelize tự select gymId nếu model khai báo nhầm)
@@ -366,6 +390,261 @@ exports.getMyTrainerProfile = async (req, res) => {
   } catch (error) {
     console.error('[getMyTrainerProfile] Error:', error);
     return res.status(500).json({ message: 'Error fetching my trainer profile', error: error.message });
+  }
+};
+
+// ===================== PT: COMMISSIONS =====================
+exports.getMyCommissions = async (req, res) => {
+  try {
+    mustHaveModel(CommissionModel, 'Commission');
+    mustHaveModel(UserModel, 'User');
+
+    const userId = req.user?.id;
+    const trainer = await getTrainerByUserId(userId);
+
+    const { status, fromDate, toDate } = req.query || {};
+    const where = { trainerId: trainer.id };
+
+    if (status) where.status = status;
+    if (fromDate || toDate) {
+      where.sessionDate = {};
+      if (fromDate) where.sessionDate[db.Sequelize.Op.gte] = new Date(fromDate);
+      if (toDate) where.sessionDate[db.Sequelize.Op.lte] = new Date(toDate);
+    }
+
+    const rows = await CommissionModel.findAll({
+      where,
+      include: [
+        { model: GymModel, attributes: ['id', 'name'], required: false },
+        {
+          model: PackageActivationModel,
+          attributes: ['id', 'packageId'],
+          required: false,
+          include: [{ model: PackageModel, attributes: ['id', 'name', 'sessions', 'price'], required: false }],
+        },
+      ],
+      order: [['sessionDate', 'DESC'], ['createdAt', 'DESC']],
+    });
+
+    return res.status(200).json({ data: rows });
+  } catch (error) {
+    console.error('[getMyCommissions] Error:', error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// ===================== PT: PAYROLL PERIODS =====================
+exports.getMyPayrollPeriods = async (req, res) => {
+  try {
+    mustHaveModel(PayrollItemModel, 'PayrollItem');
+    mustHaveModel(PayrollPeriodModel, 'PayrollPeriod');
+
+    const userId = req.user?.id;
+    const trainer = await getTrainerByUserId(userId);
+
+    const items = await PayrollItemModel.findAll({
+      where: { trainerId: trainer.id },
+      include: [
+        {
+          model: PayrollPeriodModel,
+          required: false,
+          include: [{ model: GymModel, attributes: ['id', 'name'], required: false }],
+        },
+      ],
+      order: [['id', 'DESC']],
+    });
+
+    return res.status(200).json({ data: items });
+  } catch (error) {
+    console.error('[getMyPayrollPeriods] Error:', error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// ===================== PT: WITHDRAWALS =====================
+exports.getMyWithdrawals = async (req, res) => {
+  try {
+    mustHaveModel(WithdrawalModel, 'Withdrawal');
+
+    const userId = req.user?.id;
+    const trainer = await getTrainerByUserId(userId);
+
+    const rows = await WithdrawalModel.findAll({
+      where: { trainerId: trainer.id },
+      order: [['id', 'DESC']],
+    });
+
+    return res.status(200).json({ data: rows });
+  } catch (error) {
+    console.error('[getMyWithdrawals] Error:', error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// ===================== PT: WALLET SUMMARY =====================
+exports.getMyWalletSummary = async (req, res) => {
+  try {
+    mustHaveModel(WithdrawalModel, 'Withdrawal');
+    const userId = req.user?.id;
+    const trainer = await getTrainerByUserId(userId);
+
+    const totalWithdrawn = await WithdrawalModel.sum('amount', {
+      where: { trainerId: trainer.id, status: 'completed' },
+    });
+
+    return res.status(200).json({
+      data: {
+        availableBalance: Number(trainer.pendingCommission || 0),
+        totalWithdrawn: Number(totalWithdrawn || 0),
+      },
+    });
+  } catch (error) {
+    console.error('[getMyWalletSummary] Error:', error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+exports.requestWithdrawal = async (req, res) => {
+  try {
+    mustHaveModel(WithdrawalModel, 'Withdrawal');
+    const userId = req.user?.id;
+    const trainer = await getTrainerByUserId(userId);
+
+    const amount = Number(req.body?.amount || 0);
+    const withdrawalMethod = req.body?.withdrawalMethod || "bank_transfer";
+    const accountInfo = req.body?.accountInfo || {};
+    if (withdrawalMethod === "bank_transfer") {
+      if (!accountInfo?.bankName || !accountInfo?.accountNumber || !accountInfo?.accountHolder) {
+        return res.status(400).json({ message: "Thiếu thông tin tài khoản ngân hàng" });
+      }
+    }
+    const notes = req.body?.notes || "";
+
+    if (!amount || Number.isNaN(amount) || amount <= 0) {
+      return res.status(400).json({ message: "Số tiền không hợp lệ" });
+    }
+
+    if (trainer.pendingCommission != null && Number(amount) > Number(trainer.pendingCommission || 0)) {
+      return res.status(400).json({ message: "Số tiền vượt quá phần hoa hồng đang chờ" });
+    }
+
+    const row = await WithdrawalModel.create({
+      trainerId: trainer.id,
+      amount,
+      withdrawalMethod,
+      accountInfo: JSON.stringify(accountInfo || {}),
+      status: "pending",
+      processedBy: null,
+      processedDate: null,
+      notes,
+    });
+
+    try {
+      const gym = await GymModel.findByPk(trainer.gymId, { attributes: ["ownerId"] });
+      if (gym?.ownerId) {
+        emitToUser(gym.ownerId, "withdrawal:created", { id: row.id, status: row.status });
+      }
+      emitToTrainer(trainer.id, "withdrawal:created", { id: row.id, status: row.status });
+    } catch (e) {
+      // ignore socket errors
+    }
+
+    return res.status(201).json({ data: row, message: "Đã tạo yêu cầu chi trả" });
+  } catch (error) {
+    console.error('[requestWithdrawal] Error:', error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// ===================== PT: PERIOD DETAILS =====================
+exports.getMyPayrollPeriodCommissions = async (req, res) => {
+  try {
+    mustHaveModel(CommissionModel, 'Commission');
+    const userId = req.user?.id;
+    const trainer = await getTrainerByUserId(userId);
+    const periodId = Number(req.params?.periodId);
+    if (!periodId) return res.status(400).json({ message: "periodId is required" });
+
+    const rows = await CommissionModel.findAll({
+      where: { trainerId: trainer.id, payrollPeriodId: periodId },
+      include: [
+        { model: GymModel, attributes: ['id', 'name'], required: false },
+        {
+          model: PackageActivationModel,
+          attributes: ['id', 'packageId'],
+          required: false,
+          include: [{ model: PackageModel, attributes: ['id', 'name', 'sessions', 'price'], required: false }],
+        },
+      ],
+      order: [['sessionDate', 'DESC']],
+    });
+
+    return res.status(200).json({ data: rows });
+  } catch (error) {
+    console.error('[getMyPayrollPeriodCommissions] Error:', error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// ===================== PT: EXPORT COMMISSIONS =====================
+exports.exportMyCommissions = async (req, res) => {
+  try {
+    mustHaveModel(CommissionModel, 'Commission');
+    const userId = req.user?.id;
+    const trainer = await getTrainerByUserId(userId);
+
+    const { status, fromDate, toDate } = req.query || {};
+    const where = { trainerId: trainer.id };
+    if (status) where.status = status;
+    if (fromDate || toDate) {
+      where.sessionDate = {};
+      if (fromDate) where.sessionDate[db.Sequelize.Op.gte] = new Date(fromDate);
+      if (toDate) where.sessionDate[db.Sequelize.Op.lte] = new Date(toDate);
+    }
+
+    const rows = await CommissionModel.findAll({
+      where,
+      include: [
+        { model: GymModel, attributes: ['id', 'name'], required: false },
+        {
+          model: PackageActivationModel,
+          attributes: ['id', 'packageId'],
+          required: false,
+          include: [{ model: PackageModel, attributes: ['id', 'name', 'sessions', 'price'], required: false }],
+        },
+      ],
+      order: [['sessionDate', 'DESC']],
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet("PT_Commissions");
+    sheet.columns = [
+      { header: "Ngay buoi tap", key: "sessionDate", width: 16 },
+      { header: "Phong gym", key: "gym", width: 20 },
+      { header: "Goi tap", key: "package", width: 20 },
+      { header: "Gia tri/buoi", key: "sessionValue", width: 16 },
+      { header: "Hoa hong PT", key: "commissionAmount", width: 16 },
+      { header: "Trang thai", key: "status", width: 12 },
+    ];
+
+    rows.forEach((r) => {
+      sheet.addRow({
+        sessionDate: r.sessionDate ? new Date(r.sessionDate).toLocaleDateString("vi-VN") : "N/A",
+        gym: r.Gym?.name || "N/A",
+        package: r.PackageActivation?.Package?.name || "N/A",
+        sessionValue: Number(r.sessionValue || 0),
+        commissionAmount: Number(r.commissionAmount || 0),
+        status: r.status || "N/A",
+      });
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="pt_commissions.xlsx"`);
+    return res.status(200).send(buffer);
+  } catch (error) {
+    console.error('[exportMyCommissions] Error:', error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
 

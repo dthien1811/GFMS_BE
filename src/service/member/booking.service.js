@@ -3,6 +3,7 @@ import db from "../../models";
 import { Op } from "sequelize";
 
 const SLOT_MINUTES = 60;
+const OWNER_COMMISSION_RATE = 0.15;
 
 // ===== Time helpers =====
 function parseHHMM(timeStr) {
@@ -66,6 +67,26 @@ function safeParseJSON(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+async function getGymCommissionRate(gymId, transaction) {
+  const policy = await db.Policy.findOne({
+    where: {
+      policyType: "commission",
+      appliesTo: "gym",
+      gymId,
+      isActive: true,
+    },
+    order: [["createdAt", "DESC"]],
+    transaction,
+  });
+
+  const value = safeParseJSON(policy?.value, {});
+  const ownerRate = Number(value?.ownerRate ?? OWNER_COMMISSION_RATE);
+  if (Number.isNaN(ownerRate) || ownerRate < 0 || ownerRate > 1) {
+    return OWNER_COMMISSION_RATE;
+  }
+  return ownerRate;
 }
 
 // ===== Data helpers =====
@@ -570,6 +591,52 @@ const bookingService = {
       }
 
       await booking.update({ status: "completed", checkoutTime: new Date() }, { transaction: t });
+
+      // Create commission per completed session (avoid duplicates)
+      const existingCommission = await db.Commission.findOne({
+        where: { bookingId: booking.id },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (!existingCommission) {
+        const packageData = await db.Package.findByPk(activation.packageId, {
+          transaction: t,
+          attributes: ["id", "price", "sessions"],
+        });
+
+        const sessionValue =
+          Number(activation.pricePerSession) ||
+          (Number(packageData?.price || 0) / Number(packageData?.sessions || 1));
+
+        const ownerRate = await getGymCommissionRate(booking.gymId, t);
+        const trainerRate = 1 - ownerRate;
+
+        await db.Commission.create(
+          {
+            trainerId: booking.trainerId,
+            bookingId: booking.id,
+            gymId: booking.gymId,
+            activationId: activation.id,
+            sessionDate: booking.bookingDate,
+            sessionValue,
+            commissionRate: trainerRate,
+            commissionAmount: Number(sessionValue) * trainerRate,
+            status: "pending",
+          },
+          { transaction: t }
+        );
+
+        if (trainer) {
+          await trainer.update(
+            {
+              pendingCommission: Number(trainer.pendingCommission || 0) + Number(sessionValue) * trainerRate,
+              totalEarned: Number(trainer.totalEarned || 0) + Number(sessionValue) * trainerRate,
+            },
+            { transaction: t }
+          );
+        }
+      }
 
       await t.commit();
       return booking;
