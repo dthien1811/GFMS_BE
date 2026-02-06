@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
+import { createServer } from "http";
 import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
 import path from "path";
@@ -14,6 +15,7 @@ import useApi from "./routes/useApi";
 import payosRoute from "./routes/payment/payos.route";
 
 import connectDB from "./config/connectDB";
+import { initSocket } from "./socket";
 
 import jwtAction from "./middleware/JWTAction";
 import { checkUserPermission } from "./middleware/permission";
@@ -37,6 +39,7 @@ try {
 }
 
 const app = express();
+const httpServer = createServer(app);
 const PORT = process.env.PORT || 8080;
 const HOSTNAME = process.env.HOSTNAME || "localhost";
 
@@ -58,6 +61,29 @@ app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 
 // ===== COOKIE =====
 app.use(cookieParser());
+
+// ===== API STATUS LOG (minimal) =====
+app.use((req, res, next) => {
+  const targets = [
+    "/api/owner/transactions",
+    "/api/owner/commissions",
+    "/api/owner/withdrawals",
+    "/api/pt/me/commissions",
+    "/api/pt/me/payroll-periods",
+    "/api/pt/me/withdrawals",
+    "/api/pt/me/wallet-summary",
+  ];
+
+  const isTarget = targets.some((p) => req.path.startsWith(p));
+  if (!isTarget) return next();
+
+  res.on("finish", () => {
+    const status = res.statusCode;
+    const tag = status >= 400 ? "ERR" : "OK";
+    console.log(`[${tag}] ${req.method} ${req.path} -> ${status}`);
+  });
+  next();
+});
 
 // ===== STATIC UPLOAD =====
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
@@ -122,6 +148,8 @@ if (typeof uploadRoute === "function") uploadRoute(app);
 connectDB();
 
 // ===== START =====
-app.listen(PORT, () => {
+initSocket(httpServer);
+
+httpServer.listen(PORT, () => {
   console.log(`🚀 Server running at: http://${HOSTNAME}:${PORT}`);
 });
