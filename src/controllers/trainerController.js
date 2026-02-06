@@ -43,6 +43,7 @@ const getTrainerByUserId = async (userId) => {
 const TRAINER_ATTRIBUTES = [
   'id',
   'userId',
+  'gymId',
   'specialization',
   'certification',
   'experienceYears',
@@ -109,6 +110,9 @@ const normalizeCreatePayload = (payload = {}) => {
   if (p.userId === undefined) p.userId = p.userID;
   if (p.userId === undefined) p.userId = p.userid;
   if (p.userId === undefined) p.userId = p.user_id;
+
+  // gymId normalize (cho phép FE gửi string)
+  p.gymId = toNumberOrUndefined(p.gymId);
 
   // Ép kiểu number cho các field số (frontend thường gửi string)
   p.userId = toNumberOrUndefined(p.userId);
@@ -179,6 +183,13 @@ exports.createTrainer = async (req, res) => {
       // cho dev dễ debug: trả về body đã nhận key gì
       return res.status(400).json({
         message: 'userId is required (frontend may send userID/user_id/userid).',
+        receivedKeys: Object.keys(rawPayload),
+      });
+    }
+
+    if (!payload.gymId) {
+      return res.status(400).json({
+        message: 'gymId is required when creating trainer.',
         receivedKeys: Object.keys(rawPayload),
       });
     }

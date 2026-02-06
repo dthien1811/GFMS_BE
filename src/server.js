@@ -34,7 +34,9 @@ try {
 try {
   trainerRoutes = require("./routes/trainer");
   trainerRoutes = trainerRoutes.default || trainerRoutes;
-} catch (e) {}
+} catch (e) {
+  console.error("❌ Failed to load ./routes/trainer:", e);
+}
 
 const app = express();
 const httpServer = createServer(app);

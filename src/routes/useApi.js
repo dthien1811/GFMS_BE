@@ -58,7 +58,7 @@ const useApi = (app) => {
   router.use("/trainer", trainerRoute);
 
   // ✅ admin permission only (users/groups…)
-  router.use(
+  /*router.use(
     checkUserPermission({
       getPath: (req) => {
         const fullPath = `${req.baseUrl}${req.path}`; // /api/users
@@ -66,7 +66,18 @@ const useApi = (app) => {
         return fullPath.replace(/^\/api/, "/admin");
       },
     })
-  );
+  );*/
+   router.use(
+  ["/users", "/groups"],
+  checkUserPermission({
+    getPath: (req) => {
+      // dùng originalUrl để ra đúng /api/users... rồi map sang /admin/users...
+      const raw = (req.originalUrl || "").split("?")[0]; // /api/users
+      return raw.replace(/^\/api/, "/admin");            // /admin/users
+    },
+  })
+);
+
 
   // admin APIs
   router.get("/users", useApiController.readUsers);
