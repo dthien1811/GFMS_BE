@@ -29,6 +29,17 @@ const ownerGymService = {
     return gymsWithStats;
   },
 
+  async getAllGyms() {
+    // Lấy tất cả gyms để owner có thể chọn khi tạo trainer share request
+    const gyms = await db.Gym.findAll({
+      attributes: ["id", "name", "address", "phone", "email", "description", "status", "ownerId"],
+      order: [["name", "ASC"]],
+      where: { status: "active" }, // Chỉ lấy gyms đang hoạt động
+    });
+
+    return gyms;
+  },
+
   async getGymDetail(ownerUserId, gymId) {
     const gym = await db.Gym.findOne({
       where: { id: gymId, ownerId: ownerUserId },
@@ -61,7 +72,7 @@ const ownerGymService = {
       throw error;
     }
 
-    const allowedFields = ["name", "address", "phone", "email", "description"];
+    const allowedFields = ["name", "address", "phone", "email", "description", "images"];
     const dataToUpdate = {};
 
     allowedFields.forEach((field) => {
@@ -69,6 +80,16 @@ const ownerGymService = {
         dataToUpdate[field] = updateData[field];
       }
     });
+
+    if (dataToUpdate.images !== undefined) {
+      if (dataToUpdate.images === null || dataToUpdate.images === "") {
+        dataToUpdate.images = null;
+      } else if (Array.isArray(dataToUpdate.images)) {
+        dataToUpdate.images = JSON.stringify(dataToUpdate.images);
+      } else if (typeof dataToUpdate.images === "string") {
+        dataToUpdate.images = dataToUpdate.images;
+      }
+    }
 
     await gym.update(dataToUpdate);
 

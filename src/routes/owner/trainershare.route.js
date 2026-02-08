@@ -13,6 +13,9 @@ router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owner
 
 // Routes cho trainer shares
 router.get("/available-trainers/:gymId", ownerTrainerShareController.getAvailableTrainers);
+router.get("/received", ownerTrainerShareController.getReceivedRequests); // Phải để trước /:id
+router.post("/:id/accept", ownerTrainerShareController.acceptRequest);
+router.post("/:id/reject", ownerTrainerShareController.rejectRequest);
 router.post("/", ownerTrainerShareController.createTrainerShare);
 router.get("/", ownerTrainerShareController.getMyTrainerShares);
 router.get("/:id", ownerTrainerShareController.getMyTrainerShareDetail);
