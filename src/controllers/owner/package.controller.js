@@ -2,6 +2,8 @@ import db from "../../models";
 
 const Package = db.Package;
 const Gym = db.Gym;
+const Trainer = db.Trainer;
+const User = db.User;
 
 // Lấy tất cả gymId của owner (chuẩn cho multi-gym)
 const getOwnerGymIds = async (ownerId) => {
@@ -33,6 +35,19 @@ const packageController = {
           gymId: gymIds, // Sequelize tự hiểu IN (...)
           name: { [db.Sequelize.Op.ne]: null }, // Loại bỏ các bản ghi có tên NULL
         },
+        include: [
+          {
+            model: Trainer,
+            attributes: ["id"],
+            required: false,
+            include: [
+              {
+                model: User,
+                attributes: ["id", "username"],
+              },
+            ],
+          },
+        ],
         order: [["createdAt", "DESC"]],
       });
 
@@ -59,7 +74,13 @@ const packageController = {
         price,
         sessions,
         durationDays,
-        gymId
+        gymId,
+        packageType,
+        trainerId,
+        type,
+        commissionRate,
+        validityType,
+        maxSessionsPerWeek
       } = req.body;
 
       if (!gymIds.includes(gymId)) {
@@ -75,6 +96,12 @@ const packageController = {
         sessions,
         durationDays,
         gymId,
+        packageType: packageType || 'membership',
+        trainerId: trainerId || null,
+        type: type || 'basic',
+        commissionRate: commissionRate || 0.6,
+        validityType: validityType || 'months',
+        maxSessionsPerWeek: maxSessionsPerWeek || null,
         status: 'INACTIVE', // mặc định chưa công bố
       });
 

@@ -3,7 +3,7 @@ import ownerMemberService from "../../service/owner/member.service";
 const ownerMemberController = {
   /**
    * GET /api/owner/members/available-users
-   * Lấy danh sách users chưa là member
+   * Lấy danh sách users chưa là member của bất kỳ gym nào
    */
   async getAvailableUsers(req, res) {
     try {

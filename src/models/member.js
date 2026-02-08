@@ -10,6 +10,9 @@ module.exports = (sequelize, DataTypes) => {
       Member.belongsTo(models.Package, { foreignKey: 'currentPackageId', as: 'currentPackage' });
       Member.belongsTo(models.PackageActivation, { foreignKey: 'packageActivationId' });
 
+      // Add hasMany for all package activations
+      Member.hasMany(models.PackageActivation, { foreignKey: 'memberId', as: 'PackageActivations' });
+
       Member.hasMany(models.Booking, { foreignKey: 'memberId' });
       Member.hasMany(models.Transaction, { foreignKey: 'memberId' });
       Member.hasMany(models.Review, { foreignKey: 'memberId' });

@@ -20,6 +20,11 @@ module.exports = (sequelize, DataTypes) => {
     gymId: DataTypes.INTEGER,
     trainerId: DataTypes.INTEGER,
     status: DataTypes.STRING,
+    packageType: { 
+      type: DataTypes.ENUM('membership', 'personal_training'), 
+      defaultValue: 'membership',
+      comment: 'membership: gói thành viên theo thời hạn, personal_training: gói PT theo buổi'
+    },
     // ========== THÊM MỚI ==========
     pricePerSession: DataTypes.DECIMAL, // = price / sessions
     commissionRate: { 
