@@ -15,9 +15,11 @@ import ownerTrainerShareRoute from "./owner/trainershare.route";
 import ownerMemberRoute from "./owner/member.route";
 import ownerBookingRoute from "./owner/booking.route";
 import ownerTrainerRoute from "./owner/trainer.route";
+
 import memberBookingRoute from "./member/booking.route";
 import memberPackageRoute from "./member/package.route";
 import memberMyPackagesRoute from "./member/myPackages.route";
+
 import trainerRoute from "./trainer";
 
 import jwtAction from "../middleware/JWTAction";
@@ -26,10 +28,11 @@ import { checkUserPermission } from "../middleware/permission";
 const router = express.Router();
 
 const useApi = (app) => {
+
   // ✅ all /api must login
   router.use(jwtAction.checkUserJWT);
 
-  // ✅ mount business routes FIRST (owner/member tự kiểm role bằng requireGroupName)
+  // ✅ mount business routes FIRST (owner/member tự check role)
   router.use("/owner/packages", ownerPackageRoute);
   router.use("/owner/policies", ownerPolicyRoute);
   router.use("/owner/gyms", ownerGymRoute);
@@ -48,7 +51,8 @@ const useApi = (app) => {
   router.use("/member/packages", memberPackageRoute);
   router.use("/member/my-packages", memberMyPackagesRoute);
 
-  // trainer route (public for owner to select)
+
+  // trainer route
   router.use("/trainer", trainerRoute);
 
   // ✅ admin permission only (users/groups…)
@@ -56,7 +60,6 @@ const useApi = (app) => {
     checkUserPermission({
       getPath: (req) => {
         const fullPath = `${req.baseUrl}${req.path}`; // /api/users
-        // map admin resources
         return fullPath.replace(/^\/api/, "/admin");
       },
     })
