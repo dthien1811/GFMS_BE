@@ -18,7 +18,7 @@ class AdminPurchaseWorkflowController {
       const result = await adminPurchaseWorkflowService.getQuotationDetail(req.params.id);
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 500;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 500;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -33,7 +33,7 @@ class AdminPurchaseWorkflowController {
       );
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -47,7 +47,7 @@ class AdminPurchaseWorkflowController {
       );
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -62,7 +62,7 @@ class AdminPurchaseWorkflowController {
       );
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -72,13 +72,13 @@ class AdminPurchaseWorkflowController {
   createPOFromQuotation = async (req, res) => {
     try {
       const result = await adminPurchaseWorkflowService.createPOFromQuotation(
-        req.params.quotationId,
+        req.params.id,
         req.user?.id,
         req
       );
       return res.status(201).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -97,7 +97,7 @@ class AdminPurchaseWorkflowController {
       const result = await adminPurchaseWorkflowService.getPurchaseOrderDetail(req.params.id);
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 500;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 500;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -111,7 +111,7 @@ class AdminPurchaseWorkflowController {
       );
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -126,7 +126,7 @@ class AdminPurchaseWorkflowController {
       );
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -141,7 +141,7 @@ class AdminPurchaseWorkflowController {
       );
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -162,7 +162,7 @@ class AdminPurchaseWorkflowController {
       const result = await adminPurchaseWorkflowService.getReceiptDetail(req.params.id);
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 500;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 500;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -170,13 +170,13 @@ class AdminPurchaseWorkflowController {
   createInboundReceiptFromPO = async (req, res) => {
     try {
       const result = await adminPurchaseWorkflowService.createInboundReceiptFromPO(
-        req.params.purchaseOrderId,
+        req.params.id,
         req.user?.id,
         req
       );
       return res.status(201).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };
@@ -190,7 +190,7 @@ class AdminPurchaseWorkflowController {
       );
       return res.status(200).json(result);
     } catch (e) {
-      const code = e.message?.includes("not found") ? 404 : 400;
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
       return res.status(code).json({ message: e.message });
     }
   };

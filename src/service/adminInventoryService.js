@@ -1,5 +1,7 @@
-import { QueryTypes } from "sequelize";
-import db from "../models";
+const { QueryTypes } = require("sequelize");
+const dbImport = require("../models");
+const db = dbImport?.default || dbImport;
+
 
 // ================= helpers =================
 const pickPage = (query = {}) => {

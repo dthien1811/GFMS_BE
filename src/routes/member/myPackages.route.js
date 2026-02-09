@@ -6,6 +6,7 @@ const router = express.Router();
 
 router.use(requireGroupName(["Members", "Member"]));
 router.get("/", memberMyPackageController.getMyPackages);
+router.get("/:activationId", memberMyPackageController.getMyPackageDetail);
 
 export default router;
 

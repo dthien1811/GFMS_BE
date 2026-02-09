@@ -20,6 +20,8 @@ import { initSocket } from "./socket";
 import jwtAction from "./middleware/JWTAction";
 import { checkUserPermission } from "./middleware/permission";
 
+import marketplaceRoute from "./routes/marketplace/marketplace.route";
+
 // CommonJS route
 const adminInventoryApi = require("./routes/adminInventoryApi");
 
@@ -87,6 +89,9 @@ app.use((req, res, next) => {
 
 // ===== STATIC UPLOAD =====
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
+
+// ===== MARKETPLACE ROUTE (public) =====
+app.use("/api/marketplace", marketplaceRoute);
 
 // ===== ROUTES =====
 initWebRoutes(app);
