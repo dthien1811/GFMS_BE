@@ -34,6 +34,7 @@ module.exports = {
 
   // ========== MODULE 4: POLICIES ==========
   getPolicies: wrap((req) => adminAdminCoreService.getPolicies(req)),
+  getEffectivePolicy: wrap((req) => adminAdminCoreService.getEffectivePolicy(req)),
   createPolicy: wrap((req) => adminAdminCoreService.createPolicy(req)),
   updatePolicy: wrap((req) => adminAdminCoreService.updatePolicy(req)),
   togglePolicy: wrap((req) => adminAdminCoreService.togglePolicy(req)),

@@ -16,38 +16,15 @@ const { checkUserPermission } = require("../middleware/permission");
 // ===== FIX UPLOAD MIDDLEWARE: normalize export =====
 const uploadModule = require("../middleware/uploadEquipmentImages");
 
-/**
- * Trả về middleware function hợp lệ cho Express.
- * - module.exports = function (req,res,next) {}
- * - module.exports = { uploadEquipmentImages: fn }
- * - module.exports = multer()  (object có .array/.single/.fields)
- */
 function resolveUploadMiddleware(mod) {
-  // 1) Export trực tiếp là function
   if (typeof mod === "function") return mod;
-
-  // 2) Export object có key uploadEquipmentImages
   if (mod && typeof mod.uploadEquipmentImages === "function") return mod.uploadEquipmentImages;
-
-  // 3) Export theo kiểu ESModule transpile: { default: fn }
   if (mod && typeof mod.default === "function") return mod.default;
 
-  // 4) Export multer instance (object) -> chuyển thành middleware bằng .array()
-  //    Bạn có thể đổi field name "images" theo FE nếu khác.
-  if (mod && typeof mod.array === "function") {
-    return mod.array("images", 10);
-  }
-  if (mod && typeof mod.single === "function") {
-    // fallback nếu bạn chỉ upload 1 ảnh (đổi field name nếu cần)
-    return mod.single("image");
-  }
+  if (mod && typeof mod.array === "function") return mod.array("images", 10);
+  if (mod && typeof mod.single === "function") return mod.single("image");
 
-  // 5) Không match -> bỏ qua để server không crash
-  console.warn(
-    "[WARN] uploadEquipmentImages is not a middleware function. Got:",
-    typeof mod,
-    mod && Object.keys(mod)
-  );
+  console.warn("[WARN] uploadEquipmentImages is not a middleware function. Got:", typeof mod, mod && Object.keys(mod));
   return (req, res, next) => next();
 }
 
@@ -73,7 +50,6 @@ router.get("/gyms", adminInventoryController.getGyms);
 router.get("/equipment-categories", adminInventoryController.getEquipmentCategories);
 router.get("/equipments", adminInventoryController.getEquipments);
 
-// ✅ FIXED: uploadEquipmentImages giờ luôn là function middleware
 router.post("/equipments", uploadEquipmentImages, adminInventoryController.createEquipment);
 router.put("/equipments/:id", uploadEquipmentImages, adminInventoryController.updateEquipment);
 router.patch("/equipments/:id/discontinue", adminInventoryController.discontinueEquipment);
@@ -126,6 +102,11 @@ router.post("/purchase-orders/:id/payments", adminPurchaseWorkflowController.cre
 // ========================
 // MODULE 3: MAINTENANCE + FRANCHISE + POLICY + TRAINER SHARE + REPORT
 // ========================
+
+// ✅ technicians dropdown (Assign Technician modal)
+router.get("/technicians", adminAdminCoreController.getTechnicians);
+
+// Maintenance
 router.get("/maintenances", adminAdminCoreController.getMaintenances);
 router.get("/maintenances/:id", adminAdminCoreController.getMaintenanceDetail);
 router.patch("/maintenances/:id/approve", adminAdminCoreController.approveMaintenance);
@@ -149,6 +130,11 @@ router.patch("/franchise-contract/:id/mock/completed", adminFranchiseContractCon
 
 // Policies
 router.get("/policies", adminAdminCoreController.getPolicies);
+
+// ✅ NEW: effective policy (ưu tiên gym -> fallback system)
+// (đặt TRƯỚC /policies/:id để tránh bị nuốt param)
+router.get("/policies/effective", adminAdminCoreController.getEffectivePolicy);
+
 router.post("/policies", adminAdminCoreController.createPolicy);
 router.put("/policies/:id", adminAdminCoreController.updatePolicy);
 router.patch("/policies/:id/toggle", adminAdminCoreController.togglePolicy);

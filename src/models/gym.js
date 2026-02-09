@@ -1,69 +1,135 @@
 'use strict';
-const { Model } = require('sequelize');
 
 module.exports = (sequelize, DataTypes) => {
-  class Gym extends Model {
-    static associate(models) {
-      Gym.belongsTo(models.User, { foreignKey: 'ownerId', as: 'owner' });
-
-      Gym.hasMany(models.Member, { foreignKey: 'gymId' });
-      Gym.hasMany(models.Package, { foreignKey: 'gymId' });
-      Gym.hasMany(models.Booking, { foreignKey: 'gymId' });
-      Gym.hasMany(models.Transaction, { foreignKey: 'gymId' });
-
-      // Chỉ bật nếu DB thật có gymId trong Trainer/Equipment
-      if (models.Trainer) Gym.hasMany(models.Trainer, { foreignKey: 'gymId' });
-      if (models.Equipment) Gym.hasMany(models.Equipment, { foreignKey: 'gymId' });
-
-      // FranchiseRequest FK
-      Gym.belongsTo(models.FranchiseRequest, { foreignKey: 'franchiseRequestId' });
-
-      // Kho
-      if (models.EquipmentStock) Gym.hasMany(models.EquipmentStock, { foreignKey: 'gymId' });
-      if (models.Receipt) Gym.hasMany(models.Receipt, { foreignKey: 'gymId' });
-      if (models.Inventory) Gym.hasMany(models.Inventory, { foreignKey: 'gymId' });
-
-      // TrainerShare
-      if (models.TrainerShare) {
-        Gym.hasMany(models.TrainerShare, { foreignKey: 'toGymId', as: 'incomingTrainerShares' });
-        Gym.hasMany(models.TrainerShare, { foreignKey: 'fromGymId', as: 'outgoingTrainerShares' });
-      }
-    }
-  }
-
-  Gym.init(
+  const Gym = sequelize.define(
+    'Gym',
     {
-      name: { type: DataTypes.STRING, allowNull: false },
-      address: { type: DataTypes.STRING, allowNull: false },
-      phone: { type: DataTypes.STRING, allowNull: true },
+      id: {
+        type: DataTypes.INTEGER,
+        primaryKey: true,
+        autoIncrement: true,
+      },
+
+      name: {
+        type: DataTypes.STRING,
+        allowNull: false,
+      },
+
+      address: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+
+      phone: {
+        type: DataTypes.STRING,
+        allowNull: true,
+      },
+
       email: {
         type: DataTypes.STRING,
         allowNull: true,
-        validate: { isEmail: true },
       },
-      description: { type: DataTypes.TEXT, allowNull: true },
+
+      description: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
 
       status: {
-        type: DataTypes.ENUM('active', 'inactive', 'suspended'),
-        allowNull: false,
+        type: DataTypes.ENUM('active', 'inactive'),
         defaultValue: 'active',
       },
 
-      ownerId: { type: DataTypes.INTEGER, allowNull: false },
-      franchiseRequestId: { type: DataTypes.INTEGER, allowNull: true },
+      ownerId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
 
-      operatingHours: { type: DataTypes.TEXT, allowNull: true },
-      images: { type: DataTypes.TEXT, allowNull: true },
+      franchiseRequestId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+      },
     },
     {
-      sequelize,
-      modelName: 'Gym',
       tableName: 'gym',
       freezeTableName: true,
       timestamps: true,
-      indexes: [{ fields: ['ownerId'] }, { fields: ['franchiseRequestId'] }],
     }
   );
+
+  Gym.associate = (models) => {
+    /**
+     * ===== CORE RELATIONS =====
+     */
+    if (models.User) {
+      Gym.belongsTo(models.User, {
+        foreignKey: 'ownerId',
+        as: 'owner',
+      });
+    }
+
+    /**
+     * ===== FRANCHISE =====
+     */
+    if (models.FranchiseRequest) {
+      Gym.belongsTo(models.FranchiseRequest, {
+        foreignKey: 'franchiseRequestId',
+      });
+    }
+
+    /**
+     * ===== BUSINESS MODULES =====
+     */
+    if (models.Member) {
+      Gym.hasMany(models.Member, {
+        foreignKey: 'gymId',
+      });
+    }
+
+    if (models.Package) {
+      Gym.hasMany(models.Package, {
+        foreignKey: 'gymId',
+      });
+    }
+
+    if (models.Booking) {
+      Gym.hasMany(models.Booking, {
+        foreignKey: 'gymId',
+      });
+    }
+
+    if (models.Transaction) {
+      Gym.hasMany(models.Transaction, {
+        foreignKey: 'gymId',
+      });
+    }
+
+    /**
+     * ===== INVENTORY / MAINTENANCE (nếu có) =====
+     */
+    if (models.Equipment) {
+      Gym.hasMany(models.Equipment, {
+        foreignKey: 'gymId',
+      });
+    }
+
+    if (models.MaintenanceRequest) {
+      Gym.hasMany(models.MaintenanceRequest, {
+        foreignKey: 'gymId',
+      });
+    }
+
+    /**
+     * ===== PT SHARING POLICY =====
+     * để include Policy từ Gym (và ngược lại)
+     */
+    if (models.Policy) {
+      Gym.hasMany(models.Policy, {
+        foreignKey: 'gymId',
+        as: 'policies',
+      });
+    }
+  };
 
   return Gym;
 };

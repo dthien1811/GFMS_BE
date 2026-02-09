@@ -186,6 +186,65 @@ class AdminAdminCoreService {
       },
     };
   }
+// ✅ FIX #2: getTechnicians KHÔNG query Role.name nữa (vì DB role không có name)
+async getTechnicians(req) {
+  // Mục tiêu: trả danh sách user dùng cho dropdown Assign Technician.
+  // DB mỗi bạn có thể khác nhau (có thể dùng groupId hoặc roleId), nên làm linh hoạt.
+
+  // 1) detect cột groupId/roleId trong bảng user
+  let userCols = {};
+  try {
+    userCols = await sequelize.getQueryInterface().describeTable("user");
+  } catch (e) {
+    // một số DB đặt table là `users`
+    try {
+      userCols = await sequelize.getQueryInterface().describeTable("users");
+    } catch (_) {
+      userCols = {};
+    }
+  }
+
+  const hasGroupId = !!userCols.groupId;
+  const hasRoleId = !!userCols.roleId;
+
+  // 2) Ưu tiên tìm group có tên chứa "tech"/"technician" (không phân biệt hoa thường)
+  let technicianGroupId = null;
+  if (hasGroupId) {
+    const techGroup = await Group.findOne({
+      where: sequelize.where(
+        sequelize.fn("LOWER", sequelize.col("name")),
+        { [Op.like]: "%tech%" }
+      ),
+      attributes: ["id", "name"],
+    });
+    technicianGroupId = techGroup?.id || null;
+  }
+
+  // 3) Build where
+  const where = {};
+  if (hasGroupId && technicianGroupId) {
+    where.groupId = technicianGroupId;
+  } else if (hasGroupId) {
+    // fallback cứng groupId=6 (theo DB bạn chụp trước đó)
+    where.groupId = 6;
+  } else if (hasRoleId) {
+    // fallback nếu user dùng roleId (không có groupId)
+    // Không đoán tên role ở đây để tránh lỗi; trả toàn bộ user, FE vẫn chọn được.
+    // Nếu bạn muốn siết role technician, mình sẽ map theo bảng role của bạn.
+  }
+
+  const attrs = ["id", "username", "email"];
+  if (hasGroupId) attrs.push("groupId");
+  if (hasRoleId) attrs.push("roleId");
+
+  const users = await User.findAll({
+    where,
+    attributes: attrs,
+    order: [["id", "ASC"]],
+  });
+
+  return { data: users };
+}
 
   async getMaintenanceDetail(req) {
     const id = Number(req.params.id);
@@ -760,71 +819,204 @@ async rejectFranchiseRequest(req) {
    * MODULE 4: POLICIES
    * ====================================================== */
 
+  /**
+   * ✅ Nghiệp vụ chuẩn:
+   * - appliesTo=system => gymId MUST be null
+   * - appliesTo=gym    => gymId MUST exist
+   * - value MUST be JSON object (không lưu string JSON bậy)
+   * - Khi CREATE/UPDATE/TOGGLE sang ACTIVE:
+   *   => tự động INACTIVE các policy ACTIVE khác cùng (policyType + appliesTo + gymId)
+   * - Effective policy (áp dụng thực tế):
+   *   ưu tiên Gym policy ACTIVE (đúng ngày hiệu lực) -> fallback System policy ACTIVE
+   */
+
+  _normalizePolicyInput(body = {}) {
+    const allowedTypes = new Set([
+      "trainer_share",
+      "commission",
+      "cancellation",
+      "refund",
+      "membership",
+    ]);
+    const allowedApplies = new Set(["system", "gym", "trainer"]);
+
+    const policyType = body.policyType;
+    const appliesTo = body.appliesTo;
+
+    ensure(policyType && allowedTypes.has(policyType), "Invalid policyType");
+    ensure(appliesTo && allowedApplies.has(appliesTo), "Invalid appliesTo");
+    ensure(body.name && String(body.name).trim(), "name is required");
+
+    // gymId rule
+    let gymId = body.gymId;
+    if (appliesTo === "system") {
+      gymId = null;
+    } else if (appliesTo === "gym") {
+      ensure(
+        gymId !== undefined && gymId !== null && String(gymId).trim() !== "",
+        "appliesTo=gym thì gymId bắt buộc"
+      );
+      gymId = Number(gymId);
+      ensure(Number.isInteger(gymId) && gymId > 0, "gymId phải là số nguyên dương");
+    } else {
+      // trainer scope: gymId optional (tuỳ bạn dùng)
+      gymId =
+        gymId === "" || gymId === undefined || gymId === null ? null : Number(gymId);
+      if (gymId !== null) {
+        ensure(Number.isInteger(gymId) && gymId > 0, "gymId phải là số nguyên dương");
+      }
+    }
+
+    // value rule
+    let value = body.value;
+    if (typeof value === "string") {
+      try {
+        value = JSON.parse(value);
+      } catch (e) {
+        ensure(false, "value phải là JSON hợp lệ (object)");
+      }
+    }
+    ensure(
+      value !== undefined &&
+        value !== null &&
+        typeof value === "object" &&
+        !Array.isArray(value),
+      "value phải là JSON object"
+    );
+
+    // dates
+    const effectiveFrom = body.effectiveFrom ? new Date(body.effectiveFrom) : null;
+    const effectiveTo = body.effectiveTo ? new Date(body.effectiveTo) : null;
+    if (effectiveFrom && Number.isNaN(effectiveFrom.getTime()))
+      ensure(false, "effectiveFrom không hợp lệ");
+    if (effectiveTo && Number.isNaN(effectiveTo.getTime()))
+      ensure(false, "effectiveTo không hợp lệ");
+    if (effectiveFrom && effectiveTo)
+      ensure(effectiveFrom.getTime() <= effectiveTo.getTime(), "effectiveFrom phải <= effectiveTo");
+
+    return {
+      policyType,
+      name: String(body.name).trim(),
+      description: body.description ?? null,
+      value,
+      isActive: body.isActive !== undefined ? Boolean(body.isActive) : true,
+      appliesTo,
+      gymId,
+      effectiveFrom,
+      effectiveTo,
+    };
+  }
+
+  async _deactivateOtherPolicies({ t, policyType, appliesTo, gymId, exceptId }) {
+    const where = {
+      policyType,
+      appliesTo,
+      gymId: gymId ?? null,
+      isActive: true,
+    };
+    if (exceptId) where.id = { [Op.ne]: exceptId };
+
+    await Policy.update({ isActive: false }, { where, transaction: t });
+  }
+
+  _buildEffectiveDateWhere(now = new Date()) {
+    return {
+      [Op.and]: [
+        {
+          [Op.or]: [{ effectiveFrom: null }, { effectiveFrom: { [Op.lte]: now } }],
+        },
+        {
+          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: now } }],
+        },
+      ],
+    };
+  }
+
   async getPolicies(req) {
-  const { policyType, gymId, isActive } = req.query;
+    const { policyType, gymId, isActive } = req.query;
 
-  const where = {};
-  if (policyType) where.policyType = policyType;
+    const where = {};
+    if (policyType) where.policyType = policyType;
 
-  // gymId filter: cho phép "null"/"" để lấy system
-  if (gymId !== undefined && gymId !== "") {
-    // nếu frontend gửi "null" nghĩa là muốn system policies
-    if (String(gymId).toLowerCase() === "null") where.gymId = null;
-    else where.gymId = Number(gymId);
+    // gymId filter: cho phép "null"/"" để lấy system
+    if (gymId !== undefined && gymId !== "") {
+      if (String(gymId).toLowerCase() === "null") where.gymId = null;
+      else where.gymId = Number(gymId);
+    }
+
+    if (isActive !== undefined && isActive !== "") {
+      where.isActive = String(isActive) === "true";
+    }
+
+    const rows = await Policy.findAll({
+      where,
+      include: [{ model: Gym, as: "gym", required: false, attributes: ["id", "name"] }],
+      order: [["createdAt", "DESC"]],
+    });
+
+    return { data: rows };
   }
 
-  if (isActive !== undefined && isActive !== "") {
-    where.isActive = String(isActive) === "true";
+  // ✅ API dùng cho module khác: ưu tiên gym policy -> fallback system policy
+  async getEffectivePolicy(req) {
+    const { policyType, gymId } = req.query;
+    ensure(policyType, "policyType is required");
+    ensure(gymId, "gymId is required");
+
+    const now = new Date();
+    const dateWhere = this._buildEffectiveDateWhere(now);
+
+    const gymPolicy = await Policy.findOne({
+      where: {
+        policyType,
+        appliesTo: "gym",
+        gymId: Number(gymId),
+        isActive: true,
+        ...dateWhere,
+      },
+      order: [
+        ["effectiveFrom", "DESC"],
+        ["createdAt", "DESC"],
+      ],
+    });
+
+    if (gymPolicy) return { data: gymPolicy };
+
+    const systemPolicy = await Policy.findOne({
+      where: {
+        policyType,
+        appliesTo: "system",
+        gymId: null,
+        isActive: true,
+        ...dateWhere,
+      },
+      order: [
+        ["effectiveFrom", "DESC"],
+        ["createdAt", "DESC"],
+      ],
+    });
+
+    return { data: systemPolicy || null };
   }
-
-  const rows = await Policy.findAll({
-    where,
-    include: [
-      // ✅ trả về gym name cho FE
-      { model: Gym, as: "gym", required: false, attributes: ["id", "name"] },
-    ],
-    order: [["createdAt", "DESC"]],
-  });
-
-  return { data: rows };
-}
-
 
   async createPolicy(req) {
     const actorId = getActorId(req);
     ensure(actorId, "Missing actor (req.user)", 401);
 
-    const {
-      policyType,
-      name,
-      description,
-      value,
-      isActive,
-      appliesTo,
-      gymId,
-      effectiveFrom,
-      effectiveTo,
-    } = req.body || {};
-
-    ensure(policyType, "policyType is required");
-    ensure(appliesTo, "appliesTo is required");
-    ensure(name, "name is required");
+    const payload = this._normalizePolicyInput(req.body || {});
 
     return sequelize.transaction(async (t) => {
-      const p = await Policy.create(
-        {
-          policyType,
-          name,
-          description: description || null,
-          value: value ?? {},
-          isActive: isActive !== undefined ? Boolean(isActive) : true,
-          appliesTo,
-          gymId: gymId ? Number(gymId) : null,
-          effectiveFrom: effectiveFrom ? new Date(effectiveFrom) : null,
-          effectiveTo: effectiveTo ? new Date(effectiveTo) : null,
-        },
-        { transaction: t }
-      );
+      if (payload.isActive) {
+        await this._deactivateOtherPolicies({
+          t,
+          policyType: payload.policyType,
+          appliesTo: payload.appliesTo,
+          gymId: payload.gymId,
+          exceptId: null,
+        });
+      }
+
+      const p = await Policy.create(payload, { transaction: t });
 
       await createAudit({
         t,
@@ -851,18 +1043,21 @@ async rejectFranchiseRequest(req) {
 
       const oldValues = safeJson(p);
 
-      await p.update(
-        {
-          ...req.body,
-          gymId:
-            req.body.gymId === "" || req.body.gymId === null || req.body.gymId === undefined
-              ? null
-              : Number(req.body.gymId),
-          effectiveFrom: req.body.effectiveFrom ? new Date(req.body.effectiveFrom) : null,
-          effectiveTo: req.body.effectiveTo ? new Date(req.body.effectiveTo) : null,
-        },
-        { transaction: t }
-      );
+      // merge data cũ + data mới để validate đầy đủ
+      const merged = { ...safeJson(p), ...req.body };
+      const payload = this._normalizePolicyInput(merged);
+
+      if (payload.isActive) {
+        await this._deactivateOtherPolicies({
+          t,
+          policyType: payload.policyType,
+          appliesTo: payload.appliesTo,
+          gymId: payload.gymId,
+          exceptId: p.id,
+        });
+      }
+
+      await p.update(payload, { transaction: t });
 
       await createAudit({
         t,
@@ -889,7 +1084,19 @@ async rejectFranchiseRequest(req) {
 
       const oldValues = safeJson(p);
 
-      await p.update({ isActive: !p.isActive }, { transaction: t });
+      const nextActive = !p.isActive;
+
+      if (nextActive) {
+        await this._deactivateOtherPolicies({
+          t,
+          policyType: p.policyType,
+          appliesTo: p.appliesTo,
+          gymId: p.gymId,
+          exceptId: p.id,
+        });
+      }
+
+      await p.update({ isActive: nextActive }, { transaction: t });
 
       await createAudit({
         t,

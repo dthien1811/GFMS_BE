@@ -1,8 +1,8 @@
-import adminInventoryService from "../service/adminInventoryService";
+const adminInventoryService = require("../service/adminInventoryService");
 
 const ok = (res, data) => res.status(200).json(data);
 
-// ✅ CHỈ SỬA: log chi tiết để biết lỗi thật ở đâu (đặc biệt lỗi SQL)
+// ✅ log chi tiết để biết lỗi thật ở đâu (đặc biệt lỗi SQL)
 const bad = (res, err, ctx = "") => {
   try {
     console.error("=== API ERROR ===", ctx);
@@ -48,7 +48,7 @@ const adminInventoryController = {
 
   async createEquipment(req, res) {
     try {
-      const data = await adminInventoryService.createEquipment(req.body);
+      const data = await adminInventoryService.createEquipment(req.body, req.files);
       return ok(res, data);
     } catch (e) {
       return bad(res, e, "POST /equipments");
@@ -57,7 +57,7 @@ const adminInventoryController = {
 
   async updateEquipment(req, res) {
     try {
-      const data = await adminInventoryService.updateEquipment(req.params.id, req.body);
+      const data = await adminInventoryService.updateEquipment(req.params.id, req.body, req.files);
       return ok(res, data);
     } catch (e) {
       return bad(res, e, "PUT /equipments/:id");
@@ -73,26 +73,22 @@ const adminInventoryController = {
     }
   },
 
-  // ==========================
-  // ✅ EQUIPMENT IMAGES (NEW)
-  // ==========================
+  // Images
   async getEquipmentImages(req, res) {
     try {
       const data = await adminInventoryService.getEquipmentImages(req.params.id);
       return ok(res, data);
     } catch (e) {
-      // ✅ log rõ endpoint đang fail đúng lúc bấm "Ảnh"
-      return bad(res, e, `GET /equipments/${req.params.id}/images`);
+      return bad(res, e, "GET /equipments/:id/images");
     }
   },
 
   async uploadEquipmentImages(req, res) {
     try {
-      const files = req.files || [];
-      const data = await adminInventoryService.uploadEquipmentImages(req.params.id, files);
+      const data = await adminInventoryService.uploadEquipmentImages(req.params.id, req.files);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e, `POST /equipments/${req.params.id}/images`);
+      return bad(res, e, "POST /equipments/:id/images");
     }
   },
 
@@ -104,23 +100,20 @@ const adminInventoryController = {
       );
       return ok(res, data);
     } catch (e) {
-      return bad(res, e, `PATCH /equipments/${req.params.id}/images/${req.params.imageId}/primary`);
+      return bad(res, e, "PATCH /equipments/:id/images/:imageId/primary");
     }
   },
 
   async deleteEquipmentImage(req, res) {
     try {
-      const data = await adminInventoryService.deleteEquipmentImage(
-        req.params.id,
-        req.params.imageId
-      );
+      const data = await adminInventoryService.deleteEquipmentImage(req.params.id, req.params.imageId);
       return ok(res, data);
     } catch (e) {
-      return bad(res, e, `DELETE /equipments/${req.params.id}/images/${req.params.imageId}`);
+      return bad(res, e, "DELETE /equipments/:id/images/:imageId");
     }
   },
 
-  // ===== suppliers
+  // Suppliers
   async getSuppliers(req, res) {
     try {
       const data = await adminInventoryService.getSuppliers(req.query);
@@ -148,20 +141,16 @@ const adminInventoryController = {
     }
   },
 
-  // ✅ nhận cả {isActive:true/false} hoặc boolean
   async setSupplierActive(req, res) {
     try {
-      const id = req.params.id;
-      const body = req.body || {};
-      const isActive = typeof body === "object" ? body.isActive : body;
-      const data = await adminInventoryService.setSupplierActive(id, isActive);
+      const data = await adminInventoryService.setSupplierActive(req.params.id, req.body);
       return ok(res, data);
     } catch (e) {
       return bad(res, e, "PATCH /suppliers/:id/active");
     }
   },
 
-  // ===== stocks
+  // Stocks + logs
   async getStocks(req, res) {
     try {
       const data = await adminInventoryService.getStocks(req.query);
@@ -171,29 +160,24 @@ const adminInventoryController = {
     }
   },
 
-  // ✅ nhập kho
   async createReceipt(req, res) {
     try {
-      const auditMeta = { actorUserId: req?.user?.id || null };
-      const data = await adminInventoryService.createReceipt(req.body, auditMeta);
+      const data = await adminInventoryService.createReceipt(req.body);
       return ok(res, data);
     } catch (e) {
       return bad(res, e, "POST /receipts");
     }
   },
 
-  // ✅ xuất kho
   async createExport(req, res) {
     try {
-      const auditMeta = { actorUserId: req?.user?.id || null };
-      const data = await adminInventoryService.createExport(req.body, auditMeta);
+      const data = await adminInventoryService.createExport(req.body);
       return ok(res, data);
     } catch (e) {
       return bad(res, e, "POST /exports");
     }
   },
 
-  // ✅ nhật ký kho
   async getInventoryLogs(req, res) {
     try {
       const data = await adminInventoryService.getInventoryLogs(req.query);
