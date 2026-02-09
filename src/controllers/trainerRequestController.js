@@ -12,7 +12,7 @@ module.exports = {
     try {
       const result = await service.createTrainerRequest({
         requesterId: getTrainerId(req),
-        requestType: "LEAVE",
+        requestType: "leave",
         reason: req.body.reason,
         data: req.body.data,
       });
@@ -26,7 +26,7 @@ module.exports = {
     try {
       const result = await service.createTrainerRequest({
         requesterId: getTrainerId(req),
-        requestType: "SHIFT_CHANGE",
+        requestType: "shift_change",
         reason: req.body.reason,
         data: req.body.data,
       });
@@ -40,7 +40,7 @@ module.exports = {
     try {
       const result = await service.createTrainerRequest({
         requesterId: getTrainerId(req),
-        requestType: "TRANSFER_BRANCH",
+        requestType: "transfer_branch",
         reason: req.body.reason,
         data: req.body.data,
       });
@@ -54,7 +54,7 @@ module.exports = {
     try {
       const result = await service.createTrainerRequest({
         requesterId: getTrainerId(req),
-        requestType: "OVERTIME",
+        requestType: "overtime",
         reason: req.body.reason,
         data: req.body.data,
       });

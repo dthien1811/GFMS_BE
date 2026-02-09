@@ -4,49 +4,74 @@ class TrainerRequestService {
     this.models = models;
   }
 
+  // ===============================
+  // Create trainer request
+  // ===============================
   async createTrainerRequest({ requesterId, requestType, reason, data }) {
     const { Request } = this.models;
 
-    const allowedTypes = ["LEAVE", "SHIFT_CHANGE", "TRANSFER_BRANCH", "OVERTIME"];
-    if (!allowedTypes.includes(requestType)) {
-      throw new Error("Invalid request type");
+    // dùng lowercase toàn bộ
+    const allowedTypes = [
+      "leave",
+      "shift_change",
+      "transfer_branch",
+      "overtime",
+    ];
+
+    const normalizedType = String(requestType || "")
+      .trim()
+      .toLowerCase();
+
+    if (!allowedTypes.includes(normalizedType)) {
+      throw new Error(`Invalid request type: "${requestType}"`);
     }
 
     return Request.create({
       requesterId,
-      requestType,
-      status: "PENDING",
+      requestType: normalizedType,
+      status: "pending",
       reason: reason || null,
       data: data || null,
     });
   }
 
+  // ===============================
+  // Get my requests (filter)
+  // ===============================
   async getMyRequests({ requesterId, status, requestType }) {
-  const { Request, User } = this.models;
+    const { Request, User } = this.models;
 
-  const where = { requesterId };
-  if (status) where.status = status;
-  if (requestType) where.requestType = requestType;
+    const where = { requesterId };
 
-  return Request.findAll({
-    where,
-    order: [["createdAt", "DESC"]],
-    include: [
-      {
-        model: User,
-        as: "requester",
-        attributes: ["id", "username", "email"],
-      },
-      {
-        model: User,
-        as: "approver",
-        attributes: ["id", "username", "email"],
-      },
-    ],
-  });
-}
+    if (status) {
+      where.status = String(status).trim().toLowerCase();
+    }
 
+    if (requestType) {
+      where.requestType = String(requestType).trim().toLowerCase();
+    }
 
+    return Request.findAll({
+      where,
+      order: [["createdAt", "DESC"]],
+      include: [
+        {
+          model: User,
+          as: "requester",
+          attributes: ["id", "username", "email"],
+        },
+        {
+          model: User,
+          as: "approver",
+          attributes: ["id", "username", "email"],
+        },
+      ],
+    });
+  }
+
+  // ===============================
+  // Cancel request (only pending)
+  // ===============================
   async cancelTrainerRequest({ requesterId, requestId }) {
     const { Request } = this.models;
 
@@ -54,13 +79,23 @@ class TrainerRequestService {
       where: { id: requestId, requesterId },
     });
 
-    if (!request) throw new Error("Request not found");
-    if (request.status !== "PENDING") {
-      throw new Error("Only PENDING request can be cancelled");
+    if (!request) {
+      throw new Error("Request not found");
     }
 
-    request.status = "CANCELLED";
+    const currentStatus = String(request.status || "")
+      .trim()
+      .toLowerCase();
+
+    if (currentStatus !== "pending") {
+      throw new Error(
+        `Only pending request can be cancelled (current: "${request.status}")`
+      );
+    }
+
+    request.status = "cancelled";
     await request.save();
+
     return request;
   }
 }

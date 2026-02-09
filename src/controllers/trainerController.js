@@ -1,5 +1,7 @@
 // be/src/controllers/trainerController.js
 const db = require('../models');
+const trainerService = require("../service/trainerService");
+
 
 // TỰ ĐỘNG BẮT ĐÚNG TÊN MODEL (Trainer hoặc trainer)
 const TrainerModel = db.Trainer || db.trainer;
@@ -82,22 +84,77 @@ const toNumberOrUndefined = (v) => {
   return undefined;
 };
 
+// ===== Hard rules for schedule slots =====
+const SLOT_DURATION_MIN = 60;  // 1 buổi học
+const BREAK_DURATION_MIN = 15; // nghỉ giữa buổi
+
+const DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+const parseHHmmToMinutes = (hhmm) => {
+  if (typeof hhmm !== 'string') return null;
+  const m = hhmm.trim().match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!m) return null;
+  return Number(m[1]) * 60 + Number(m[2]);
+};
+
+const minutesToHHmm = (mins) => {
+  const h = String(Math.floor(mins / 60)).padStart(2, '0');
+  const m = String(mins % 60).padStart(2, '0');
+  return `${h}:${m}`;
+};
+
+// Sinh slot từ 1 khoảng rảnh (start-end)
+// Slot: 60 phút, sau đó nhảy +15 phút (buffer nghỉ)
+const generateSlotsFromRange = (startHHmm, endHHmm) => {
+  const start = parseHHmmToMinutes(startHHmm);
+  const end = parseHHmmToMinutes(endHHmm);
+  if (start === null || end === null || end <= start) return [];
+
+  const step = SLOT_DURATION_MIN + BREAK_DURATION_MIN;
+  const slots = [];
+  let cur = start;
+
+  while (cur + SLOT_DURATION_MIN <= end) {
+    slots.push({
+      start: minutesToHHmm(cur),
+      end: minutesToHHmm(cur + SLOT_DURATION_MIN),
+    });
+    cur += step;
+  }
+  return slots;
+};
+
+// Sinh slot cho 1 ngày (từ list ranges của ngày đó)
+const generateSlotsForDayRanges = (ranges = []) => {
+  const all = [];
+  for (const r of ranges) {
+    all.push(...generateSlotsFromRange(r.start, r.end));
+  }
+  // optional: sort + unique
+  all.sort((a,b) => parseHHmmToMinutes(a.start) - parseHHmmToMinutes(b.start));
+  return all;
+};
+
+
 const isPositiveNumber = (v) => typeof v === 'number' && !Number.isNaN(v) && v >= 0;
 
 const normalizeAvailableHours = (availableHours) => {
-  // Cho phép null/undefined => {}
   if (!availableHours) return {};
   if (typeof availableHours !== 'object') return null;
 
-  // format kỳ vọng:
-  // { monday:[{start:"09:00", end:"18:00"}], ... }
   const days = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
   for (const d of Object.keys(availableHours)) {
     if (!days.includes(d)) return null;
     if (!Array.isArray(availableHours[d])) return null;
+
     for (const slot of availableHours[d]) {
       if (!slot || typeof slot !== 'object') return null;
       if (typeof slot.start !== 'string' || typeof slot.end !== 'string') return null;
+
+      const s = parseHHmmToMinutes(slot.start);
+      const e = parseHHmmToMinutes(slot.end);
+      if (s === null || e === null) return null;
+      if (e <= s) return null;
     }
   }
   return availableHours;
@@ -253,65 +310,43 @@ exports.updateTrainer = async (req, res) => {
 // ===================== UC-TR-005: GET SCHEDULE =====================
 exports.getTrainerSchedule = async (req, res) => {
   const { id } = req.params;
+  const mode = (req.query?.mode || "raw").toLowerCase(); // raw | slots | both
 
   try {
-    mustHaveModel(TrainerModel, 'Trainer');
-
-    const trainer = await TrainerModel.findByPk(id, {
-      attributes: ['id', 'availableHours'],
-      raw: true,
-    });
-    if (!trainer) return res.status(404).json({ message: 'Trainer not found' });
-
-    // ✅ parse nếu DB đang lưu string JSON
-    let parsed = {};
-    try {
-      parsed =
-        typeof trainer.availableHours === 'string'
-          ? JSON.parse(trainer.availableHours || '{}')
-          : (trainer.availableHours || {});
-    } catch {
-      parsed = {};
+    if (mode === "slots") {
+      const slots = await trainerService.getTrainerScheduleSlots(id);
+      return res.status(200).json({ slots });
     }
 
-    return res.status(200).json(parsed);
+    if (mode === "both") {
+      const data = await trainerService.getTrainerScheduleBoth(id);
+      return res.status(200).json(data); // { availableHours, slots }
+    }
+
+    const availableHours = await trainerService.getTrainerScheduleRaw(id);
+    return res.status(200).json({ availableHours });
   } catch (error) {
-    console.error('[getTrainerSchedule] Error:', error);
-    return res.status(500).json({ message: 'Error fetching schedule', error: error.message });
+    console.error("[getTrainerSchedule] Error:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
-
 
 // ===================== UC-TR-006: UPDATE SCHEDULE =====================
 exports.updateTrainerSchedule = async (req, res) => {
   const { id } = req.params;
 
   try {
-    mustHaveModel(TrainerModel, 'Trainer');
-
-    const trainer = await TrainerModel.findByPk(id, { attributes: ['id', 'availableHours'] });
-    if (!trainer) return res.status(404).json({ message: 'Trainer not found' });
-
-    // ✅ accept both formats
     const incoming =
-      req.body?.availableHours && typeof req.body.availableHours === 'object'
+      req.body?.availableHours && typeof req.body.availableHours === "object"
         ? req.body.availableHours
-        : req.body; // fallback nếu FE gửi thẳng schedule object
+        : req.body;
 
-    const normalized = normalizeAvailableHours(incoming);
-    if (!normalized) {
-      return res.status(400).json({ message: 'availableHours format is invalid' });
-    }
-
-    // ✅ DB bạn đang là string => stringify trước khi save
-    trainer.availableHours = JSON.stringify(normalized);
-    await trainer.save();
-
-    // ✅ trả về object cho FE dùng luôn
-    return res.status(200).json(normalized);
+    const result = await trainerService.updateTrainerSchedule(id, incoming);
+    // result: { availableHours, slots } (service trả)
+    return res.status(200).json(result);
   } catch (error) {
-    console.error('[updateTrainerSchedule] Error:', error);
-    return res.status(500).json({ message: 'Error updating schedule', error: error.message });
+    console.error("[updateTrainerSchedule] Error:", error);
+    return res.status(400).json({ message: error.message });
   }
 };
 
