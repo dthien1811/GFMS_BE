@@ -22,6 +22,7 @@ const checkUsernameExist = async (username) => {
 }
 
 // ================= REGISTER =================
+// ✅ Marketplace: đăng ký chỉ tạo User. Member sẽ được auto-create theo gym khi mua gói/đặt lịch
 const registerNewUser = async (rawUserData) => {
   const t = await db.sequelize.transaction()
   try {
@@ -37,32 +38,20 @@ const registerNewUser = async (rawUserData) => {
 
     const hashPass = hashPassword(rawUserData.password)
 
-    // 1️⃣ Create User
-    const user = await db.User.create(
+    await db.User.create(
       {
         email: rawUserData.email,
         username: rawUserData.username,
         password: hashPass,
         phone: rawUserData.phone,
-        groupId: 4, // Guest / Member (tuỳ mapping group của bạn)
+        groupId: 4, // Member group (tuỳ mapping group của bạn)
         status: 'active'
       },
       { transaction: t }
     )
 
-    // 2️⃣ AUTO CREATE MEMBER (FIX LỖI CHÍNH)
-    await db.Member.create(
-      {
-        userId: user.id,
-        gymId: rawUserData.gymId || 1, // ⚠️ bắt buộc (tạm default = 1)
-        status: 'active',
-        joinDate: new Date()
-      },
-      { transaction: t }
-    )
-
     await t.commit()
-    return { EM: 'Register success & member created', EC: 0 }
+    return { EM: 'Register success', EC: 0 }
   } catch (e) {
     await t.rollback()
     console.log('Register error:', e)
