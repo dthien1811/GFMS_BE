@@ -10,10 +10,6 @@ const ownerBookingController = {
       const userId = req.user.id;
       const query = req.query;
 
-      console.log("=== GET OWNER BOOKINGS ===");
-      console.log("User ID:", userId);
-      console.log("Query params:", query);
-
       const result = await ownerBookingService.getMyBookings(userId, query);
 
       return res.status(200).json({
@@ -21,8 +17,6 @@ const ownerBookingController = {
         pagination: result.pagination,
       });
     } catch (e) {
-      console.error("❌ Error in getMyBookings controller:", e.message);
-      console.error("Stack:", e.stack);
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
@@ -55,10 +49,6 @@ const ownerBookingController = {
       const userId = req.user.id;
       const data = req.body;
 
-      console.log("=== CREATE BOOKING ===");
-      console.log("User ID:", userId);
-      console.log("Data:", data);
-
       const booking = await ownerBookingService.createBooking(userId, data);
 
       return res.status(201).json({
@@ -66,7 +56,6 @@ const ownerBookingController = {
         data: booking,
       });
     } catch (e) {
-      console.error("❌ Error in createBooking controller:", e.message);
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
@@ -132,26 +121,22 @@ const ownerBookingController = {
         data: booking,
       });
     } catch (e) {
-      console.error("❌ Error in updateBookingStatus:", e.message);
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
 
-  /**
-   * GET /api/owner/bookings/trainer/:trainerId/schedule?date=YYYY-MM-DD
-   * Lấy lịch đã book của trainer theo ngày
-   */
+  
   async getTrainerSchedule(req, res) {
     try {
       const userId = req.user.id;
       const { trainerId } = req.params;
-      const { date } = req.query;
+      const { date, includeAllGyms } = req.query;
 
       if (!date) {
         return res.status(400).json({ message: "Thiếu tham số date" });
       }
 
-      const bookings = await ownerBookingService.getTrainerSchedule(userId, trainerId, date);
+      const bookings = await ownerBookingService.getTrainerSchedule(userId, trainerId, date, { includeAllGyms });
 
       return res.status(200).json({
         data: bookings,

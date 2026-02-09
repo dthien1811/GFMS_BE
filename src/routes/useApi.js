@@ -10,6 +10,9 @@ import ownerEquipmentRoute from "./owner/equipment.route";
 import ownerInventoryRoute from "./owner/inventory.route";
 import ownerTransferRoute from "./owner/transfer.route";
 import ownerPurchaseRoute from "./owner/purchase.route";
+import ownerTransactionRoute from "./owner/transaction.route";
+import ownerCommissionRoute from "./owner/commission.route";
+import ownerWithdrawalRoute from "./owner/withdrawal.route";
 import ownerFranchiseRoute from "./owner/franchise.route";
 import ownerTrainerShareRoute from "./owner/trainershare.route";
 import ownerMemberRoute from "./owner/member.route";
@@ -41,6 +44,9 @@ const useApi = (app) => {
   router.use("/owner/inventory", ownerInventoryRoute);
   router.use("/owner/transfers", ownerTransferRoute);
   router.use("/owner/purchases", ownerPurchaseRoute);
+  router.use("/owner/transactions", ownerTransactionRoute);
+  router.use("/owner/commissions", ownerCommissionRoute);
+  router.use("/owner/withdrawals", ownerWithdrawalRoute);
   router.use("/owner/franchise-requests", ownerFranchiseRoute);
   router.use("/owner/trainer-shares", ownerTrainerShareRoute);
   router.use("/owner/members", ownerMemberRoute);
@@ -56,14 +62,25 @@ const useApi = (app) => {
   router.use("/trainer", trainerRoute);
 
   // ✅ admin permission only (users/groups…)
-  router.use(
+  /*router.use(
     checkUserPermission({
       getPath: (req) => {
         const fullPath = `${req.baseUrl}${req.path}`; // /api/users
         return fullPath.replace(/^\/api/, "/admin");
       },
     })
-  );
+  );*/
+   router.use(
+  ["/users", "/groups"],
+  checkUserPermission({
+    getPath: (req) => {
+      // dùng originalUrl để ra đúng /api/users... rồi map sang /admin/users...
+      const raw = (req.originalUrl || "").split("?")[0]; // /api/users
+      return raw.replace(/^\/api/, "/admin");            // /admin/users
+    },
+  })
+);
+
 
   // admin APIs
   router.get("/users", useApiController.readUsers);

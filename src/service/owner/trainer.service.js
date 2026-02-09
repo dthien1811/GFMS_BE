@@ -5,16 +5,11 @@ const { User, Trainer, Gym, Group, Booking, Member, Package, Review } = db;
 const getMyTrainers = async (userId, query = {}) => {
   const { q = "", page = 1, limit = 10, gymId } = query;
 
-  console.log("=== getMyTrainers ===");
-  console.log("userId:", userId, "query:", query);
-
   // Get owner's gyms
   const myGymIds = await Gym.findAll({
     where: { ownerId: userId },
     attributes: ["id"],
   }).then((gyms) => gyms.map((g) => g.id));
-
-  console.log("Owner's gym IDs:", myGymIds);
 
   const whereClause = {};
   
@@ -36,9 +31,6 @@ const getMyTrainers = async (userId, query = {}) => {
 
   const offset = (page - 1) * limit;
 
-  console.log("whereClause:", JSON.stringify(whereClause, null, 2));
-  console.log("Querying trainers...");
-
   try {
     const { count, rows } = await Trainer.findAndCountAll({
       where: whereClause,
@@ -56,9 +48,6 @@ const getMyTrainers = async (userId, query = {}) => {
       offset: offset,
       distinct: true,
     });
-
-    console.log("Found trainers:", count);
-    console.log("Sample trainer:", rows[0]);
 
     return {
       trainers: rows,
@@ -80,8 +69,6 @@ const getMyTrainers = async (userId, query = {}) => {
 const getUsersWithoutPTRole = async (userId, query = {}) => {
   const { q = "", page = 1, limit = 10 } = query;
 
-  console.log("=== getUsersWithoutPTRole ===");
-  console.log("userId:", userId, "query:", query);
 
   // Lấy tất cả userId đã là trainer
   const existingTrainers = await Trainer.findAll({
@@ -89,7 +76,6 @@ const getUsersWithoutPTRole = async (userId, query = {}) => {
     raw: true,
   });
   const trainerUserIds = existingTrainers.map((t) => t.userId);
-  console.log("Existing trainer userIds:", trainerUserIds);
 
   // Lấy tất cả userId đã là member
   const existingMembers = await db.Member.findAll({
@@ -97,7 +83,6 @@ const getUsersWithoutPTRole = async (userId, query = {}) => {
     raw: true,
   });
   const memberUserIds = existingMembers.map((m) => m.userId);
-  console.log("Existing member userIds:", memberUserIds);
 
   // Lấy tất cả userId là owner (có gym)
   const gymOwners = await Gym.findAll({
@@ -105,11 +90,9 @@ const getUsersWithoutPTRole = async (userId, query = {}) => {
     raw: true,
   });
   const ownerUserIds = gymOwners.map((g) => g.ownerId);
-  console.log("Owner userIds:", ownerUserIds);
 
   // Gộp tất cả userId cần loại trừ
   const excludedUserIds = [...new Set([...trainerUserIds, ...memberUserIds, ...ownerUserIds])];
-  console.log("Excluded userIds:", excludedUserIds);
 
   const whereClause = {
     id: { [db.Sequelize.Op.notIn]: excludedUserIds.length > 0 ? excludedUserIds : [0] },
@@ -134,7 +117,6 @@ const getUsersWithoutPTRole = async (userId, query = {}) => {
     order: [["createdAt", "DESC"]],
   });
 
-  console.log("Found users:", count);
 
   return {
     users: rows,
@@ -151,8 +133,6 @@ const getUsersWithoutPTRole = async (userId, query = {}) => {
 const createTrainer = async (userId, data) => {
   const { targetUserId, gymId, specialization, certification, hourlyRate, availableHours } = data;
 
-  console.log("=== createTrainer service ===");
-  console.log("Data:", data);
 
   // Verify owner owns this gym
   const gym = await Gym.findOne({
@@ -191,7 +171,6 @@ const createTrainer = async (userId, data) => {
     throw error;
   }
 
-  console.log("Creating trainer record...");
 
   // Create trainer record
   const trainer = await Trainer.create({
@@ -203,7 +182,6 @@ const createTrainer = async (userId, data) => {
     availableHours: availableHours || {},
   });
 
-  console.log("Trainer created, adding Trainers role...");
 
   // Add Trainers role to user - update groupId trong user table
   await User.update(
@@ -211,7 +189,6 @@ const createTrainer = async (userId, data) => {
     { where: { id: targetUserId } }
   );
 
-  console.log("PT role added, fetching full data...");
 
   // Return full trainer data
   return await Trainer.findByPk(trainer.id, {
@@ -309,8 +286,6 @@ const deleteTrainer = async (userId, trainerId) => {
 
 // Get trainer's schedule (bookings)
 const getTrainerSchedule = async (userId, trainerId, query = {}) => {
-  console.log("=== getTrainerSchedule ===");
-  console.log("userId:", userId, "trainerId:", trainerId, "query:", query);
   
   const { fromDate, toDate } = query;
 
@@ -321,7 +296,6 @@ const getTrainerSchedule = async (userId, trainerId, query = {}) => {
     ],
   });
 
-  console.log("Found trainer:", trainer ? "YES" : "NO");
   
   if (!trainer) {
     const error = new Error("Không tìm thấy PT");
@@ -329,8 +303,6 @@ const getTrainerSchedule = async (userId, trainerId, query = {}) => {
     throw error;
   }
 
-  console.log("Trainer gym:", trainer.Gym);
-  console.log("Trainer.Gym.ownerId:", trainer.Gym?.ownerId, "vs userId:", userId);
 
   // Verify owner owns the gym
   if (trainer.Gym.ownerId !== userId) {
@@ -347,7 +319,6 @@ const getTrainerSchedule = async (userId, trainerId, query = {}) => {
     };
   }
 
-  console.log("Querying bookings with:", whereClause);
   
   try {
     const bookings = await Booking.findAll({
@@ -369,7 +340,6 @@ const getTrainerSchedule = async (userId, trainerId, query = {}) => {
       order: [["bookingDate", "ASC"]],
     });
 
-    console.log("Found bookings:", bookings.length);
 
     return {
       trainer: {
@@ -389,8 +359,6 @@ const getTrainerSchedule = async (userId, trainerId, query = {}) => {
 
 // Get trainer detail with statistics
 const getTrainerDetail = async (userId, trainerId) => {
-  console.log("=== getTrainerDetail ===");
-  console.log("userId:", userId, "trainerId:", trainerId);
 
   // Get owner's gyms
   const myGymIds = await Gym.findAll({
@@ -467,8 +435,6 @@ const getTrainerDetail = async (userId, trainerId) => {
 
 // Toggle trainer status (activate/deactivate)
 const toggleTrainerStatus = async (userId, trainerId) => {
-  console.log("=== toggleTrainerStatus ===");
-  console.log("userId:", userId, "trainerId:", trainerId);
 
   // Get owner's gyms
   const myGymIds = await Gym.findAll({
@@ -515,7 +481,6 @@ const toggleTrainerStatus = async (userId, trainerId) => {
   trainer.isActive = currentStatus ? 0 : 1;
   await trainer.save();
 
-  console.log("Updated trainer isActive:", trainer.isActive);
 
   const message = trainer.isActive 
     ? "Đã kích hoạt PT thành công" 

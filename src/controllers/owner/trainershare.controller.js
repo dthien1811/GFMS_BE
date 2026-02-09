@@ -118,6 +118,64 @@ const ownerTrainerShareController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+
+  /**
+   * GET /api/owner/trainer-shares/received
+   * Lấy danh sách yêu cầu chia sẻ trainer nhận được (toGym thuộc owner)
+   */
+  async getReceivedRequests(req, res) {
+    try {
+      const userId = req.user.id;
+      const query = req.query;
+
+      const result = await ownerTrainerShareService.getReceivedTrainerShareRequests(userId, query);
+
+      return res.status(200).json(result);
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  /**
+   * POST /api/owner/trainer-shares/:id/accept
+   * Owner B chấp nhận yêu cầu chia sẻ trainer
+   */
+  async acceptRequest(req, res) {
+    try {
+      const userId = req.user.id;
+      const requestId = req.params.id;
+
+      const result = await ownerTrainerShareService.acceptTrainerShareRequest(userId, requestId);
+
+      return res.status(200).json({
+        message: "Đã chấp nhận yêu cầu chia sẻ trainer",
+        data: result,
+      });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  /**
+   * POST /api/owner/trainer-shares/:id/reject
+   * Owner B từ chối yêu cầu chia sẻ trainer
+   */
+  async rejectRequest(req, res) {
+    try {
+      const userId = req.user.id;
+      const requestId = req.params.id;
+      const { reason } = req.body;
+
+      const result = await ownerTrainerShareService.rejectTrainerShareRequest(userId, requestId, reason);
+
+      return res.status(200).json({
+        message: "Đã từ chối yêu cầu chia sẻ trainer",
+        data: result,
+      });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerTrainerShareController;

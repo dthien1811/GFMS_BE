@@ -10,6 +10,15 @@ const ownerGymController = {
     }
   },
 
+  async getAllGyms(req, res) {
+    try {
+      const data = await ownerGymService.getAllGyms();
+      return res.status(200).json({ data });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
   async getGymDetail(req, res) {
     try {
       const data = await ownerGymService.getGymDetail(req.user.id, req.params.id);

@@ -12,6 +12,7 @@ router.use(jwtAction.checkUserJWT);
 // chỉ owner
 router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owners"]));
 
+router.get("/all", ownerGymController.getAllGyms); // Must be before /:id
 router.get("/", ownerGymController.getMyGyms);
 router.get("/:id", ownerGymController.getGymDetail);
 router.put("/:id", ownerGymController.updateGym);

@@ -1,6 +1,6 @@
 import db from "../../models/index";
 
-const { Booking, Member, Trainer, Gym, Package, User } = db;
+const { Booking, Member, Trainer, Gym, Package, User, TrainerShare } = db;
 
 /**
  * Owner xem danh sách bookings của gyms mình quản lý
@@ -17,9 +17,16 @@ const getMyBookings = async (userId, query = {}) => {
     });
     const myGymIds = myGyms.map((g) => g.id);
     
-    console.log("Owner ID:", userId);
-    console.log("My Gym IDs:", myGymIds);
+    // Lấy danh sách trainer shares mà owner này REQUEST (mượn PT)
+    const approvedShares = await TrainerShare.findAll({
+      where: {
+        requestedBy: userId, // Owner MƯỢN trainer
+        status: 'approved'
+      },
+      attributes: ["id", "trainerId", "toGymId", "scheduleMode", "specificSchedules", "startDate", "endDate"],
+    });
 
+    // CHỈ lấy bookings từ GYM của owner (bao gồm cả bookings dùng shared trainers)
     if (myGymIds.length === 0) {
       return {
         bookings: [],
@@ -27,14 +34,22 @@ const getMyBookings = async (userId, query = {}) => {
       };
     }
 
-    const whereClause = { gymId: { [db.Sequelize.Op.in]: myGymIds } };
+    const whereClause = {
+      gymId: { [db.Sequelize.Op.in]: myGymIds }  // CHỈ lấy từ gym của mình
+    };
     
     if (status) {
       whereClause.status = status;
     }
     
-    if (gymId) {
-      whereClause.gymId = gymId;
+    // Nếu có gymId filter trong query, thêm vào điều kiện (nhưng vẫn trong myGymIds)
+    if (gymId && gymId !== '') {
+      whereClause.gymId = {
+        [db.Sequelize.Op.and]: [
+          { [db.Sequelize.Op.in]: myGymIds },
+          { [db.Sequelize.Op.eq]: parseInt(gymId) }
+        ]
+      };
     }
 
     if (fromDate) {
@@ -55,9 +70,18 @@ const getMyBookings = async (userId, query = {}) => {
         {
           model: User,
           attributes: ["id", "username", "email", "phone"],
+          ...(q && {
+            where: {
+              [db.Sequelize.Op.or]: [
+                { username: { [db.Sequelize.Op.like]: `%${q}%` } },
+                { email: { [db.Sequelize.Op.like]: `%${q}%` } },
+                { phone: { [db.Sequelize.Op.like]: `%${q}%` } }
+              ]
+            }
+          })
         },
       ],
-      required: false,
+      required: q ? true : false, // Nếu có q thì required để filter
     };
 
     let includeTrainer = {
@@ -71,8 +95,6 @@ const getMyBookings = async (userId, query = {}) => {
       ],
       required: false,
     };
-
-    console.log("Where clause:", JSON.stringify(whereClause));
 
     const { rows, count } = await Booking.findAndCountAll({
       where: whereClause,
@@ -99,9 +121,7 @@ const getMyBookings = async (userId, query = {}) => {
       distinct: true,
     });
 
-    console.log("Found bookings:", rows.length);
-    console.log("Sample booking data:", JSON.stringify(rows[0], null, 2));
-
+    // Owner thấy TẤT CẢ bookings trong gym của mình
     return {
       bookings: rows,
       pagination: {
@@ -112,8 +132,6 @@ const getMyBookings = async (userId, query = {}) => {
       },
     };
   } catch (error) {
-    console.error("Error in getMyBookings:", error.message);
-    console.error("Stack:", error.stack);
     throw error;
   }
 };
@@ -189,71 +207,158 @@ const createBooking = async (userId, data) => {
     throw error;
   }
 
-  // Kiểm tra trainer tồn tại
-  const trainer = await Trainer.findByPk(trainerId);
-  if (!trainer) {
-    const error = new Error("Trainer không tồn tại");
-    error.statusCode = 404;
+  // === NGHIỆP VỤ MỚI: Kiểm tra Membership và Gói PT ===
+  
+  // 1. Kiểm tra member PHẢI có membership active
+  const activeMembership = await db.PackageActivation.findOne({
+    where: {
+      memberId: memberId,
+      status: 'active'
+    },
+    include: [{
+      model: db.Package,
+      where: { packageType: 'membership' },
+      required: true
+    }]
+  });
+
+  if (!activeMembership) {
+    const error = new Error("Hội viên chưa có membership. Vui lòng mua gói thành viên trước khi đặt lịch.");
+    error.statusCode = 400;
     throw error;
   }
 
-  // Kiểm tra conflict lịch của trainer
-  const existingBookings = await Booking.findAll({
-    where: {
-      trainerId,
-      bookingDate,
-      status: { [db.Sequelize.Op.notIn]: ['cancelled', 'no_show'] },
-    },
-    attributes: ['id', 'startTime', 'endTime'],
-  });
-
-  // Check overlap: booking mới overlap với booking cũ khi:
-  // startTime_mới < endTime_cũ AND endTime_mới > startTime_cũ
-  const hasConflict = existingBookings.some(booking => {
-    const existingStart = booking.startTime; // "HH:MM:SS"
-    const existingEnd = booking.endTime;
-    
-    // Overlap khi: (start1 < end2) AND (end1 > start2)
-    const isOverlap = (startTime < existingEnd) && (endTime > existingStart);
-    
-    if (isOverlap) {
-      console.log('Conflict detected:', {
-        new: { startTime, endTime },
-        existing: { startTime: existingStart, endTime: existingEnd }
-      });
-    }
-    
-    return isOverlap;
-  });
-
-  if (hasConflict) {
-    const conflictBooking = existingBookings.find(booking => 
-      (startTime < booking.endTime) && (endTime > booking.startTime)
-    );
-    const error = new Error(
-      `PT đã có lịch từ ${conflictBooking.startTime} đến ${conflictBooking.endTime} vào ngày này. Vui lòng chọn giờ khác.`
-    );
-    error.statusCode = 409;
+  // Kiểm tra membership còn hạn
+  if (activeMembership.expiryDate && new Date(activeMembership.expiryDate) < new Date()) {
+    const error = new Error("Membership đã hết hạn. Vui lòng gia hạn trước khi đặt lịch.");
+    error.statusCode = 400;
     throw error;
+  }
+
+  let ptPackageActivation = null;
+
+  // 2. Nếu booking CÓ trainer, kiểm tra gói PT
+  if (trainerId) {
+    // Kiểm tra trainer tồn tại
+    const trainer = await Trainer.findByPk(trainerId);
+    if (!trainer) {
+      const error = new Error("Trainer không tồn tại");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    // Kiểm tra xem trainer có phải shared trainer không
+    const approvedShare = await TrainerShare.findOne({
+      where: {
+        requestedBy: userId,
+        trainerId: trainerId,
+        status: 'approved'
+      }
+    });
+
+    if (approvedShare) {
+      // Kiểm tra booking date có trong schedule không
+      const bookingDateStr = new Date(bookingDate).toISOString().split('T')[0];
+      let isInSchedule = false;
+
+      if (approvedShare.scheduleMode === 'specific_days') {
+        const schedules = typeof approvedShare.specificSchedules === 'string' 
+          ? JSON.parse(approvedShare.specificSchedules) 
+          : approvedShare.specificSchedules;
+        isInSchedule = schedules.some(s => s.date === bookingDateStr);
+      } else if (approvedShare.scheduleMode === 'all_days') {
+        isInSchedule = bookingDateStr >= approvedShare.startDate && bookingDateStr <= approvedShare.endDate;
+      }
+
+      if (!isInSchedule) {
+        const error = new Error("Ngày booking không nằm trong lịch chia sẻ trainer");
+        error.statusCode = 400;
+        throw error;
+      }
+    } else {
+      // Trainer KHÔNG phải shared trainer → kiểm tra gói PT bình thường
+      ptPackageActivation = await db.PackageActivation.findOne({
+        where: {
+          memberId: memberId,
+          status: 'active',
+          sessionsRemaining: { [db.Sequelize.Op.gt]: 0 }
+        },
+        include: [{
+          model: db.Package,
+          where: {
+            packageType: 'personal_training',
+            trainerId: trainerId
+          },
+          required: true
+        }],
+        order: [['createdAt', 'DESC']]
+      });
+
+      if (!ptPackageActivation) {
+        const error = new Error(`Hội viên chưa có gói PT với trainer này hoặc đã hết buổi. Vui lòng mua gói PT trước khi đặt lịch.`);
+        error.statusCode = 400;
+        throw error;
+      }
+
+      // Kiểm tra gói PT còn hạn
+      if (ptPackageActivation.expiryDate && new Date(ptPackageActivation.expiryDate) < new Date()) {
+        const error = new Error("Gói PT đã hết hạn. Vui lòng mua gói mới.");
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+  }
+
+  // 3. Kiểm tra conflict lịch của trainer (nếu có)
+  // 3. Kiểm tra conflict lịch của trainer (nếu có)
+  if (trainerId) {
+    const existingBookings = await Booking.findAll({
+      where: {
+        trainerId,
+        bookingDate,
+        status: { [db.Sequelize.Op.notIn]: ['cancelled', 'no_show', 'completed'] },
+      },
+      attributes: ['id', 'startTime', 'endTime'],
+    });
+
+    // Check overlap
+    const hasConflict = existingBookings.some(booking => {
+      const existingStart = booking.startTime;
+      const existingEnd = booking.endTime;
+      const isOverlap = (startTime < existingEnd) && (endTime > existingStart);
+      
+      return isOverlap;
+    });
+
+    if (hasConflict) {
+      const conflictBooking = existingBookings.find(booking => 
+        (startTime < booking.endTime) && (endTime > booking.startTime)
+      );
+      const error = new Error(
+        `PT đã có lịch từ ${conflictBooking.startTime} đến ${conflictBooking.endTime} vào ngày này. Vui lòng chọn giờ khác.`
+      );
+      error.statusCode = 409;
+      throw error;
+    }
   }
 
   // Prepare booking data
   const bookingData = {
     memberId,
-    trainerId,
+    trainerId: trainerId || null,
     gymId,
     bookingDate,
     startTime,
     endTime,
     notes,
-    status: "confirmed", // pending, confirmed, in_progress, completed, cancelled, no_show
+    status: "confirmed",
     createdBy: userId,
   };
 
-  // Chỉ thêm packageId nếu có và là số hợp lệ
-  if (packageId && !isNaN(packageId) && packageId !== '') {
-    bookingData.packageId = parseInt(packageId);
-    // Không set packageActivationId vì chưa activate package
+  // Nếu có gói PT, liên kết với packageActivationId
+  if (ptPackageActivation) {
+    bookingData.packageActivationId = ptPackageActivation.id;
+    bookingData.packageId = ptPackageActivation.packageId;
   }
 
   // Tạo booking
@@ -273,7 +378,7 @@ const updateBooking = async (userId, bookingId, data) => {
   });
   const myGymIds = myGyms.map((g) => g.id);
 
-  const booking = await Booking.findOne({
+  let booking = await Booking.findOne({
     where: {
       id: bookingId,
       gymId: { [db.Sequelize.Op.in]: myGymIds },
@@ -281,9 +386,67 @@ const updateBooking = async (userId, bookingId, data) => {
   });
 
   if (!booking) {
-    const error = new Error("Không tìm thấy booking hoặc bạn không có quyền");
-    error.statusCode = 404;
-    throw error;
+    booking = await Booking.findByPk(bookingId);
+    if (!booking) {
+      const error = new Error("Không tìm thấy booking hoặc bạn không có quyền");
+      error.statusCode = 404;
+      throw error;
+    }
+
+    const bookingDateStr = booking.bookingDate
+      ? new Date(booking.bookingDate).toISOString().split("T")[0]
+      : null;
+
+    const shares = await TrainerShare.findAll({
+      where: {
+        trainerId: booking.trainerId,
+        requestedBy: userId,
+        status: "approved",
+      },
+      attributes: ["id", "scheduleMode", "specificSchedules", "startDate", "endDate"],
+    });
+
+    const hasShareAccess = shares.some((share) => {
+      if (!bookingDateStr) return false;
+      if (share.scheduleMode === "specific_days") {
+        if (!share.specificSchedules) return false;
+        let schedules = [];
+        try {
+          schedules = Array.isArray(share.specificSchedules)
+            ? share.specificSchedules
+            : JSON.parse(share.specificSchedules || "[]");
+        } catch (e) {
+          return false;
+        }
+        return schedules.some((s) => s.date === bookingDateStr);
+      }
+
+      if (share.scheduleMode === "all_days") {
+        if (!share.startDate) return false;
+        const queryDate = new Date(bookingDateStr);
+        const startDateOnly = new Date(
+          share.startDate.getFullYear(),
+          share.startDate.getMonth(),
+          share.startDate.getDate()
+        );
+        const endDateOnly = share.endDate
+          ? new Date(
+              share.endDate.getFullYear(),
+              share.endDate.getMonth(),
+              share.endDate.getDate()
+            )
+          : null;
+        return startDateOnly <= queryDate && (!endDateOnly || endDateOnly >= queryDate);
+      }
+
+      return false;
+    });
+
+    if (!hasShareAccess) {
+      const error = new Error("Không tìm thấy booking hoặc bạn không có quyền");
+      error.statusCode = 404;
+      throw error;
+    }
   }
 
   // Chỉ cho phép cập nhật nếu status là pending hoặc confirmed
@@ -306,7 +469,7 @@ const updateBooking = async (userId, bookingId, data) => {
       where: {
         trainerId: newTrainerId,
         bookingDate: newBookingDate,
-        status: { [db.Sequelize.Op.notIn]: ['cancelled', 'no_show'] },
+        status: { [db.Sequelize.Op.notIn]: ['cancelled', 'no_show', 'completed'] },
         id: { [db.Sequelize.Op.ne]: bookingId }, // Exclude booking hiện tại
       },
       attributes: ['id', 'startTime', 'endTime'],
@@ -381,17 +544,60 @@ const updateBookingStatus = async (userId, bookingId, newStatus) => {
   });
   const myGymIds = myGyms.map((g) => g.id);
 
-  const booking = await Booking.findOne({
+  let booking = await Booking.findOne({
     where: {
       id: bookingId,
       gymId: { [db.Sequelize.Op.in]: myGymIds },
     },
   });
 
+  // Nếu không tìm thấy trong gym của mình, kiểm tra TrainerShare
   if (!booking) {
-    const error = new Error("Không tìm thấy booking hoặc bạn không có quyền");
-    error.statusCode = 404;
-    throw error;
+    booking = await Booking.findByPk(bookingId);
+    
+    if (!booking) {
+      const error = new Error("Không tìm thấy booking");
+      error.statusCode = 404;
+      throw error;
+    }
+    
+    // Kiểm tra xem có approved share nào mà owner này REQUEST (mượn trainer)
+    const trainerShares = await TrainerShare.findAll({
+      where: {
+        requestedBy: userId, // Owner MƯỢN trainer
+        trainerId: booking.trainerId,
+        status: 'approved'
+      }
+    });
+    
+    if (trainerShares.length === 0) {
+      const error = new Error("Không tìm thấy booking hoặc bạn không có quyền");
+      error.statusCode = 404;
+      throw error;
+    }
+    
+    // Kiểm tra booking date có nằm trong schedule không
+    const bookingDate = new Date(booking.bookingDate);
+    const bookingDateStr = bookingDate.toISOString().split('T')[0];
+    
+    const hasPermission = trainerShares.some(share => {
+      if (share.scheduleMode === 'specific_days') {
+        const schedules = typeof share.specificSchedules === 'string' 
+          ? JSON.parse(share.specificSchedules) 
+          : share.specificSchedules;
+        
+        return schedules.some(schedule => bookingDateStr === schedule.date);
+      } else if (share.scheduleMode === 'all_days') {
+        return bookingDateStr >= share.startDate && bookingDateStr <= share.endDate;
+      }
+      return false;
+    });
+    
+    if (!hasPermission) {
+      const error = new Error("Không tìm thấy booking hoặc bạn không có quyền");
+      error.statusCode = 404;
+      throw error;
+    }
   }
 
   // Validate status transitions
@@ -418,6 +624,18 @@ const updateBookingStatus = async (userId, bookingId, newStatus) => {
     updateData.checkinTime = new Date();
   } else if (newStatus === 'completed') {
     updateData.checkoutTime = new Date();
+    
+    // Trừ số buổi trong PackageActivation nếu booking có liên kết
+    if (booking.packageActivationId) {
+      const activation = await db.PackageActivation.findByPk(booking.packageActivationId);
+      if (activation && activation.sessionsRemaining > 0) {
+        await activation.update({
+          sessionsUsed: (activation.sessionsUsed || 0) + 1,
+          sessionsRemaining: activation.sessionsRemaining - 1,
+          status: activation.sessionsRemaining - 1 === 0 ? 'completed' : activation.status
+        });
+      }
+    }
   } else if (newStatus === 'cancelled') {
     updateData.cancellationDate = new Date();
     updateData.cancellationBy = userId;
@@ -431,21 +649,32 @@ const updateBookingStatus = async (userId, bookingId, newStatus) => {
 /**
  * Lấy lịch đã book của trainer theo ngày
  */
-const getTrainerSchedule = async (userId, trainerId, date) => {
-  // Kiểm tra trainer có thuộc gym của owner không
-  const myGyms = await Gym.findAll({
-    where: { ownerId: userId },
-    attributes: ["id"],
-  });
-  const myGymIds = myGyms.map((g) => g.id);
+const getTrainerSchedule = async (userId, trainerId, date, options = {}) => {
+  const includeAllGyms = options?.includeAllGyms === true || options?.includeAllGyms === "true" || options?.includeAllGyms === "1";
 
+  // Kiểm tra trainer có thuộc gym của owner không (trừ khi yêu cầu xem toàn bộ)
+  let myGymIds = [];
+  if (!includeAllGyms) {
+    const myGyms = await Gym.findAll({
+      where: { ownerId: userId },
+      attributes: ["id"],
+    });
+    myGymIds = myGyms.map((g) => g.id);
+  }
+
+  const bookingWhere = {
+    trainerId,
+    bookingDate: date,
+    status: { [db.Sequelize.Op.notIn]: ['cancelled', 'no_show', 'completed'] },
+  };
+
+  if (!includeAllGyms) {
+    bookingWhere.gymId = { [db.Sequelize.Op.in]: myGymIds };
+  }
+
+  // Load bookings
   const bookings = await Booking.findAll({
-    where: {
-      trainerId,
-      bookingDate: date,
-      gymId: { [db.Sequelize.Op.in]: myGymIds },
-      status: { [db.Sequelize.Op.notIn]: ['cancelled', 'no_show'] },
-    },
+    where: bookingWhere,
     attributes: ['id', 'startTime', 'endTime', 'status'],
     include: [
       {
@@ -457,7 +686,108 @@ const getTrainerSchedule = async (userId, trainerId, date) => {
     order: [['startTime', 'ASC']],
   });
 
-  return bookings;
+  // Convert date string to Date object for comparison
+  const queryDate = new Date(date);
+
+  // Load approved trainer shares for this trainer
+  // NOTE: Hiển thị TẤT CẢ trainer shares đã approve cho trainer này (không phân biệt gym owner)
+  const { TrainerShare } = db;
+  
+  // For specific_days mode, we need to load ALL approved shares and filter by specificSchedules
+  // For all_days mode, we can use date range filtering
+  const trainerShares = await TrainerShare.findAll({
+    where: {
+      trainerId,
+      status: 'approved'
+      // Remove date filtering here - will filter in application logic
+    },
+    attributes: ['id', 'startTime', 'endTime', 'scheduleMode', 'specificSchedules', 'fromGymId', 'toGymId', 'startDate', 'endDate'],
+  });
+
+  // Filter by date in application logic
+  const dateFilteredShares = trainerShares.filter(share => {
+    if (share.scheduleMode === 'specific_days') {
+      // For specific_days: check if date is in specificSchedules
+      if (!share.specificSchedules) return false;
+      
+      let schedules;
+      try {
+        schedules = Array.isArray(share.specificSchedules) ? share.specificSchedules : JSON.parse(share.specificSchedules || '[]');
+      } catch (e) {
+        return false;
+      }
+      
+      const dateStr = date; // YYYY-MM-DD format
+      const hasMatchingDate = schedules.some(s => s.date === dateStr);
+      
+      return hasMatchingDate;
+    } else if (share.scheduleMode === 'all_days') {
+      // For all_days: check date range
+      const queryDateOnly = new Date(queryDate.getFullYear(), queryDate.getMonth(), queryDate.getDate());
+      const startDateOnly = new Date(share.startDate.getFullYear(), share.startDate.getMonth(), share.startDate.getDate());
+      const endDateOnly = share.endDate ? new Date(share.endDate.getFullYear(), share.endDate.getMonth(), share.endDate.getDate()) : null;
+      
+      return startDateOnly <= queryDateOnly && (!endDateOnly || endDateOnly >= queryDateOnly);
+    }
+    
+    return false;
+  });
+
+
+
+
+
+  // Convert trainer shares to booking-like format
+  const shareBlocks = [];
+  for (const share of dateFilteredShares) {
+    if (share.scheduleMode === 'specific_days' && share.specificSchedules) {
+      // Parse specificSchedules if it's a string
+      let schedules;
+      try {
+        schedules = Array.isArray(share.specificSchedules) ? share.specificSchedules : JSON.parse(share.specificSchedules || '[]');
+      } catch (e) {
+        continue;
+      }
+      
+      // Find schedule for this specific date (we know it exists because of filtering)
+      const dateStr = date;
+      const scheduleForDate = schedules.find(s => s.date === dateStr);
+      
+      if (scheduleForDate && scheduleForDate.startTime && scheduleForDate.endTime) {
+        // Handle time format - ensure it's HH:MM:SS
+        const startTime = scheduleForDate.startTime.length === 5 ? `${scheduleForDate.startTime}:00` : scheduleForDate.startTime;
+        const endTime = scheduleForDate.endTime.length === 5 ? `${scheduleForDate.endTime}:00` : scheduleForDate.endTime;
+        
+        shareBlocks.push({
+          id: `share-${share.id}`,
+          startTime: startTime,
+          endTime: endTime,
+          status: 'shared',
+          type: 'trainer_share',
+          Member: null
+        });
+      }
+    } else if (share.scheduleMode === 'all_days' && share.startTime && share.endTime) {
+      // All days mode - block this time
+      shareBlocks.push({
+        id: `share-${share.id}`,
+        startTime: share.startTime,
+        endTime: share.endTime,
+        status: 'shared',
+        type: 'trainer_share',
+        Member: null
+      });
+    }
+  }
+
+  // Combine bookings and trainer share blocks
+  const combined = [...bookings, ...shareBlocks].sort((a, b) => {
+    if (a.startTime < b.startTime) return -1;
+    if (a.startTime > b.startTime) return 1;
+    return 0;
+  });
+
+  return combined;
 };
 
 export default {

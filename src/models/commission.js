@@ -7,6 +7,9 @@ module.exports = (sequelize, DataTypes) => {
       Commission.belongsTo(models.Booking, { foreignKey: 'bookingId' });
       Commission.belongsTo(models.Gym, { foreignKey: 'gymId' });
       Commission.belongsTo(models.PackageActivation, { foreignKey: 'activationId' });
+      if (models.PayrollPeriod) {
+        Commission.belongsTo(models.PayrollPeriod, { foreignKey: 'payrollPeriodId' });
+      }
     }
   };
   Commission.init({
@@ -14,6 +17,7 @@ module.exports = (sequelize, DataTypes) => {
     bookingId: DataTypes.INTEGER,
     gymId: DataTypes.INTEGER,
     activationId: DataTypes.INTEGER,
+    payrollPeriodId: DataTypes.INTEGER,
     sessionDate: DataTypes.DATE,
     sessionValue: DataTypes.DECIMAL,
     commissionRate: DataTypes.FLOAT,
