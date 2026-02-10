@@ -4,7 +4,7 @@ const ownerGymService = {
   async getMyGyms(ownerUserId) {
     const gyms = await db.Gym.findAll({
       where: { ownerId: ownerUserId },
-      attributes: ["id", "name", "address", "phone", "email", "description", "status", "images", "ownerId", "createdAt"],
+      attributes: ["id", "name", "address", "phone", "email", "description", "status", "images", "ownerId", "createdAt", "updatedAt"],
       order: [["createdAt", "DESC"]],
     });
 
@@ -17,8 +17,21 @@ const ownerGymService = {
           db.Package.count({ where: { gymId: gym.id } }),
         ]);
 
+        const gymData = gym.toJSON();
+        
+        // Parse images từ JSON string sang array
+        if (gymData.images && typeof gymData.images === 'string') {
+          try {
+            gymData.images = JSON.parse(gymData.images);
+          } catch (e) {
+            gymData.images = [];
+          }
+        } else if (!Array.isArray(gymData.images)) {
+          gymData.images = [];
+        }
+
         return {
-          ...gym.toJSON(),
+          ...gymData,
           totalMembers,
           totalTrainers,
           totalPackages,
@@ -58,7 +71,20 @@ const ownerGymService = {
       throw error;
     }
 
-    return gym;
+    const gymData = gym.toJSON();
+    
+    // Parse images từ JSON string sang array
+    if (gymData.images && typeof gymData.images === 'string') {
+      try {
+        gymData.images = JSON.parse(gymData.images);
+      } catch (e) {
+        gymData.images = [];
+      }
+    } else if (!Array.isArray(gymData.images)) {
+      gymData.images = [];
+    }
+
+    return gymData;
   },
 
   async updateGym(ownerUserId, gymId, updateData) {
@@ -85,15 +111,36 @@ const ownerGymService = {
       if (dataToUpdate.images === null || dataToUpdate.images === "") {
         dataToUpdate.images = null;
       } else if (Array.isArray(dataToUpdate.images)) {
-        dataToUpdate.images = JSON.stringify(dataToUpdate.images);
+        if (dataToUpdate.images.length === 0) {
+          dataToUpdate.images = null;
+        } else {
+          dataToUpdate.images = JSON.stringify(dataToUpdate.images);
+        }
       } else if (typeof dataToUpdate.images === "string") {
         dataToUpdate.images = dataToUpdate.images;
       }
     }
 
     await gym.update(dataToUpdate);
+    await gym.reload();
+    
+    // Reload để lấy data mới nhất
+    await gym.reload();
+    
+    const gymData = gym.toJSON();
+    
+    // Parse images từ JSON string sang array
+    if (gymData.images && typeof gymData.images === 'string') {
+      try {
+        gymData.images = JSON.parse(gymData.images);
+      } catch (e) {
+        gymData.images = [];
+      }
+    } else if (!Array.isArray(gymData.images)) {
+      gymData.images = [];
+    }
 
-    return gym;
+    return gymData;
   },
 };
 

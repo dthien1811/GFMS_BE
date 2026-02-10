@@ -35,6 +35,12 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: true,
       },
 
+      images: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+        comment: 'JSON array of image URLs',
+      },
+
       status: {
         type: DataTypes.ENUM('active', 'inactive'),
         defaultValue: 'active',
