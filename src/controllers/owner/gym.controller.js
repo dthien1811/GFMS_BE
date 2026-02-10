@@ -33,6 +33,7 @@ const ownerGymController = {
       const data = await ownerGymService.updateGym(req.user.id, req.params.id, req.body);
       return res.status(200).json({ message: "Cập nhật gym thành công", data });
     } catch (e) {
+      console.error('Update gym error:', e);
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
