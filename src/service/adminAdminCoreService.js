@@ -7,6 +7,7 @@ const {
   // Core
   User,
   Gym,
+  Member,
 
   // RBAC
   Group,
@@ -633,7 +634,9 @@ async getTechnicians(req) {
       {
         // ✅ show "Gym created" on list
         model: Gym,
-        as: "createdGym",
+        // IMPORTANT: must match the alias defined in FranchiseRequest association
+        // FranchiseRequest.belongsTo(Gym, { as: "gym" })
+        as: "gym",
         required: false,
         attributes: ["id", "name", "status", "ownerId"],
       },
@@ -670,7 +673,8 @@ async getTechnicians(req) {
       },
       {
         model: Gym,
-        as: "createdGym",
+        // IMPORTANT: must match the alias defined in FranchiseRequest association
+        as: "gym",
         required: false,
         attributes: ["id", "name", "address", "status", "ownerId"],
       },
@@ -1479,6 +1483,221 @@ async rejectFranchiseRequest(req) {
       },
     };
   }
+
+  // ========== DASHBOARD OVERVIEW (enterprise) ==========
+  async getDashboardOverview(req) {
+    const days = Math.min(90, Math.max(7, Number(req.query?.days || 30)));
+    const nowDt = new Date();
+    const fromDt = new Date(nowDt.getTime() - days * 24 * 60 * 60 * 1000);
+
+    const gymId = req.query?.gymId ? Number(req.query.gymId) : null;
+
+    const whereCommon = {};
+    if (gymId) whereCommon.gymId = gymId;
+
+    const [
+      gyms,
+      members,
+      trainers,
+      franchisePending,
+      maintenancePending,
+      maintenanceInProgress,
+      poPending,
+      trainerSharePending,
+      lowStock,
+      revenue30d,
+    ] = await Promise.all([
+      Gym.count().catch(() => 0),
+      Member.count({ where: gymId ? { gymId } : {} }).catch(() => 0),
+      Trainer.count().catch(() => 0),
+      FranchiseRequest.count({ where: { status: "pending" } }).catch(() => 0),
+      Maintenance.count({ where: { ...(gymId ? { gymId } : {}), status: "pending" } }).catch(() => 0),
+      Maintenance.count({ where: { ...(gymId ? { gymId } : {}), status: "in_progress" } }).catch(() => 0),
+      PurchaseOrder.count({ where: { ...(gymId ? { gymId } : {}), status: "pending" } }).catch(() => 0),
+      TrainerShare.count({ where: { status: "pending" } }).catch(() => 0),
+      EquipmentStock.count({ where: { ...(gymId ? { gymId } : {}), availableQuantity: { [Op.lte]: 10 } } }).catch(() => 0),
+      Transaction.sum("amount", {
+        where: {
+          ...(gymId ? { gymId } : {}),
+          paymentStatus: "completed",
+          transactionDate: { [Op.gte]: fromDt, [Op.lte]: nowDt },
+        },
+      }).then((v) => Number(v || 0)).catch(() => 0),
+    ]);
+
+    return {
+      asOf: nowDt.toISOString(),
+      days,
+      gymId,
+      cards: {
+        gyms,
+        members,
+        trainers,
+        franchisePending,
+        maintenancePending,
+        maintenanceInProgress,
+        poPending,
+        trainerSharePending,
+        lowStock,
+        revenue30d,
+      },
+    };
+  }
+
+  // ========== REPORTS (6.2) ==========
+  async getReportRevenue(req) {
+    const { from, to, gymId } = req.query;
+
+    const where = {
+      paymentStatus: "completed",
+    };
+
+    if (gymId) where.gymId = Number(gymId);
+
+    if (from || to) {
+      where.transactionDate = {};
+      if (from) where.transactionDate[Op.gte] = toISODateStart(from);
+      if (to) where.transactionDate[Op.lte] = toISODateEnd(to);
+    }
+
+    const total = await Transaction.sum("amount", { where }).then((v) => Number(v || 0));
+
+    const byTypeRows = await Transaction.findAll({
+      where,
+      attributes: ["transactionType", [sequelize.fn("SUM", sequelize.col("amount")), "total"]],
+      group: ["transactionType"],
+      raw: true,
+    }).catch(() => []);
+
+    const byMethodRows = await Transaction.findAll({
+      where,
+      attributes: ["paymentMethod", [sequelize.fn("SUM", sequelize.col("amount")), "total"]],
+      group: ["paymentMethod"],
+      raw: true,
+    }).catch(() => []);
+
+    // daily series (DB dependent fn DATE)
+    const dailyRows = await Transaction.findAll({
+      where,
+      attributes: [[sequelize.fn("DATE", sequelize.col("transactionDate")), "date"], [sequelize.fn("SUM", sequelize.col("amount")), "total"]],
+      group: [sequelize.fn("DATE", sequelize.col("transactionDate"))],
+      order: [[sequelize.fn("DATE", sequelize.col("transactionDate")), "ASC"]],
+      raw: true,
+    }).catch(() => []);
+
+    const latest = await Transaction.findAll({
+      where,
+      order: [["transactionDate", "DESC"]],
+      limit: 50,
+      raw: true,
+    }).catch(() => []);
+
+    return {
+      from: from || null,
+      to: to || null,
+      gymId: gymId ? Number(gymId) : null,
+      total,
+      byType: byTypeRows.map((r) => ({ type: r.transactionType || "unknown", total: Number(r.total || 0) })),
+      byPaymentMethod: byMethodRows.map((r) => ({ method: r.paymentMethod || "unknown", total: Number(r.total || 0) })),
+      daily: dailyRows.map((r) => ({ date: r.date, total: Number(r.total || 0) })),
+      latest,
+    };
+  }
+
+  async getReportInventory(req) {
+    const { from, to, gymId } = req.query;
+
+    const gid = gymId ? Number(gymId) : null;
+
+    const wherePO = {};
+    const whereReceipt = {};
+    const whereStock = {};
+    const whereInv = {};
+
+    if (gid) {
+      wherePO.gymId = gid;
+      whereReceipt.gymId = gid;
+      whereStock.gymId = gid;
+      whereInv.gymId = gid;
+    }
+
+    if (from || to) {
+      const range = {};
+      if (from) range[Op.gte] = toISODateStart(from);
+      if (to) range[Op.lte] = toISODateEnd(to);
+      wherePO.orderDate = range;
+      whereReceipt.receiptDate = range;
+      whereInv.createdAt = range;
+    }
+
+    const [
+      poPending,
+      poTotal,
+      inboundCount,
+      outboundCount,
+      inboundValue,
+      lowStockCount,
+      latestInventory,
+    ] = await Promise.all([
+      PurchaseOrder.count({ where: { ...wherePO, status: "pending" } }).catch(() => 0),
+      PurchaseOrder.sum("totalAmount", { where: wherePO }).then((v) => Number(v || 0)).catch(() => 0),
+      Receipt.count({ where: { ...whereReceipt, type: "inbound" } }).catch(() => 0),
+      Receipt.count({ where: { ...whereReceipt, type: "outbound" } }).catch(() => 0),
+      Receipt.sum("totalValue", { where: { ...whereReceipt, type: "inbound" } }).then((v) => Number(v || 0)).catch(() => 0),
+      EquipmentStock.count({ where: { ...whereStock, availableQuantity: { [Op.lte]: 10 } } }).catch(() => 0),
+      Inventory.findAll({ where: whereInv, order: [["createdAt", "DESC"]], limit: 60, raw: true }).catch(() => []),
+    ]);
+
+    return {
+      from: from || null,
+      to: to || null,
+      gymId: gid,
+      cards: {
+        poPending,
+        poTotal,
+        inboundCount,
+        outboundCount,
+        inboundValue,
+        lowStockCount,
+      },
+      latestInventory,
+    };
+  }
+
+  async getReportTrainerShare(req) {
+    const { from, to, gymId } = req.query;
+
+    const where = {};
+
+    // note: TrainerShare has fromGymId/toGymId, not gymId
+    if (gymId) {
+      const gid = Number(gymId);
+      where[Op.or] = [{ fromGymId: gid }, { toGymId: gid }];
+    }
+
+    if (from || to) {
+      where.createdAt = {};
+      if (from) where.createdAt[Op.gte] = toISODateStart(from);
+      if (to) where.createdAt[Op.lte] = toISODateEnd(to);
+    }
+
+    const rows = await TrainerShare.findAll({ where, order: [["createdAt", "DESC"]], limit: 200, raw: true }).catch(() => []);
+
+    const statusCounts = rows.reduce((acc, r) => {
+      const st = String(r.status || "unknown").toLowerCase();
+      acc[st] = (acc[st] || 0) + 1;
+      return acc;
+    }, {})
+
+    return {
+      from: from || null,
+      to: to || null,
+      gymId: gymId ? Number(gymId) : null,
+      statusCounts,
+      latest: rows.slice(0, 50),
+    };
+  }
+
 }
 
 module.exports = new AdminAdminCoreService();

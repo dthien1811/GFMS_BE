@@ -1,6 +1,6 @@
 import authService from "../service/authService";
 const crypto = require("crypto");
-const transporter = require("../config/emailConfig");
+const { safeSend } = require("../utils/mailer");
 const db = require("../models/index");
 const bcrypt = require("bcryptjs");
 
@@ -246,7 +246,7 @@ setInterval(() => {
 const handleRegister = async (req, res) => {
   try {
     if (!req.body.email || !req.body.phone || !req.body.password || !req.body.username) {
-      return res.status(200).json({ EM: "Missing required fields", EC: "1", DT: "" });
+      return res.status(200).json({ EM: "Missing required fields", EC: 1, DT: "" });
     }
 
     const data = await authService.registerNewUser(req.body);
@@ -259,7 +259,7 @@ const handleRegister = async (req, res) => {
     });
   } catch (e) {
     console.log(e);
-    return res.status(500).json({ EM: "error from server", EC: "-1", DT: "" });
+    return res.status(500).json({ EM: "error from server", EC: -1, DT: "" });
   }
 };
 
@@ -293,7 +293,7 @@ const handleLogout = async (req, res) => {
     return res.status(200).json({ EM: "Logout success", EC: 0, DT: "" });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ EM: "error from server", EC: "-1", DT: "" });
+    return res.status(500).json({ EM: "error from server", EC: -1, DT: "" });
   }
 };
 
@@ -303,22 +303,29 @@ const handleForgotPassword = async (req, res) => {
     const { email } = req.body;
     const clientIp = req.ip || req.headers["x-forwarded-for"] || req.connection?.remoteAddress;
 
-    if (!email) return res.status(400).json({ EM: "Email là bắt buộc", EC: "1", DT: "" });
+    if (!email) return res.status(400).json({ EM: "Email là bắt buộc", EC: 1, DT: "" });
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(email)) {
-      return res.status(400).json({ EM: "Email không hợp lệ", EC: "1", DT: "" });
+      return res.status(400).json({ EM: "Email không hợp lệ", EC: 1, DT: "" });
     }
 
     // rate limit
     const limitCheck = checkRateLimits(email, clientIp);
     if (!limitCheck.allowed) {
-      return res.status(429).json({ EM: limitCheck.message, EC: "2", DT: { code: limitCheck.code } });
+      return res.status(429).json({ EM: limitCheck.message, EC: 2, DT: { code: limitCheck.code } });
     }
 
     // verify user exists
     const user = await db.User.findOne({ where: { email } });
-    if (!user) return res.status(404).json({ EM: "Email không tồn tại trong hệ thống", EC: "1", DT: "" });
+    if (!user) {
+      // Enterprise hardening: tránh lộ thông tin tồn tại email (user enumeration)
+      return res.status(200).json({
+        EM: "Nếu email tồn tại trong hệ thống, mã OTP sẽ được gửi. Vui lòng kiểm tra hộp thư (cả Spam).",
+        EC: 0,
+        DT: { email },
+      });
+    }
 
     // generate + store OTP (10 phút)
     const otp = generateOTP();
@@ -354,19 +361,59 @@ const handleForgotPassword = async (req, res) => {
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    let mailResult = null;
+    try {
+      mailResult = await safeSend({
+        to: email,
+        subject: mailOptions.subject,
+        html: mailOptions.html,
+      });
+    } catch (e) {
+      // DEV fallback: nếu mail lỗi thì vẫn cho test bằng OTP trả về
+      if (String(process.env.NODE_ENV || "development").toLowerCase() !== "production") {
+        console.warn("[ForgotPassword] Mail send failed (dev fallback).", e?.message || e);
+        return res.status(200).json({
+          EM: "Môi trường dev: email không gửi được. Dùng OTP trong phản hồi để test.",
+          EC: 0,
+          DT: { email, otp, devOnly: true },
+        });
+      }
+
+      return res.status(500).json({
+        EM: "Không thể gửi email OTP. Vui lòng thử lại sau hoặc liên hệ quản trị viên.",
+        EC: -1,
+        DT: "",
+      });
+    }
+
+    // Nếu MAIL_ENABLED=false → safeSend sẽ skipped
+    if (mailResult?.skipped) {
+      if (String(process.env.NODE_ENV || "development").toLowerCase() !== "production") {
+        return res.status(200).json({
+          EM: "Môi trường dev: hệ thống email đang tắt. Dùng OTP trong phản hồi để test.",
+          EC: 0,
+          DT: { email, otp, devOnly: true },
+        });
+      }
+
+      return res.status(500).json({
+        EM: "Hệ thống email đang tạm ngưng. Vui lòng thử lại sau.",
+        EC: -1,
+        DT: "",
+      });
+    }
 
     // update rate limits sau khi gửi thành công
     updateRateLimits(email, clientIp);
 
     return res.status(200).json({
       EM: "OTP đã được gửi đến email của bạn. Vui lòng kiểm tra hộp thư (cả Spam).",
-      EC: "0",
+      EC: 0,
       DT: { email },
     });
   } catch (error) {
     console.error("[Forgot Password Error]:", error);
-    return res.status(500).json({ EM: "Lỗi server khi gửi OTP", EC: "-1", DT: "" });
+    return res.status(500).json({ EM: "Lỗi server khi gửi OTP", EC: -1, DT: "" });
   }
 };
 
@@ -375,13 +422,13 @@ const handleVerifyOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
-    if (!email || !otp) return res.status(400).json({ EM: "Email và OTP là bắt buộc", EC: "1", DT: "" });
+    if (!email || !otp) return res.status(400).json({ EM: "Email và OTP là bắt buộc", EC: 1, DT: "" });
     if (otp.length !== 6 || !/^\d+$/.test(otp)) {
-      return res.status(400).json({ EM: "OTP phải là 6 chữ số", EC: "1", DT: "" });
+      return res.status(400).json({ EM: "OTP phải là 6 chữ số", EC: 1, DT: "" });
     }
 
     const storedData = otpStorage.get(email);
-    if (!storedData) return res.status(400).json({ EM: "OTP không tồn tại hoặc đã hết hạn", EC: "1", DT: "" });
+    if (!storedData) return res.status(400).json({ EM: "OTP không tồn tại hoặc đã hết hạn", EC: 1, DT: "" });
 
     // attempts (tối đa 5)
     storedData.attempts = (storedData.attempts || 0) + 1;
@@ -391,21 +438,21 @@ const handleVerifyOTP = async (req, res) => {
       otpStorage.delete(email);
       return res.status(400).json({
         EM: "OTP đã bị khóa do quá nhiều lần thử sai. Vui lòng yêu cầu mã mới",
-        EC: "1",
+        EC: 1,
         DT: "",
       });
     }
 
     if (Date.now() > storedData.expiresAt) {
       otpStorage.delete(email);
-      return res.status(400).json({ EM: "OTP đã hết hạn. Vui lòng yêu cầu mã mới", EC: "1", DT: "" });
+      return res.status(400).json({ EM: "OTP đã hết hạn. Vui lòng yêu cầu mã mới", EC: 1, DT: "" });
     }
 
     if (storedData.otp !== otp) {
       const attemptsLeft = 5 - storedData.attempts;
       return res.status(400).json({
         EM: `OTP không chính xác. Bạn còn ${attemptsLeft} lần thử`,
-        EC: "1",
+        EC: 1,
         DT: { attemptsLeft },
       });
     }
@@ -416,12 +463,12 @@ const handleVerifyOTP = async (req, res) => {
 
     return res.status(200).json({
       EM: "OTP hợp lệ. Vui lòng đặt mật khẩu mới.",
-      EC: "0",
+      EC: 0,
       DT: { email, verified: true, expiresAt: storedData.expiresAt },
     });
   } catch (error) {
     console.error("[Verify OTP Error]:", error);
-    return res.status(500).json({ EM: "Có lỗi xảy ra khi xác thực OTP", EC: "-1", DT: "" });
+    return res.status(500).json({ EM: "Có lỗi xảy ra khi xác thực OTP", EC: -1, DT: "" });
   }
 };
 
@@ -431,23 +478,23 @@ const handleResetPassword = async (req, res) => {
     const { email, otp, newPassword } = req.body;
 
     if (!email || !otp || !newPassword) {
-      return res.status(400).json({ EM: "Email, OTP và mật khẩu mới là bắt buộc", EC: "1", DT: "" });
+      return res.status(400).json({ EM: "Email, OTP và mật khẩu mới là bắt buộc", EC: 1, DT: "" });
     }
 
     const storedData = otpStorage.get(email);
-    if (!storedData) return res.status(400).json({ EM: "Phiên đặt lại mật khẩu không tồn tại", EC: "1", DT: "" });
+    if (!storedData) return res.status(400).json({ EM: "Phiên đặt lại mật khẩu không tồn tại", EC: 1, DT: "" });
 
     if (Date.now() > storedData.expiresAt) {
       otpStorage.delete(email);
-      return res.status(400).json({ EM: "OTP đã hết hạn. Vui lòng yêu cầu mã mới", EC: "1", DT: "" });
+      return res.status(400).json({ EM: "OTP đã hết hạn. Vui lòng yêu cầu mã mới", EC: 1, DT: "" });
     }
 
     if (storedData.otp !== otp) {
-      return res.status(400).json({ EM: "OTP không chính xác", EC: "1", DT: "" });
+      return res.status(400).json({ EM: "OTP không chính xác", EC: 1, DT: "" });
     }
 
     if (!storedData.verified) {
-      return res.status(400).json({ EM: "OTP chưa được xác thực. Vui lòng xác thực OTP trước", EC: "1", DT: "" });
+      return res.status(400).json({ EM: "OTP chưa được xác thực. Vui lòng xác thực OTP trước", EC: 1, DT: "" });
     }
 
     // Hash mật khẩu mới
@@ -457,16 +504,16 @@ const handleResetPassword = async (req, res) => {
     // Update DB
     const [affectedRows] = await db.User.update({ password: hashPass }, { where: { email } });
     if (affectedRows === 0) {
-      return res.status(404).json({ EM: "Không tìm thấy tài khoản", EC: "1", DT: "" });
+      return res.status(404).json({ EM: "Không tìm thấy tài khoản", EC: 1, DT: "" });
     }
 
     // Xóa OTP sau khi đổi pass
     otpStorage.delete(email);
 
-    return res.status(200).json({ EM: "Đổi mật khẩu thành công", EC: "0", DT: { email } });
+    return res.status(200).json({ EM: "Đổi mật khẩu thành công", EC: 0, DT: { email } });
   } catch (error) {
     console.error("[Reset Password Error]:", error);
-    return res.status(500).json({ EM: "Lỗi server khi reset password", EC: "-1", DT: "" });
+    return res.status(500).json({ EM: "Lỗi server khi reset password", EC: -1, DT: "" });
   }
 };
 
@@ -476,7 +523,7 @@ const handleCheckRateLimit = async (req, res) => {
     initializeDailyStats();
     return res.status(200).json({
       EM: "Rate limit status",
-      EC: "0",
+      EC: 0,
       DT: {
         totalEmailsToday: stats.totalEmailsToday,
         uniqueRecipientsToday: stats.uniqueRecipientsToday.size,
@@ -489,7 +536,7 @@ const handleCheckRateLimit = async (req, res) => {
     });
   } catch (error) {
     console.error("[Check Rate Limit Error]:", error);
-    return res.status(500).json({ EM: "Error checking rate limit", EC: "-1", DT: "" });
+    return res.status(500).json({ EM: "Error checking rate limit", EC: -1, DT: "" });
   }
 };
 

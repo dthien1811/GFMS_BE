@@ -1,86 +1,78 @@
-import express from 'express';
-import multer from 'multer';
-import fs from 'fs';
-import path from 'path';
-import jwtAction from '../middleware/JWTAction';
-import { requireGroupName } from '../middleware/role';
+"use strict";
+
+const express = require("express");
+const multer = require("multer");
+
+const jwtAction = require("../middleware/JWTAction");
+const cloudinaryService = require("../service/cloudinaryService");
+
+// Nếu project bạn có middleware role này thì dùng để chặn quyền theo group name
+// (nếu không có, bạn có thể xoá 2 dòng requireGroupName và phần middleware requireGroupName bên dưới)
+let requireGroupName = null;
+try {
+  // eslint-disable-next-line global-require
+  ({ requireGroupName } = require("../middleware/role"));
+} catch (e) {
+  // ignore if not exist
+}
 
 const router = express.Router();
 
-const ensureDir = (dir) => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-};
-
-const uploadDir = path.join(process.cwd(), 'uploads', 'gyms');
-ensureDir(uploadDir);
-
-// File filter - chỉ chấp nhận ảnh
-const imageFilter = (req, file, cb) => {
-  const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'];
-  const allowedExts = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
-  
-  const ext = path.extname(file.originalname).toLowerCase();
-  const mimeOk = allowedMimes.includes(file.mimetype);
-  const extOk = allowedExts.includes(ext);
-  
-  if (mimeOk && extOk) {
-    cb(null, true);
-  } else {
-    cb(new Error('Chỉ chấp nhận file ảnh (JPG, PNG, WEBP, GIF)'), false);
-  }
-};
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    // Tránh trùng lặp bằng cách thêm random string
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
-    const ext = path.extname(file.originalname);
-    const baseName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, '_');
-    cb(null, `${baseName}-${uniqueSuffix}${ext}`);
-  }
-});
-
+/**
+ * ✅ Enterprise: Không ghi file xuống disk (Render/Serverless disk là ephemeral).
+ * Dùng memoryStorage rồi đẩy buffer lên Cloudinary.
+ */
 const upload = multer({
-  storage,
-  fileFilter: imageFilter,
-  limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB mỗi ảnh
-  }
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 }, // 8MB
+  fileFilter: (req, file, cb) => {
+    const allowed = [
+      "image/png",
+      "image/jpeg",
+      "image/jpg",
+      "image/webp",
+      "image/gif",
+    ];
+    const ok = allowed.includes(file.mimetype);
+    cb(ok ? null : new Error("Chỉ chấp nhận ảnh (JPG, PNG, WEBP, GIF)"), ok);
+  },
 });
 
-// ✅ Route upload với authentication và multer middleware
-router.post('/gym-image', 
-  jwtAction.checkUserJWT,
-  requireGroupName(['owner', 'Owner', 'Gym Owner', 'Gym Owners', 'Owners']),
-  (req, res) => {
-    upload.single('file')(req, res, (err) => {
-      // Xử lý lỗi multer
-      if (err instanceof multer.MulterError) {
-        if (err.code === 'LIMIT_FILE_SIZE') {
-          return res.status(400).json({ error: 'File quá lớn. Tối đa 5MB' });
-        }
-        return res.status(400).json({ error: `Lỗi upload: ${err.message}` });
-      }
-      if (err) {
-        return res.status(400).json({ error: err.message });
-      }
-      
-      // Kiểm tra file có tồn tại không
-      if (!req.file) {
-        return res.status(400).json({ error: 'Không có file' });
-      }
-      
-      // Trả về URL
-      const url = `${req.protocol}://${req.get('host')}/uploads/gyms/${req.file.filename}`;
-      return res.status(200).json({ url });
-    });
+// ✅ Protect upload routes with JWT
+router.use(jwtAction.checkUserJWT);
+
+// POST /api/upload/gym-image
+// form-data: file
+router.post(
+  "/gym-image",
+  // Nếu có requireGroupName thì chặn theo role owner, không thì bỏ qua
+  ...(requireGroupName
+    ? [requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owners"])]
+    : []),
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      if (!req.file) return res.status(400).json({ error: "Không có file" });
+
+      // Upload buffer lên Cloudinary
+      const result = await cloudinaryService.uploadImageBuffer(req.file.buffer, {
+        folder: "gfms/gyms",
+        filename: req.file.originalname,
+      });
+
+      return res.status(200).json({
+        url: result.secure_url,
+        publicId: result.public_id,
+        bytes: result.bytes,
+        format: result.format,
+        width: result.width,
+        height: result.height,
+      });
+    } catch (e) {
+      return res.status(500).json({ error: e?.message || "Upload failed" });
+    }
   }
 );
 
-export default (app) => app.use('/api/upload', router);
-
+module.exports = (app) => app.use("/api/upload", router);
+module.exports.default = module.exports;

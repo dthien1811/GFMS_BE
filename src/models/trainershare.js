@@ -12,6 +12,14 @@ module.exports = (sequelize, DataTypes) => {
       TrainerShare.belongsTo(models.User, { foreignKey: 'rejectedBy', as: 'rejecter' });
       TrainerShare.belongsTo(models.Policy, { foreignKey: 'policyId' });
       TrainerShare.belongsTo(models.Member, { foreignKey: 'memberId' });
+
+      // ✅ NEW: overrides theo thời gian
+      if (models.TrainerShareOverride) {
+        TrainerShare.hasMany(models.TrainerShareOverride, {
+          foreignKey: "trainerShareId",
+          as: "overrides",
+        });
+      }
     }
   };
   TrainerShare.init({

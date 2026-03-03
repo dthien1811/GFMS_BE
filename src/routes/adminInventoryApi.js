@@ -9,6 +9,9 @@ const adminPurchaseWorkflowController = require("../controllers/adminPurchaseWor
 const adminAdminCoreController = require("../controllers/adminAdminCoreController");
 const adminFranchiseContractController = require("../controllers/adminFranchiseContractController");
 
+// ✅ NEW: Trainer Share Override enterprise controller
+const adminTrainerShareOverrideController = require("../controllers/adminTrainerShareOverrideController");
+
 // Middleware
 const jwtAction = require("../middleware/JWTAction");
 const { checkUserPermission } = require("../middleware/permission");
@@ -92,6 +95,7 @@ router.patch("/purchase-orders/:id/cancel", adminPurchaseWorkflowController.canc
 // Receipts
 router.get("/receipts", adminPurchaseWorkflowController.getReceipts);
 router.get("/receipts/:id", adminPurchaseWorkflowController.getReceiptDetail);
+router.patch("/receipts/:id/items", adminPurchaseWorkflowController.updateReceiptItems);
 router.post("/purchase-orders/:id/receipts/inbound", adminPurchaseWorkflowController.createInboundReceiptFromPO);
 router.patch("/receipts/:id/complete", adminPurchaseWorkflowController.completeReceipt);
 
@@ -99,12 +103,17 @@ router.patch("/receipts/:id/complete", adminPurchaseWorkflowController.completeR
 router.get("/purchase-orders/:id/payments", adminPurchaseWorkflowController.getPOPayments);
 router.post("/purchase-orders/:id/payments", adminPurchaseWorkflowController.createPOPayment);
 
+// Activity timeline (enterprise)
+router.get("/purchase-orders/:id/timeline", adminPurchaseWorkflowController.getPOTimeline);
+
 // ========================
 // MODULE 3: MAINTENANCE + FRANCHISE + POLICY + TRAINER SHARE + REPORT
 // ========================
 
 // ✅ technicians dropdown (Assign Technician modal)
 router.get("/technicians", adminAdminCoreController.getTechnicians);
+
+router.get("/dashboard/overview", adminAdminCoreController.getDashboardOverview);
 
 // Maintenance
 router.get("/maintenances", adminAdminCoreController.getMaintenances);
@@ -123,7 +132,12 @@ router.patch("/franchise-requests/:id/reject", adminAdminCoreController.rejectFr
 
 // Franchise Contract
 router.patch("/franchise-contract/:id/send", adminFranchiseContractController.sendContract);
+// FE expects these enterprise-style endpoints
+router.patch("/franchise-contract/:id/resend", adminFranchiseContractController.resendInvite);
+router.patch("/franchise-contract/:id/countersign", adminFranchiseContractController.adminCountersign);
+router.patch("/franchise-contract/:id/simulate/:event", adminFranchiseContractController.simulateEvent);
 router.get("/franchise-contract/:id/status", adminFranchiseContractController.getStatus);
+router.get("/franchise-contract/:id/document", adminFranchiseContractController.downloadDocument);
 router.patch("/franchise-contract/:id/mock/viewed", adminFranchiseContractController.mockMarkViewed);
 router.patch("/franchise-contract/:id/mock/signed", adminFranchiseContractController.mockMarkSigned);
 router.patch("/franchise-contract/:id/mock/completed", adminFranchiseContractController.mockMarkCompleted);
@@ -144,7 +158,51 @@ router.get("/trainer-shares", adminAdminCoreController.getTrainerShares);
 router.get("/trainer-shares/:id", adminAdminCoreController.getTrainerShareDetail);
 router.patch("/trainer-shares/:id/approve", adminAdminCoreController.approveTrainerShare);
 router.patch("/trainer-shares/:id/reject", adminAdminCoreController.rejectTrainerShare);
-router.patch("/trainer-shares/:id/override", adminAdminCoreController.overrideTrainerShare);
+
+// ✅ legacy override route still kept
+router.patch("/trainer-shares/:id/override", adminTrainerShareOverrideController.createForTrainerShare);
+
+// ========================
+// ✅ ENTERPRISE: TRAINER SHARE OVERRIDES
+// ========================
+
+// LIST overrides: GET /api/admin/inventory/trainer-share-overrides?trainerShareId=...
+router.get("/trainer-share-overrides", adminTrainerShareOverrideController.list);
+
+// CREATE request: POST /api/admin/inventory/trainer-share-overrides
+router.post("/trainer-share-overrides", adminTrainerShareOverrideController.create);
+
+// UPDATE request: PUT /api/admin/inventory/trainer-share-overrides/:id
+router.put("/trainer-share-overrides/:id", adminTrainerShareOverrideController.update);
+
+// APPROVE/REVOKE/TOGGLE: hỗ trợ cả PATCH lẫn POST để FE gọi kiểu nào cũng không vỡ
+router.patch("/trainer-share-overrides/:id/approve", adminTrainerShareOverrideController.approve);
+router.post("/trainer-share-overrides/:id/approve", adminTrainerShareOverrideController.approve);
+
+router.patch("/trainer-share-overrides/:id/revoke", adminTrainerShareOverrideController.revoke);
+router.post("/trainer-share-overrides/:id/revoke", adminTrainerShareOverrideController.revoke);
+
+router.patch("/trainer-share-overrides/:id/toggle", adminTrainerShareOverrideController.toggle);
+router.post("/trainer-share-overrides/:id/toggle", adminTrainerShareOverrideController.toggle);
+
+// EFFECTIVE/RESOLVE
+// GET /api/admin/inventory/trainer-share-overrides/effective?trainerShareId=...&at=...
+router.get("/trainer-share-overrides/effective", adminTrainerShareOverrideController.effective);
+
+// GET /api/admin/inventory/trainer-share-overrides/resolve?trainerShareId=...&at=...
+router.get("/trainer-share-overrides/resolve", adminTrainerShareOverrideController.resolve);
+
+// AUDITS (enterprise chuẩn): query theo trainerShareId
+// GET /api/admin/inventory/trainer-share-overrides/audits?trainerShareId=...
+router.get("/trainer-share-overrides/audits", adminTrainerShareOverrideController.audits);
+
+// AUDITS (giữ tương thích nếu code cũ đang dùng theo overrideId)
+// GET /api/admin/inventory/trainer-share-overrides/:id/audits
+router.get("/trainer-share-overrides/:id/audits", adminTrainerShareOverrideController.audits);
+
+// DELETE (nếu bạn vẫn giữ)
+// (Enterprise thường không khuyến nghị hard delete; nhưng bạn có thì cứ giữ)
+router.delete("/trainer-share-overrides/:id", adminTrainerShareOverrideController.remove);
 
 // Audit logs + reports
 router.get("/audit-logs", adminAdminCoreController.getAuditLogs);

@@ -2,6 +2,9 @@ const { QueryTypes } = require("sequelize");
 const dbImport = require("../models");
 const db = dbImport?.default || dbImport;
 
+// ✅ Cloudinary storage (enterprise)
+const cloudinaryService = require("./cloudinaryService");
+
 
 // ================= helpers =================
 const pickPage = (query = {}) => {
@@ -859,12 +862,24 @@ async getEquipmentImages(equipmentId) {
       where: { equipmentId: id, isPrimary: true },
     });
 
-    const rows = files.map((f, idx) => ({
+    // ✅ Upload to Cloudinary (do NOT store on local disk)
+    const uploaded = [];
+    for (const f of files) {
+      if (!f?.buffer) throw new Error("Invalid uploaded file (missing buffer)");
+      const r = await cloudinaryService.uploadImageBuffer(f.buffer, {
+        folder: "gfms/equipments",
+        filename: f.originalname,
+      });
+      uploaded.push({ file: f, cloud: r });
+    }
+
+    const rows = uploaded.map(({ file, cloud }, idx) => ({
       equipmentId: id,
-      url: `/uploads/equipment/${f.filename}`,
+      url: cloud.secure_url,
+      publicId: cloud.public_id,
       isPrimary: hasPrimary === 0 && idx === 0,
       sortOrder: 0,
-      altText: f.originalname || null,
+      altText: file.originalname || null,
     }));
 
     const created = await db.EquipmentImage.bulkCreate(rows);
@@ -904,7 +919,13 @@ async getEquipmentImages(equipmentId) {
 
     const wasPrimary = !!img.isPrimary;
 
+    const publicId = img.publicId;
     await img.destroy();
+
+    // Best-effort cleanup on Cloudinary
+    try {
+      if (publicId) await cloudinaryService.destroy(publicId, "image");
+    } catch (_) {}
 
     if (wasPrimary) {
       const next = await db.EquipmentImage.findOne({
