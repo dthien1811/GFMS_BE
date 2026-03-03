@@ -2,6 +2,7 @@
 import express from "express";
 import useApiController from "../controllers/useApiController";
 
+import ownerDashboardRoute from "./owner/dashboard.route";
 import ownerPackageRoute from "./owner/package.route";
 import ownerPolicyRoute from "./owner/policy.route";
 import ownerGymRoute from "./owner/gym.route";
@@ -36,6 +37,7 @@ const useApi = (app) => {
   router.use(jwtAction.checkUserJWT);
 
   // ✅ mount business routes FIRST (owner/member tự check role)
+  router.use("/owner/dashboard", ownerDashboardRoute);
   router.use("/owner/packages", ownerPackageRoute);
   router.use("/owner/policies", ownerPolicyRoute);
   router.use("/owner/gyms", ownerGymRoute);
