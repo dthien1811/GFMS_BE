@@ -486,9 +486,7 @@ exports.getMyPayrollPeriods = async (req, res) => {
     mustHaveModel(PayrollPeriodModel, 'PayrollPeriod');
 
     const userId = req.user?.id;
-    const trainer = await getTrainerByUserId(userId);
-
-    const items = await PayrollItemModel.findAll({
+    const trainer = await getTrainerByUserId(userId);    const items = await PayrollItemModel.findAll({
       where: { trainerId: trainer.id },
       include: [
         {
