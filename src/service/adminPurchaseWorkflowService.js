@@ -627,6 +627,83 @@ class AdminPurchaseWorkflowService {
     return r;
   }
 
+  async updateReceiptItems(receiptId, body, adminId, req) {
+    return sequelize.transaction(async (t) => {
+      const receipt = await Receipt.findByPk(receiptId, {
+        include: [{ model: ReceiptItem, as: "items" }],
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!receipt) throw new Error("Receipt not found");
+      if (receipt.status !== "pending") throw new Error("Only pending receipt can be edited");
+
+      const po = receipt.purchaseOrderId
+        ? await PurchaseOrder.findByPk(receipt.purchaseOrderId, {
+            include: [{ model: PurchaseOrderItem, as: "items" }],
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+          })
+        : null;
+
+      const oldR = receipt.toJSON();
+      const patches = Array.isArray(body?.items) ? body.items : [];
+
+      let total = 0;
+
+      for (const it of receipt.items || []) {
+        const p = patches.find((x) => String(x.id) === String(it.id));
+        if (!p) {
+          total += Number(it.totalPrice || 0);
+          continue;
+        }
+
+        const newQty = Number(p.quantity);
+        if (!Number.isFinite(newQty) || newQty < 0) throw new Error("Invalid quantity");
+
+        // Validate against PO remaining (if exists)
+        if (po) {
+          const poi = (po.items || []).find((x) => String(x.equipmentId) === String(it.equipmentId));
+          if (poi) {
+            const orderedQty = Number(poi.quantity || 0);
+            const receivedQty = Number(poi.receivedQuantity || 0);
+            const remainingQty = Math.max(0, orderedQty - receivedQty);
+            if (newQty > remainingQty) {
+              throw new Error(
+                `Quantity exceeds remaining for equipmentId=${it.equipmentId}. Remaining=${remainingQty}`
+              );
+            }
+          }
+        }
+
+        it.quantity = newQty;
+        const unitPrice = Number(it.unitPrice || 0);
+        it.totalPrice = unitPrice * newQty;
+        if (p.notes != null) it.notes = String(p.notes);
+        await it.save({ transaction: t });
+        total += Number(it.totalPrice || 0);
+      }
+
+      receipt.totalValue = total;
+      receipt.processedBy = adminId || receipt.processedBy;
+      await receipt.save({ transaction: t });
+
+      await createAudit(
+        {
+          userId: adminId,
+          action: "RECEIPT_ITEMS_UPDATED",
+          tableName: "receipt",
+          recordId: receipt.id,
+          oldValues: oldR,
+          newValues: receipt.toJSON(),
+          req,
+        },
+        t
+      );
+
+      return receipt;
+    });
+  }
+
   async createInboundReceiptFromPO(purchaseOrderId, adminId, req) {
     return sequelize.transaction(async (t) => {
       const po = await PurchaseOrder.findByPk(purchaseOrderId, {
@@ -638,6 +715,20 @@ class AdminPurchaseWorkflowService {
       if (!(po.status === "approved" || po.status === "ordered"))
         throw new Error("PO must be approved/ordered to create inbound receipt");
 
+      // Enterprise: receipt tạo theo phần còn lại (partial delivery supported)
+      const remainingItems = (po.items || [])
+        .map((it) => {
+          const orderedQty = Number(it.quantity || 0);
+          const receivedQty = Number(it.receivedQuantity || 0);
+          const remainingQty = Math.max(0, orderedQty - receivedQty);
+          return { it, orderedQty, receivedQty, remainingQty };
+        })
+        .filter((x) => x.remainingQty > 0);
+
+      if (!remainingItems.length) {
+        throw new Error("PO has no remaining items to receive");
+      }
+
       const receipt = await Receipt.create(
         {
           code: genCode("RC"),
@@ -647,25 +738,35 @@ class AdminPurchaseWorkflowService {
           processedBy: adminId || null,
           receiptDate: new Date(),
           status: "pending",
-          totalValue: po.totalAmount || 0,
-          notes: `Inbound from PO ${po.code}`,
+          totalValue: 0,
+          notes: `Inbound (remaining) from PO ${po.code}`,
         },
         { transaction: t }
       );
 
-      for (const it of po.items || []) {
+      let receiptTotal = 0;
+      for (const x of remainingItems) {
+        const it = x.it;
+        const qty = x.remainingQty;
+        const unitPrice = Number(it.unitPrice || 0);
+        const totalPrice = unitPrice * qty;
+        receiptTotal += totalPrice;
+
         await ReceiptItem.create(
           {
             receiptId: receipt.id,
             equipmentId: it.equipmentId,
-            quantity: it.quantity,
+            quantity: qty,
             unitPrice: it.unitPrice,
-            totalPrice: it.totalPrice,
+            totalPrice,
             notes: it.notes || null,
           },
           { transaction: t }
         );
       }
+
+      receipt.totalValue = receiptTotal;
+      await receipt.save({ transaction: t });
 
       await createAudit(
         {
@@ -954,6 +1055,80 @@ class AdminPurchaseWorkflowService {
 
       return tx;
     });
+  }
+
+  // Enterprise: timeline for a PO (audits + receipts + payments)
+  async getPOTimeline(purchaseOrderId) {
+    const poId = toInt(purchaseOrderId, purchaseOrderId);
+    const po = await PurchaseOrder.findByPk(poId);
+    if (!po) throw new Error("PurchaseOrder not found");
+
+    const receipts = await Receipt.findAll({
+      where: { purchaseOrderId: poId },
+      order: [["createdAt", "DESC"]],
+    });
+
+    const paymentsRes = await this.getPOPayments(poId);
+    const payments = paymentsRes?.data || [];
+
+    const receiptIds = receipts.map((r) => r.id);
+
+    const audits = await AuditLog.findAll({
+      where: {
+        [Op.or]: [
+          { tableName: "purchaseorder", recordId: poId },
+          receiptIds.length ? { tableName: "receipt", recordId: { [Op.in]: receiptIds } } : null,
+          // payment audit logs are stored under tableName=transaction, but recordId is tx.id
+          payments.length ? { tableName: "transaction", recordId: { [Op.in]: payments.map((x) => x.id) } } : null,
+        ].filter(Boolean),
+      },
+      include: [{ model: User, attributes: ["id", "username", "email"] }],
+      order: [["createdAt", "DESC"]],
+    });
+
+    const events = [];
+
+    // audits
+    for (const a of audits || []) {
+      events.push({
+        kind: "audit",
+        at: a.createdAt,
+        action: a.action,
+        tableName: a.tableName,
+        recordId: a.recordId,
+        actor: a.User ? { id: a.User.id, username: a.User.username, email: a.User.email } : null,
+        meta: { ip: a.ipAddress, ua: a.userAgent },
+      });
+    }
+
+    // receipts (as quick events)
+    for (const r of receipts || []) {
+      events.push({
+        kind: "receipt",
+        at: r.createdAt,
+        code: r.code,
+        status: r.status,
+        totalValue: r.totalValue,
+        id: r.id,
+      });
+    }
+
+    // payments
+    for (const tx of payments || []) {
+      events.push({
+        kind: "payment",
+        at: tx.createdAt || tx.transactionDate || null,
+        code: tx.transactionCode,
+        amount: tx.amount,
+        method: tx.paymentMethod,
+        status: tx.paymentStatus,
+        id: tx.id,
+      });
+    }
+
+    events.sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+
+    return { data: events };
   }
 }
 

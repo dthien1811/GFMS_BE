@@ -66,10 +66,14 @@ async function createPackagePaymentLink({ orderCode, amount, description }) {
     orderCode: Number(orderCode),
     amount: Math.round(Number(amount)),
     description: shortDesc,
-    returnUrl: `http://localhost:3000/member/my-packages?payos=success&orderCode=${encodeURIComponent(
-      orderCode
-    )}`,
-    cancelUrl: "http://localhost:3000/member/packages?payos=cancel",
+    returnUrl:
+      process.env.PAYOS_RETURN_URL ||
+      `${process.env.FRONTEND_URL || "http://localhost:3000"}/member/my-packages?payos=success&orderCode=${encodeURIComponent(
+        orderCode
+      )}`,
+    cancelUrl:
+      process.env.PAYOS_CANCEL_URL ||
+      `${process.env.FRONTEND_URL || "http://localhost:3000"}/member/packages?payos=cancel`,
   };
 
   console.log("\n💳 Creating payment link with data:", paymentData);

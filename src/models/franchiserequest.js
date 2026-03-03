@@ -1,3 +1,5 @@
+"use strict";
+
 module.exports = (sequelize, DataTypes) => {
   const FranchiseRequest = sequelize.define(
     "FranchiseRequest",
@@ -6,74 +8,90 @@ module.exports = (sequelize, DataTypes) => {
 
       requesterId: { type: DataTypes.INTEGER, allowNull: false },
 
-      businessName: DataTypes.STRING,
-      location: DataTypes.STRING,
-      contactPerson: DataTypes.STRING,
-      contactPhone: DataTypes.STRING,
-      contactEmail: DataTypes.STRING,
-      investmentAmount: DataTypes.DECIMAL(15, 2),
-      businessPlan: DataTypes.TEXT,
+      businessName: { type: DataTypes.STRING, allowNull: false },
+      location: { type: DataTypes.STRING, allowNull: true },
 
-      // BUSINESS STATUS
+      contactPerson: { type: DataTypes.STRING, allowNull: true },
+      contactPhone: { type: DataTypes.STRING, allowNull: true },
+      contactEmail: { type: DataTypes.STRING, allowNull: true },
+
+      investmentAmount: { type: DataTypes.DECIMAL(18, 2), allowNull: true },
+      businessPlan: { type: DataTypes.TEXT, allowNull: true },
+
       status: {
         type: DataTypes.ENUM("pending", "approved", "rejected"),
+        allowNull: false,
         defaultValue: "pending",
       },
 
-      reviewedBy: DataTypes.INTEGER,
-      reviewNotes: DataTypes.TEXT,
-      approvedAt: DataTypes.DATE,
-      rejectedAt: DataTypes.DATE,
-      rejectionReason: DataTypes.TEXT,
+      reviewedBy: { type: DataTypes.INTEGER, allowNull: true },
+      reviewNotes: { type: DataTypes.TEXT, allowNull: true },
+      approvedAt: { type: DataTypes.DATE, allowNull: true },
+      rejectedAt: { type: DataTypes.DATE, allowNull: true },
+      rejectionReason: { type: DataTypes.TEXT, allowNull: true },
 
-      // CONTRACT FLOW
+      // ===== CONTRACT / SIGN FLOW =====
       contractStatus: {
-        type: DataTypes.ENUM("not_sent", "sent", "signed", "completed"),
+        type: DataTypes.ENUM("not_sent", "sent", "viewed", "signed", "completed", "void"),
+        allowNull: false,
         defaultValue: "not_sent",
       },
 
-      signProvider: DataTypes.STRING,
-      signNowDocumentId: DataTypes.STRING,
-      signNowInviteId: DataTypes.STRING,
-      contractUrl: DataTypes.TEXT,
+      signProvider: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        defaultValue: "mock",
+      },
 
-      contractSigned: { type: DataTypes.BOOLEAN, defaultValue: false },
-      contractSignedAt: DataTypes.DATE,
-      contractCompletedAt: DataTypes.DATE,
+      // signNow fields (optional - demo enterprise)
+      signNowDocumentId: { type: DataTypes.STRING, allowNull: true },
+      signNowDocumentGroupId: { type: DataTypes.STRING, allowNull: true },
+      signNowInviteId: { type: DataTypes.STRING, allowNull: true },
 
-      // RESULT
-      gymId: DataTypes.INTEGER,
-      gymCreatedAt: DataTypes.DATE,
+      contractUrl: { type: DataTypes.TEXT, allowNull: true },
+
+      contractSigned: { type: DataTypes.TINYINT, allowNull: false, defaultValue: 0 },
+      contractSignedAt: { type: DataTypes.DATE, allowNull: true },
+      contractCompletedAt: { type: DataTypes.DATE, allowNull: true },
+
+      // gym created after countersign
+      gymId: { type: DataTypes.INTEGER, allowNull: true },
+      gymCreatedAt: { type: DataTypes.DATE, allowNull: true },
+
+      // ===== SECURE TOKEN (only store hash) =====
+      ownerSignTokenHash: { type: DataTypes.STRING, allowNull: true },
+      ownerSignTokenExpiresAt: { type: DataTypes.DATE, allowNull: true },
+      ownerSignTokenUsedAt: { type: DataTypes.DATE, allowNull: true },
     },
     {
       tableName: "franchiserequest",
+      freezeTableName: true,
       timestamps: true,
     }
   );
 
-  /**
-   * ✅ FIX: khai báo association để Sequelize hiểu "requester" và "reviewer"
-   * Lưu ý: alias PHẢI trùng với as trong include ở service:
-   * as: "requester" và as: "reviewer"
-   */
   FranchiseRequest.associate = (models) => {
-    // Người tạo request
-    FranchiseRequest.belongsTo(models.User, {
-      as: "requester",
-      foreignKey: "requesterId",
-    });
+    if (models.User) {
+      FranchiseRequest.belongsTo(models.User, { foreignKey: "requesterId", as: "requester" });
+      FranchiseRequest.belongsTo(models.User, { foreignKey: "reviewedBy", as: "reviewer" });
+    }
+    if (models.Gym) {
+      FranchiseRequest.belongsTo(models.Gym, { foreignKey: "gymId", as: "gym" });
+    }
 
-    // Người duyệt (admin)
-    FranchiseRequest.belongsTo(models.User, {
-      as: "reviewer",
-      foreignKey: "reviewedBy",
-    });
+    if (models.FranchiseContractDocument) {
+      FranchiseRequest.hasMany(models.FranchiseContractDocument, {
+        foreignKey: "franchiseRequestId",
+        as: "contractDocuments",
+      });
+    }
+    if (models.FranchiseContractAudit) {
+      FranchiseRequest.hasMany(models.FranchiseContractAudit, {
+        foreignKey: "franchiseRequestId",
+        as: "contractAudits",
+      });
+    }
 
-    // Gym được tạo sau khi approve
-    FranchiseRequest.belongsTo(models.Gym, { 
-      as: "createdGym", 
-      foreignKey: "gymId" 
-    });
   };
 
   return FranchiseRequest;

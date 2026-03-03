@@ -1,19 +1,7 @@
 // src/middleware/uploadEquipmentImages.js
+// ✅ Enterprise: DO NOT store on local disk (Render filesystem is ephemeral).
+// Use memory storage then upload to Cloudinary in service layer.
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
-
-const dir = path.join(process.cwd(), "uploads", "equipment");
-if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, dir),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || "").toLowerCase();
-    const safeExt = [".png", ".jpg", ".jpeg", ".webp"].includes(ext) ? ext : ".jpg";
-    cb(null, `eq_${Date.now()}_${Math.round(Math.random() * 1e9)}${safeExt}`);
-  },
-});
 
 const fileFilter = (req, file, cb) => {
   const ok = ["image/png", "image/jpeg", "image/webp"].includes(file.mimetype);
@@ -21,7 +9,9 @@ const fileFilter = (req, file, cb) => {
 };
 
 module.exports = multer({
-  storage,
+  storage: multer.memoryStorage(),
   fileFilter,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB/file
 });
+
+module.exports.default = module.exports;

@@ -167,6 +167,22 @@ class AdminPurchaseWorkflowController {
     }
   };
 
+  updateReceiptItems = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.updateReceiptItems(
+        req.params.id,
+        req.body,
+        req.user?.id,
+        req
+      );
+      return res.status(200).json(result);
+    } catch (e) {
+      const msg = String(e?.message || "");
+      const code = msg.toLowerCase().includes("not found") ? 404 : 400;
+      return res.status(code).json({ message: msg });
+    }
+  };
+
   createInboundReceiptFromPO = async (req, res) => {
     try {
       const result = await adminPurchaseWorkflowService.createInboundReceiptFromPO(
@@ -217,6 +233,16 @@ class AdminPurchaseWorkflowController {
       return res.status(201).json(result);
     } catch (e) {
       return res.status(400).json({ message: e.message });
+    }
+  };
+
+  getPOTimeline = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.getPOTimeline(req.params.id);
+      return res.status(200).json(result);
+    } catch (e) {
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 500;
+      return res.status(code).json({ message: e.message });
     }
   };
 }

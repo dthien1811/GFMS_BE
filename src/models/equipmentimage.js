@@ -12,6 +12,8 @@ module.exports = (sequelize, DataTypes) => {
     {
       equipmentId: { type: DataTypes.INTEGER, allowNull: false },
       url: { type: DataTypes.STRING, allowNull: false },
+      // ✅ Cloudinary public_id for delete / audit
+      publicId: { type: DataTypes.TEXT, allowNull: true },
       isPrimary: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
       sortOrder: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
       altText: { type: DataTypes.STRING, allowNull: true },

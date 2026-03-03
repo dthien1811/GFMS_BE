@@ -14,9 +14,10 @@ const getTokenFromSocket = (socket) => {
 };
 
 export const initSocket = (httpServer) => {
+  const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
   io = new SocketIOServer(httpServer, {
     cors: {
-      origin: "http://localhost:3000",
+      origin: FRONTEND_URL,
       credentials: true,
     },
   });
