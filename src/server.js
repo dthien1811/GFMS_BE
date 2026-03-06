@@ -21,6 +21,8 @@ import { checkUserPermission } from "./middleware/permission";
 
 import marketplaceRoute from "./routes/marketplace/marketplace.route";
 
+import ownerRequestRoutes from './routes/owner/request.route';
+
 // CommonJS routes (support both CJS + ESM default export)
 let adminInventoryApi = require("./routes/adminInventoryApi");
 adminInventoryApi = adminInventoryApi.default || adminInventoryApi;
@@ -133,6 +135,7 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 // ===== MARKETPLACE ROUTE (public) =====
 app.use("/api/marketplace", marketplaceRoute);
 
+app.use('/api/owner', ownerRequestRoutes);
 // ===== ✅ PUBLIC SIGNING API (NO JWT) =====
 // Owner mở link /sign-contract?token=. → FE gọi xuống đây để load/sign
 app.use("/api/public", publicFranchiseContractApi);
