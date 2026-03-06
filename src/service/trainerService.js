@@ -1,9 +1,10 @@
 // services/trainerService.js
-const { Trainer, TrainerShare, SessionProgress } = require('../models');
-
+const db = require('../models');
+// Sử dụng dòng này thay cho { Trainer, ... } cũ để tránh lệch tên model
+const Trainer = db.trainer || db.Trainer; 
+const { TrainerShare, SessionProgress, Booking, Member, Gym, User } = db;
 // ===== Hard rules for schedule slots =====
 const SLOT_DURATION_MIN = 60;
-const BREAK_DURATION_MIN = 15;
 
 const DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 const extractHHmm = (v) => {
@@ -20,7 +21,6 @@ const parseHHmmToMinutes = (hhmm) => {
   return h * 60 + m;
 };
 
-
 const minutesToHHmm = (mins) => {
   const h = String(Math.floor(mins / 60)).padStart(2, '0');
   const m = String(mins % 60).padStart(2, '0');
@@ -28,7 +28,7 @@ const minutesToHHmm = (mins) => {
 };
 
 
-const parseAvailableHoursFromDb = (value) => {
+const   parseAvailableHoursFromDb = (value) => {
   if (!value) return {};
   if (typeof value === 'object') return value; // nếu DB type JSON
   if (typeof value === 'string') {
@@ -39,7 +39,8 @@ const parseAvailableHoursFromDb = (value) => {
     }
   }
   return {};
-};const normalizeAvailableHours = (input) => {
+};
+const normalizeAvailableHours = (input) => {
   // ✅ accept both: schedule object OR { availableHours: schedule }
   const availableHours =
     input &&
@@ -79,44 +80,47 @@ const parseAvailableHoursFromDb = (value) => {
   return availableHours;
 };
 
-
 const serializeAvailableHoursToDb = (obj) => {
   // Nếu DB bạn là JSON column thì có thể return obj luôn,
   // nhưng để đồng bộ mọi môi trường: stringify là an toàn nhất nếu column TEXT.
-  return JSON.stringify(obj || {});
+  return obj;
 };
 
-// ===== slot generator (60 + nghỉ 15) =====
+
 const generateSlotsFromRange = (startHHmm, endHHmm) => {
   const start = parseHHmmToMinutes(startHHmm);
   const end = parseHHmmToMinutes(endHHmm);
   if (start === null || end === null || end <= start) return [];
 
-  const step = SLOT_DURATION_MIN + BREAK_DURATION_MIN;
-
   const slots = [];
   let cur = start;
 
+  // Cứ thế cộng 60 phút, không còn biến BREAK_DURATION_MIN nào ở đây
   while (cur + SLOT_DURATION_MIN <= end) {
     slots.push({
       start: minutesToHHmm(cur),
       end: minutesToHHmm(cur + SLOT_DURATION_MIN),
     });
-    cur += step;
+    cur += SLOT_DURATION_MIN; // Bước nhảy đúng 60p
   }
-
   return slots;
 };
-
+// const generateSlotsForDayRanges = (ranges = []) => {
+//   const all = [];
+//   for (const r of ranges) {
+//     all.push(...generateSlotsFromRange(r.start, r.end));
+//   }
+//   all.sort((a, b) => parseHHmmToMinutes(a.start) - parseHHmmToMinutes(b.start));
+//   return all;
+// };
 const generateSlotsForDayRanges = (ranges = []) => {
   const all = [];
   for (const r of ranges) {
-    all.push(...generateSlotsFromRange(r.start, r.end));
+    all.push(...generateSlotsFromRange(r.start, r.end)); // Tạo slot theo giờ nguyên
   }
-  all.sort((a, b) => parseHHmmToMinutes(a.start) - parseHHmmToMinutes(b.start));
+  all.sort((a, b) => parseHHmmToMinutes(a.start) - parseHHmmToMinutes(b.start)); // Sắp xếp lại các slot theo giờ
   return all;
 };
-
 const generateSlotsFromAvailableHours = (availableHours = {}) => {
   const slotsByDay = {};
   for (const day of DAY_KEYS) {
@@ -172,22 +176,24 @@ const getTrainerDetails = async (id) => {
 
 // ===== schedule methods =====
 
-// lấy schedule raw (range)
 const getTrainerScheduleRaw = async (id) => {
   const pt = await Trainer.findByPk(id, { attributes: ['id', 'availableHours'] });
   if (!pt) throw new Error('Trainer not found');
-
-  const raw = parseAvailableHoursFromDb(pt.availableHours);
-  return raw;
+  return pt.availableHours || {};
 };
 
-// lấy slots đã sinh theo rule
 const getTrainerScheduleSlots = async (id) => {
-  const raw = await getTrainerScheduleRaw(id);
-  const slots = generateSlotsFromAvailableHours(raw);
-  return slots;
+  // Đảm bảo dùng Trainer (đã alias từ db.trainer ở bước 1)
+  const pt = await Trainer.findByPk(id, { attributes: ['id', 'availableHours'] });
+  
+  // Nếu không thấy PT, trả về object rỗng thay vì throw Error gây lỗi 500
+  if (!pt) {
+    console.error(`[Service] Không tìm thấy Trainer ID: ${id}`);
+    return {}; 
+  }
+  
+  return generateSlotsFromAvailableHours(pt.availableHours || {});
 };
-
 // lấy cả raw + slots
 const getTrainerScheduleBoth = async (id) => {
   const raw = await getTrainerScheduleRaw(id);
@@ -195,28 +201,27 @@ const getTrainerScheduleBoth = async (id) => {
   return { availableHours: raw, slots };
 };
 
-// cập nhật schedule (chỉ lưu range)
+
 const updateTrainerSchedule = async (id, scheduleData) => {
   try {
-    const pt = await Trainer.findByPk(id, { attributes: ['id', 'availableHours'] });
+    const pt = await Trainer.findByPk(id);
     if (!pt) throw new Error('Trainer not found');
 
     const normalized = normalizeAvailableHours(scheduleData);
-    if (!normalized) throw new Error('availableHours format is invalid');
-
-    pt.availableHours = serializeAvailableHoursToDb(normalized);
+    
+    // Lưu vào DB (Đảm bảo cột availableHours là kiểu JSON hoặc TEXT)
+    pt.availableHours = normalized;
     await pt.save();
 
-    // trả về raw object + slots cho FE dùng luôn nếu muốn
     return {
       availableHours: normalized,
       slots: generateSlotsFromAvailableHours(normalized),
     };
   } catch (error) {
+    console.error("❌ Service Error:", error);
     throw new Error(error.message || 'Error updating schedule');
   }
 };
-
 // Cập nhật kỹ năng/chứng chỉ của huấn luyện viên
 const updateTrainerSkills = async (id, skillsData) => {
   try {
@@ -228,6 +233,46 @@ const updateTrainerSkills = async (id, skillsData) => {
     return pt;
   } catch (error) {
     throw new Error('Error updating skills');
+  }
+};
+const getTrainerBookings = async (trainerId) => {
+  try {
+    // Viết hoa chữ cái đầu (Booking, Member, User, Gym) để khớp với const { ... } = db;
+    return await Booking.findAll({
+      where: { trainerId },
+      include: [
+        { 
+          model: Member,
+          // attributes: ['id', 'membershipNumber'], 
+          include: [
+            { 
+              model: User, 
+              as: 'User', // Giữ nguyên alias nếu trong models/index.js bạn đặt là 'user'
+              attributes: ['username', 'email', 'phone'] 
+            }
+          ]
+        },
+        { 
+          model: Gym, 
+          attributes: ['name'] 
+        }
+      ],
+      order: [['createdAt', 'DESC']]
+    });
+  } catch (error) {
+    console.error("❌ Lỗi Database Query:", error);
+    throw error;
+  }
+};
+const confirmBooking = async (bookingId) => {
+  try {
+    const booking = await Booking.findByPk(bookingId);
+    if (!booking) throw new Error('Booking not found');
+    booking.status = 'confirmed';
+    await booking.save();
+    return booking;
+  } catch (error) {
+    throw new Error('Error confirming booking');
   }
 };
 
@@ -248,4 +293,7 @@ module.exports = {
 
   // export helpers if needed elsewhere (optional)
   generateSlotsFromAvailableHours,
+
+  getTrainerBookings,
+  confirmBooking,
 };

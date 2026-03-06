@@ -86,7 +86,6 @@ const toNumberOrUndefined = (v) => {
 
 // ===== Hard rules for schedule slots =====
 const SLOT_DURATION_MIN = 60;  // 1 buổi học
-const BREAK_DURATION_MIN = 15; // nghỉ giữa buổi
 
 const DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
 
@@ -307,12 +306,17 @@ exports.updateTrainer = async (req, res) => {
   }
 };
 
-// ===================== UC-TR-005: GET SCHEDULE =====================
 exports.getTrainerSchedule = async (req, res) => {
-  const { id } = req.params;
+  let { id } = req.params;
   const mode = (req.query?.mode || "raw").toLowerCase(); // raw | slots | both
 
   try {
+    if (id === 'me') {
+      const trainer = await TrainerModel.findOne({ where: { userId: req.user.id } });
+      if (!trainer) return res.status(404).json({ message: 'Trainer profile not found' });
+      id = trainer.id;
+    }
+
     if (mode === "slots") {
       const slots = await trainerService.getTrainerScheduleSlots(id);
       return res.status(200).json({ slots });
@@ -323,33 +327,36 @@ exports.getTrainerSchedule = async (req, res) => {
       return res.status(200).json(data); // { availableHours, slots }
     }
 
+    // default: raw
     const availableHours = await trainerService.getTrainerScheduleRaw(id);
     return res.status(200).json({ availableHours });
+
   } catch (error) {
     console.error("[getTrainerSchedule] Error:", error);
-    return res.status(error.statusCode || 500).json({ message: error.message });
+    return res.status(500).json({ message: error.message });
   }
 };
 
 // ===================== UC-TR-006: UPDATE SCHEDULE =====================
 exports.updateTrainerSchedule = async (req, res) => {
-  const { id } = req.params;
-
+  let { id } = req.params;
   try {
-    const incoming =
-      req.body?.availableHours && typeof req.body.availableHours === "object"
-        ? req.body.availableHours
-        : req.body;
+    if (id === 'me') {
+      const trainer = await TrainerModel.findOne({ where: { userId: req.user.id } });
+      if (!trainer) return res.status(404).json({ message: 'Trainer not found' });
+      id = trainer.id;
+    }
+
+    // Không cần validate phức tạp ở đây, đẩy hết cho Service xử lý
+    const incoming = req.body; 
 
     const result = await trainerService.updateTrainerSchedule(id, incoming);
-    // result: { availableHours, slots } (service trả)
     return res.status(200).json(result);
   } catch (error) {
-    console.error("[updateTrainerSchedule] Error:", error);
+    console.error("[updateTrainerSchedule] Error:", error.message);
     return res.status(400).json({ message: error.message });
   }
 };
-
 
 // ===================== UC-TR-007: DETAILS =====================
 exports.getTrainerDetails = async (req, res) => {
@@ -691,3 +698,52 @@ exports.exportMyCommissions = async (req, res) => {
     return res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
+
+
+exports.getTrainerBookings = async (req, res) => {
+  let { id } = req.params;
+
+  try {
+    // 1. Nếu dùng route /me/bookings
+    if (id === 'me') {
+      // Log để kiểm tra ID từ Token (phải là 6 mới đúng dữ liệu bạn gửi)
+      console.log(">>> Request từ User ID:", req.user.id);
+
+      const trainer = await TrainerModel.findOne({ 
+        where: { userId: req.user.id } 
+      });
+
+      if (!trainer) {
+        // Thay vì để undefined gây lỗi 500, ta trả về 404
+        return res.status(404).json({ 
+          message: `Không tìm thấy PT cho User ID ${req.user.id}. (DB đang để userId là 6)` 
+        });
+      }
+      id = trainer.id; // Lúc này id sẽ là '2'
+    }
+
+    // 2. Kiểm tra bắt buộc trước khi gọi Service
+    if (!id || id === 'undefined') {
+       return res.status(400).json({ message: "Trainer ID không hợp lệ (undefined)" });
+    }
+
+    console.log(">>> Đang lấy lịch cho Trainer ID thật:", id);
+    const bookings = await trainerService.getTrainerBookings(id);
+    return res.status(200).json(bookings);
+
+  } catch (error) {
+    // Ngăn chặn lỗi 500 bằng cách log lỗi cụ thể
+    console.error("❌ Lỗi Controller:", error.message);
+    return res.status(500).json({ message: error.message });
+  }
+};
+exports.confirmBooking = async (req, res) => {
+  const { id } = req.params; // bookingId
+  try {
+    const booking = await trainerService.confirmBooking(id);
+    return res.status(200).json({ message: 'Confirmed', booking });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
