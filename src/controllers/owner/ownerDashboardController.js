@@ -237,6 +237,106 @@ const ownerDashboardController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+
+  /**
+   * GET /api/owner/dashboard/revenue-trend
+   * Query:
+   *  - period: day | month | year (default: day)
+   *  - gymId: optional
+   */
+  async getRevenueTrend(req, res) {
+    try {
+      const userId = req.user.id;
+      const Op = Sequelize.Op;
+
+      const myGyms = await Gym.findAll({
+        where: { ownerId: userId },
+        attributes: ["id", "name"],
+      });
+      const myGymIds = myGyms.map((g) => g.id);
+
+      const filterGymId = req.query.gymId ? parseInt(req.query.gymId, 10) : null;
+      const activeGymIds =
+        filterGymId && myGymIds.includes(filterGymId)
+          ? [filterGymId]
+          : myGymIds;
+
+      const periodRaw = String(req.query.period || "day").toLowerCase();
+      const period = ["day", "month", "year"].includes(periodRaw) ? periodRaw : "day";
+
+      if (activeGymIds.length === 0) {
+        return res.status(200).json({
+          period,
+          series: [],
+        });
+      }
+
+      const now = new Date();
+      const startDate = new Date(now);
+      const dateSourceSql = "COALESCE(`transactionDate`, `createdAt`)";
+
+      let bucketSql = `DATE_FORMAT(${dateSourceSql}, '%Y-%m-%d')`;
+      let labelSql = `DATE_FORMAT(${dateSourceSql}, '%d/%m')`;
+
+      if (period === "month") {
+        startDate.setMonth(startDate.getMonth() - 11);
+        startDate.setDate(1);
+        startDate.setHours(0, 0, 0, 0);
+        bucketSql = `DATE_FORMAT(${dateSourceSql}, '%Y-%m')`;
+        labelSql = `DATE_FORMAT(${dateSourceSql}, '%m/%Y')`;
+      } else if (period === "year") {
+        startDate.setFullYear(startDate.getFullYear() - 4, 0, 1);
+        startDate.setHours(0, 0, 0, 0);
+        bucketSql = `DATE_FORMAT(${dateSourceSql}, '%Y')`;
+        labelSql = `DATE_FORMAT(${dateSourceSql}, '%Y')`;
+      } else {
+        startDate.setDate(startDate.getDate() - 29);
+        startDate.setHours(0, 0, 0, 0);
+      }
+
+      const rows = await Transaction.findAll({
+        attributes: [
+          [Sequelize.literal(bucketSql), "bucket"],
+          [Sequelize.literal(labelSql), "label"],
+          [
+            Sequelize.fn("COALESCE", Sequelize.fn("SUM", Sequelize.col("amount")), 0),
+            "total",
+          ],
+        ],
+        where: {
+          gymId: { [Op.in]: activeGymIds },
+          paymentStatus: "completed",
+          [Op.and]: [
+            Sequelize.where(
+              Sequelize.fn(
+                "COALESCE",
+                Sequelize.col("transactionDate"),
+                Sequelize.col("createdAt")
+              ),
+              { [Op.gte]: startDate }
+            ),
+          ],
+        },
+        group: [Sequelize.literal(bucketSql), Sequelize.literal(labelSql)],
+        order: [[Sequelize.literal(bucketSql), "ASC"]],
+        raw: true,
+      });
+
+      const series = rows.map((r) => ({
+        bucket: r.bucket,
+        label: r.label,
+        total: parseFloat(r.total || 0),
+      }));
+
+      return res.status(200).json({
+        period,
+        series,
+      });
+    } catch (e) {
+      console.error("[ownerDashboard] getRevenueTrend error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerDashboardController;
