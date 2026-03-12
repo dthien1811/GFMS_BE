@@ -23,6 +23,7 @@ import ownerTrainerRoute from "./owner/trainer.route";
 import memberBookingRoute from "./member/booking.route";
 import memberPackageRoute from "./member/package.route";
 import memberMyPackagesRoute from "./member/myPackages.route";
+import memberMetricRoute from "./member/metric.route";
 
 import trainerRoute from "./trainer";
 
@@ -58,6 +59,7 @@ const useApi = (app) => {
   router.use("/member/bookings", memberBookingRoute);
   router.use("/member/packages", memberPackageRoute);
   router.use("/member/my-packages", memberMyPackagesRoute);
+  router.use("/member/metrics", memberMetricRoute);
 
 
   // trainer route

@@ -17,6 +17,7 @@ module.exports = (sequelize, DataTypes) => {
       Member.hasMany(models.Transaction, { foreignKey: 'memberId' });
       Member.hasMany(models.Review, { foreignKey: 'memberId' });
       Member.hasMany(models.Attendance, { foreignKey: 'memberId' });
+      Member.hasMany(models.MemberMetric, { foreignKey: 'memberId', as: 'metrics' });
     }
   }
 
@@ -48,6 +49,10 @@ module.exports = (sequelize, DataTypes) => {
 
       sessionsRemaining: { type: DataTypes.INTEGER, allowNull: true },
       packageExpiryDate: { type: DataTypes.DATE, allowNull: true },
+
+      currentBmi: { type: DataTypes.FLOAT, allowNull: true },
+      bmiUpdatedAt: { type: DataTypes.DATE, allowNull: true },
+      targetWeight: { type: DataTypes.FLOAT, allowNull: true },
     },
     {
       sequelize,
