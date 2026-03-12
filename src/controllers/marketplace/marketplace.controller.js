@@ -27,6 +27,20 @@ const marketplaceController = {
 
   getPackageDetail: async (req, res) =>
     res.json({ EC: 0, EM: "OK", DT: await marketplaceService.getPackageDetail(req.params.id) }),
+
+  // ✅ public slots for wizard
+  async getAvailableSlotsPublic(req, res) {
+    try {
+      const data = await marketplaceService.getAvailableSlotsPublic(req.query);
+      return res.status(200).json({ EC: 0, EM: "OK", DT: data });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({
+        EC: 1,
+        EM: e.message || "Server error",
+        DT: [],
+      });
+    }
+  },
 };
 
 export default marketplaceController;
