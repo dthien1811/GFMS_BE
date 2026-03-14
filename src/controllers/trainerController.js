@@ -540,7 +540,11 @@ exports.getMyWalletSummary = async (req, res) => {
     const trainer = await getTrainerByUserId(userId);
 
     const totalWithdrawn = await WithdrawalModel.sum('amount', {
-      where: { trainerId: trainer.id, status: 'completed' },
+      where: {
+        trainerId: trainer.id,
+        status: 'completed',
+        withdrawalMethod: 'bank_transfer',
+      },
     });
 
     return res.status(200).json({

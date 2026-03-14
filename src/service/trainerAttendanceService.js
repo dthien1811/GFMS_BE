@@ -24,6 +24,113 @@ const SAFE_ATT_COLS = [
   'createdAt', 'updatedAt'
 ];
 
+// Không cho phép chỉnh sửa điểm danh nếu buổi đã được chi trả / chốt kỳ
+const ensureAttendanceEditable = async (bookingId) => {
+  const Commission = db.Commission || db.commission;
+  mustHaveModel(Commission, "Commission");
+
+  const existing = await Commission.findOne({ where: { bookingId } });
+  if (existing && existing.status && existing.status !== "pending") {
+    const err = new Error("Buổi này đã được chốt/chi trả, không thể chỉnh sửa điểm danh.");
+    err.statusCode = 400;
+    throw err;
+  }
+};
+
+// Đồng bộ hoa hồng theo trạng thái điểm danh của 1 booking
+// - Nếu status = present/completed  → đảm bảo có 1 dòng commission (pending)
+// - Nếu status khác (absent, ...)   → xóa commission pending của booking đó
+const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus }) => {
+  const Commission = db.Commission || db.commission;
+  const PackageActivation = db.PackageActivation || db.packageactivation;
+  const Package = db.Package || db.package;
+  const Policy = db.Policy || db.policy;
+
+  mustHaveModel(Commission, "Commission");
+  mustHaveModel(PackageActivation, "PackageActivation");
+  mustHaveModel(Package, "Package");
+
+  const gymId = booking.gymId || trainer.gymId;
+  if (!gymId) return;
+
+  const existing = await Commission.findOne({ where: { bookingId: booking.id } });
+
+  // Nếu đánh dấu vắng / không hiện diện → xóa commission pending (nếu có)
+  if (normalizedStatus !== "present" && normalizedStatus !== "completed") {
+    if (existing && existing.status === "pending") {
+      await existing.destroy();
+    }
+    return;
+  }
+
+  // present/completed nhưng đã có commission rồi → không làm gì thêm
+  if (existing) return;
+
+  const activationId = booking.packageActivationId || booking.activationId || null;
+  let sessionValue = 0;
+
+  if (activationId) {
+    const activation = await PackageActivation.findByPk(activationId, {
+      include: [{ model: Package, attributes: ["id", "price", "sessions"] }],
+    });
+    if (activation && activation.Package) {
+      const totalSessions = Number(
+        activation.totalSessions ?? activation.Package.sessions ?? 0
+      );
+      const price = Number(activation.Package.price || 0);
+      if (totalSessions > 0 && price > 0) {
+        sessionValue = price / totalSessions;
+      }
+    }
+  }
+
+  if (!sessionValue || !Number.isFinite(sessionValue) || sessionValue <= 0) return;
+
+  // Lấy tỷ lệ hoa hồng theo policy commission của gym
+  let ownerRate = 0.15;
+  if (Policy) {
+    const policy = await Policy.findOne({
+      where: {
+        policyType: "commission",
+        appliesTo: "gym",
+        gymId,
+        isActive: true,
+      },
+      order: [["createdAt", "DESC"]],
+    });
+    if (policy) {
+      let value = policy.value;
+      if (typeof value === "string") {
+        try {
+          value = JSON.parse(value);
+        } catch {
+          value = {};
+        }
+      }
+      if (value && typeof value.ownerRate === "number") {
+        ownerRate = value.ownerRate;
+      }
+    }
+  }
+
+  if (ownerRate < 0 || ownerRate > 1) ownerRate = 0.15;
+  const trainerRate = 1 - ownerRate;
+  const commissionAmount = sessionValue * trainerRate;
+
+  await Commission.create({
+    trainerId: trainer.id,
+    bookingId: booking.id,
+    gymId,
+    activationId: activationId || null,
+    payrollPeriodId: null,
+    sessionDate: booking.bookingDate || new Date(),
+    sessionValue,
+    commissionRate: trainerRate,
+    commissionAmount,
+    status: "pending",
+  });
+};
+
 const getTrainerByAuthId = async (authId) => {
   const Trainer = db.Trainer || db.trainer;
   mustHaveModel(Trainer, "Trainer");
@@ -141,9 +248,6 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
   return { trainer, bookingDate, rows };
 };
 
-// ===================
-// Check-in (GIỮ NGUYÊN CODE CỦA BẠN - CÓ THÊM FIX CHỈNH SỬA)
-// ===================
 const checkIn = async ({ userId, bookingId, method = "manual", status = "present" }) => {
   const Booking = db.Booking || db.booking;
   const Attendance = db.Attendance || db.attendance;
@@ -155,35 +259,45 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
   const booking = await Booking.findOne({ where: { id: bookingId } });
   if (!booking) throw Object.assign(new Error("Booking not found"), { statusCode: 404 });
 
+  // chặn sửa nếu đã chi trả
+  await ensureAttendanceEditable(booking.id);
+
   const t = now();
-  const normalizedStatus = status.toLowerCase();
+  const normalizedStatus = String(status || "present").toLowerCase();
 
   let attendance = await Attendance.findOne({
     where: { bookingId: booking.id, attendanceType: "trainer", userId },
-    attributes: SAFE_ATT_COLS // 🔹 Chặn lỗi memberId
+    attributes: SAFE_ATT_COLS,
   });
 
   if (!attendance) {
     attendance = await Attendance.create({
-        userId,
-        gymId: booking.gymId || trainer.gymId || null,
-        bookingId: booking.id,
-        checkInTime: t,
-        attendanceType: "trainer",
-        method: method,
-        status: normalizedStatus,
+      userId,
+      gymId: booking.gymId || trainer.gymId || null,
+      bookingId: booking.id,
+      checkInTime: t,
+      attendanceType: "trainer",
+      method,
+      status: normalizedStatus,
     });
   } else {
-    // FIX để chỉnh sửa trạng thái hoạt động:
     attendance.status = normalizedStatus;
     attendance.checkInTime = t;
-    attendance.checkOutTime = null; 
+    attendance.checkOutTime = null;
     attendance.method = method;
-    await attendance.save({ fields: ['status', 'checkInTime', 'checkOutTime', 'method', 'updatedAt'] });
+    await attendance.save({
+      fields: ["status", "checkInTime", "checkOutTime", "method", "updatedAt"],
+    });
   }
 
   booking.status = "in_progress";
   await booking.save();
+
+  try {
+    await syncCommissionForAttendance({ trainer, booking, normalizedStatus });
+  } catch (e) {
+    console.error("[trainerAttendanceService] commission sync error (checkIn):", e.message);
+  }
 
   return { booking, attendance };
 };
@@ -202,32 +316,41 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   const booking = await Booking.findOne({ where: { id: bookingId } });
   if (!booking) throw Object.assign(new Error("Booking not found"), { statusCode: 404 });
 
+  // chặn sửa nếu đã chi trả
+  await ensureAttendanceEditable(booking.id);
+
   const t = now();
-  const normalizedStatus = status.toLowerCase();
+  const normalizedStatus = String(status || "absent").toLowerCase();
 
   let attendance = await Attendance.findOne({
     where: { bookingId: booking.id, attendanceType: "trainer", userId },
-    attributes: SAFE_ATT_COLS // 🔹 Chặn lỗi memberId
+    attributes: SAFE_ATT_COLS, // 🔹 Chặn lỗi memberId
   });
 
   if (!attendance) {
     attendance = await Attendance.create({
-        userId,
-        gymId: booking.gymId || trainer.gymId || null,
-        bookingId: booking.id,
-        checkOutTime: t,
-        attendanceType: "trainer",
-        method: "manual",
-        status: normalizedStatus,
+      userId,
+      gymId: booking.gymId || trainer.gymId || null,
+      bookingId: booking.id,
+      checkOutTime: t,
+      attendanceType: "trainer",
+      method: "manual",
+      status: normalizedStatus,
     });
   } else {
     attendance.status = normalizedStatus;
     attendance.checkOutTime = t;
-    await attendance.save({ fields: ['status', 'checkOutTime', 'updatedAt'] });
+    await attendance.save({ fields: ["status", "checkOutTime", "updatedAt"] });
   }
 
-  booking.status = "completed"; 
+  booking.status = "completed";
   await booking.save();
+
+  try {
+    await syncCommissionForAttendance({ trainer, booking, normalizedStatus });
+  } catch (e) {
+    console.error("[trainerAttendanceService] commission sync error (checkOut):", e.message);
+  }
 
   return { booking, attendance };
 };

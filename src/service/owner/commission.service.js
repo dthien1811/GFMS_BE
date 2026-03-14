@@ -275,16 +275,6 @@ const ownerCommissionService = {
 
     const totalAmount = commissions.reduce((sum, c) => sum + Number(c.commissionAmount || 0), 0);
 
-    await Withdrawal.create({
-      trainerId: Number(trainerId),
-      amount: totalAmount,
-      withdrawalMethod: "bank_transfer",
-      status: "completed",
-      processedBy: ownerUserId,
-      processedDate: new Date(),
-      notes: `Chi trả theo PT (${fromDate} - ${toDate})`,
-    });
-
     await Commission.update(
       { status: "paid", paidAt: new Date() },
       { where: { id: { [Op.in]: commissions.map((c) => c.id) } } }
@@ -292,8 +282,9 @@ const ownerCommissionService = {
 
     const trainer = await Trainer.findByPk(trainerId);
     if (trainer) {
+      const current = Number(trainer.pendingCommission || 0);
       await trainer.update({
-        pendingCommission: Math.max(0, Number(trainer.pendingCommission || 0) - totalAmount),
+        pendingCommission: current + totalAmount,
         lastPayoutDate: new Date(),
       });
     }
@@ -502,23 +493,11 @@ const ownerCommissionService = {
 
     const items = period.items || [];
     for (const item of items) {
-      await Withdrawal.create({
-        trainerId: item.trainerId,
-        amount: item.totalAmount,
-        withdrawalMethod: "bank_transfer",
-        status: "completed",
-        processedBy: ownerUserId,
-        processedDate: new Date(),
-        notes: `Chi trả kỳ lương #${period.id}`,
-      });
-
       const trainer = await Trainer.findByPk(item.trainerId);
       if (trainer) {
+        const current = Number(trainer.pendingCommission || 0);
         await trainer.update({
-          pendingCommission: Math.max(
-            0,
-            Number(trainer.pendingCommission || 0) - Number(item.totalAmount || 0)
-          ),
+          pendingCommission: current + Number(item.totalAmount || 0),
           lastPayoutDate: new Date(),
         });
       }
