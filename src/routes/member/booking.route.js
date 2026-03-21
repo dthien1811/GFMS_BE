@@ -3,7 +3,6 @@ import bookingController from "../../controllers/member/booking.controller";
 
 const router = express.Router();
 
-// ✅ MEMBER = groupId 4
 const requireMember = (req, res, next) => {
   if (!req.user || req.user.groupId !== 4) {
     return res.status(403).json({
@@ -16,10 +15,14 @@ const requireMember = (req, res, next) => {
 
 router.use(requireMember);
 
-// booking flow
 router.get("/trainers", bookingController.getAvailableTrainers);
 router.get("/slots", bookingController.getAvailableSlots);
+
+router.post("/fixed-plan/options", bookingController.getFixedPlanOptions);
+router.post("/fixed-plan/confirm", bookingController.confirmFixedPlan);
+
 router.post("/", bookingController.createBooking);
+router.post("/week-pattern", bookingController.createWeekPatternBookings);
 router.get("/", bookingController.getMyBookings);
 
 export default router;

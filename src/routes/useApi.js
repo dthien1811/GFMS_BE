@@ -1,4 +1,3 @@
-// routes/useApi.js
 import express from "express";
 import useApiController from "../controllers/useApiController";
 
@@ -24,6 +23,7 @@ import memberBookingRoute from "./member/booking.route";
 import memberPackageRoute from "./member/package.route";
 import memberMyPackagesRoute from "./member/myPackages.route";
 import memberMetricRoute from "./member/metric.route";
+import memberProfileRoute from "./member/profile.route";
 
 import trainerRoute from "./trainer";
 
@@ -33,7 +33,6 @@ import { checkUserPermission } from "../middleware/permission";
 const router = express.Router();
 
 const useApi = (app) => {
-
   // ✅ all /api must login
   router.use(jwtAction.checkUserJWT);
 
@@ -60,31 +59,21 @@ const useApi = (app) => {
   router.use("/member/packages", memberPackageRoute);
   router.use("/member/my-packages", memberMyPackagesRoute);
   router.use("/member/metrics", memberMetricRoute);
-
+  router.use("/member/profile", memberProfileRoute);
 
   // trainer route
   router.use("/trainer", trainerRoute);
 
   // ✅ admin permission only (users/groups…)
-  /*router.use(
+  router.use(
+    ["/users", "/groups"],
     checkUserPermission({
       getPath: (req) => {
-        const fullPath = `${req.baseUrl}${req.path}`; // /api/users
-        return fullPath.replace(/^\/api/, "/admin");
+        const raw = (req.originalUrl || "").split("?")[0];
+        return raw.replace(/^\/api/, "/admin");
       },
     })
-  );*/
-   router.use(
-  ["/users", "/groups"],
-  checkUserPermission({
-    getPath: (req) => {
-      // dùng originalUrl để ra đúng /api/users... rồi map sang /admin/users...
-      const raw = (req.originalUrl || "").split("?")[0]; // /api/users
-      return raw.replace(/^\/api/, "/admin");            // /admin/users
-    },
-  })
-);
-
+  );
 
   // admin APIs
   router.get("/users", useApiController.readUsers);

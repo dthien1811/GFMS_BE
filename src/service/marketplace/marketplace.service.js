@@ -15,6 +15,63 @@ const toHHMM = (mins) => {
 
 const overlap = (aS, aE, bS, bE) => aS < bE && bS < aE;
 
+const DAY_INDEX_TO_KEY = {
+  0: "sunday",
+  1: "monday",
+  2: "tuesday",
+  3: "wednesday",
+  4: "thursday",
+  5: "friday",
+  6: "saturday",
+};
+
+const MARKETPLACE_BOOKING_STATUSES = ["confirmed", "completed", "pending"];
+
+const parseJsonSafe = (value, fallback = null) => {
+  try {
+    if (typeof value === "string") return JSON.parse(value);
+    return value ?? fallback;
+  } catch {
+    return fallback;
+  }
+};
+
+const normalizeRanges = (ranges) => {
+  if (!Array.isArray(ranges)) return [];
+
+  return ranges
+    .filter((r) => r?.start && r?.end)
+    .map((r) => ({
+      start: String(r.start).slice(0, 5),
+      end: String(r.end).slice(0, 5),
+    }))
+    .filter((r) => toMin(r.start) < toMin(r.end));
+};
+
+const buildSlotsFromRanges = (ranges, step) => {
+  const slotSet = new Set();
+
+  for (const r of ranges) {
+    let s = toMin(r.start);
+    const end = toMin(r.end);
+
+    while (s + step <= end) {
+      const e = s + step;
+      slotSet.add(`${toHHMM(s)}-${toHHMM(e)}`);
+      s += step;
+    }
+  }
+
+  return slotSet;
+};
+
+const parsePatternDays = (pattern) => {
+  return String(pattern || "")
+    .split(",")
+    .map((x) => Number(x))
+    .filter((n) => Number.isInteger(n) && DAY_INDEX_TO_KEY[n]);
+};
+
 const marketplaceService = {
   async listGyms() {
     return db.Gym.findAll({ where: { status: "active" } });
@@ -28,11 +85,9 @@ const marketplaceService = {
     if (!gym) return null;
 
     const data = gym.toJSON();
-    try {
-      data.images = data.images ? JSON.parse(data.images) : [];
-    } catch {
-      data.images = [];
-    }
+    data.images = parseJsonSafe(data.images, []);
+    if (!Array.isArray(data.images)) data.images = [];
+
     return data;
   },
 
@@ -73,6 +128,7 @@ const marketplaceService = {
 
   async listPackages({ gymId, q }) {
     const where = { isActive: true };
+
     if (gymId) where.gymId = gymId;
     if (q) where.name = { [Op.like]: `%${q}%` };
 
@@ -89,102 +145,87 @@ const marketplaceService = {
   },
 
   // =========================================================
-  // ✅ PUBLIC SLOTS (wizard step 3)
-  // GET /api/marketplace/slots?trainerId=&packageId=
-  // Each slot = 60 minutes
-  // return: [{start:"09:00", end:"10:00", ok:true}, ...]
+  // PUBLIC SLOTS for wizard step 3
+  // GET /api/marketplace/slots?trainerId=&packageId=&pattern=1,3,5
+  //
+  // Logic:
+  // - chỉ lấy các ngày thuộc pattern
+  // - tạo slot 60 phút cho từng ngày
+  // - lấy GIAO NHAU giữa các ngày trong pattern
+  // - tạm thời check booking theo giờ chung để disable slot nếu bị conflict
   // =========================================================
-  async getAvailableSlotsPublic({ trainerId, packageId }) {
-    const tId = Number(trainerId);
-    const pId = Number(packageId);
+  async getAvailableSlotsPublic({ trainerId, packageId, pattern }) {
+  const tId = Number(trainerId);
+  const pId = Number(packageId);
 
-    if (!tId || !pId) {
-      const err = new Error("Invalid params: trainerId, packageId are required");
-      err.statusCode = 400;
-      throw err;
-    }
+  if (!tId || !pId) {
+    const err = new Error("trainerId và packageId là bắt buộc");
+    err.statusCode = 400;
+    throw err;
+  }
 
-    // ✅ Trainer model của bạn: availableHours (JSON)
-    const trainer = await db.Trainer.findByPk(tId, {
-      attributes: ["id", "availableHours", "isActive"],
-    });
+  const patternDays = parsePatternDays(pattern);
+  if (!patternDays.length) {
+    const err = new Error("pattern là bắt buộc");
+    err.statusCode = 400;
+    throw err;
+  }
 
-    if (!trainer || !trainer.isActive) {
-      const err = new Error("Trainer not found or inactive");
-      err.statusCode = 404;
-      throw err;
-    }
+  const trainer = await db.Trainer.findByPk(tId, {
+    attributes: ["id", "availableHours", "isActive"],
+  });
 
-    // parse availableHours (có thể là object hoặc string JSON)
-    let hours = trainer.availableHours;
-    try {
-      if (typeof hours === "string") hours = JSON.parse(hours);
-    } catch {
-      hours = null;
-    }
-    if (!hours || typeof hours !== "object") return [];
+  if (!trainer || !trainer.isActive) {
+    const err = new Error("Trainer không tồn tại hoặc đã bị khóa");
+    err.statusCode = 404;
+    throw err;
+  }
 
-    // ✅ slot 60 phút
-    const step = 60;
+  const pkg = await db.Package.findByPk(pId, {
+    attributes: ["id", "isActive"],
+  });
 
-    // 1) gom tất cả range trong tuần (monday..sunday)
-    const allRanges = [];
-    for (const dayKey of Object.keys(hours)) {
-      const ranges = Array.isArray(hours[dayKey]) ? hours[dayKey] : [];
-      for (const r of ranges) {
-        if (r?.start && r?.end) allRanges.push({ start: r.start, end: r.end });
-      }
-    }
-    if (!allRanges.length) return [];
+  if (!pkg || pkg.isActive === false) {
+    const err = new Error("Gói tập không tồn tại hoặc đã ngừng hoạt động");
+    err.statusCode = 404;
+    throw err;
+  }
 
-    // 2) booking để đánh ok=false (bất kỳ ngày nào)
-    // booking table bạn có: bookingDate/startTime/endTime/status/trainerId
-    let bookings = [];
-    if (db.Booking) {
-      bookings = await db.Booking.findAll({
-        where: {
-          trainerId: tId,
-          status: { [Op.in]: ["confirmed", "completed", "pending"] },
-        },
-        attributes: ["startTime", "endTime"],
-        limit: 5000,
-      });
-    }
+  let availableHours = parseJsonSafe(trainer.availableHours, {});
+  if (!availableHours || typeof availableHours !== "object") {
+    availableHours = {};
+  }
 
-    const booked = bookings.map((b) => ({
-      s: toMin(b.startTime),
-      e: toMin(b.endTime),
-    }));
+  const step = 60;
 
-    // 3) generate slots union + unique
-    const map = new Map(); // key = "HH:MM-HH:MM"
-    for (const r of allRanges) {
-      let s = toMin(r.start);
-      const end = toMin(r.end);
+  // 1) Lấy slot cho từng ngày trong pattern
+  const daySlotSets = patternDays.map((dayIndex) => {
+    const dayKey = DAY_INDEX_TO_KEY[dayIndex];
+    const dayRanges = normalizeRanges(availableHours[dayKey]);
+    return buildSlotsFromRanges(dayRanges, step);
+  });
 
-      while (s + step <= end) {
-        const e = s + step;
-        const startStr = toHHMM(s);
-        const endStr = toHHMM(e);
-        const key = `${startStr}-${endStr}`;
+  if (!daySlotSets.length || daySlotSets.some((set) => set.size === 0)) {
+    return [];
+  }
 
-        const ok = !booked.some((b) => overlap(s, e, b.s, b.e));
+  // 2) Giao nhau giữa các ngày trong pattern
+  let intersection = [...daySlotSets[0]];
+  for (let i = 1; i < daySlotSets.length; i++) {
+    intersection = intersection.filter((slotKey) => daySlotSets[i].has(slotKey));
+  }
 
-        if (!map.has(key)) {
-          map.set(key, { start: startStr, end: endStr, ok });
-        } else {
-          // đã có slot: nếu 1 lần nào đó bị trùng booking => ok=false
-          const cur = map.get(key);
-          if (cur.ok && !ok) map.set(key, { ...cur, ok: false });
-        }
+  if (!intersection.length) return [];
 
-        s += step;
-      }
-    }
-
-    // sort theo giờ bắt đầu
-    return Array.from(map.values()).sort((a, b) => toMin(a.start) - toMin(b.start));
-  },
+  // 3) Step 3 chỉ trả slot "lý thuyết" theo availableHours
+  // KHÔNG check booking thực tế ở đây nữa
+  return intersection
+    .map((slotKey) => {
+      const [start, end] = slotKey.split("-");
+      return { start, end, ok: true };
+    })
+    .sort((a, b) => toMin(a.start) - toMin(b.start));
+}
 };
 
 export default marketplaceService;

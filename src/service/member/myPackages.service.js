@@ -121,7 +121,7 @@ async function countCompleted(activationId, transaction) {
   return db.Booking.count({
     where: {
       packageActivationId: activationId,
-      status: "completed",
+      status: { [Op.in]: ["in_progress", "completed"] },
     },
     transaction,
   });
