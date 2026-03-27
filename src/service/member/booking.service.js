@@ -1,8 +1,9 @@
 import db from "../../models";
 import { Op } from "sequelize";
+import payosService from "../payment/payos.service";
 
 const SLOT_MINUTES = 60;
-const ALLOWED_PAYMENT = new Set(["cash", "momo", "vnpay", "payos"]);
+const ALLOWED_PAYMENT = new Set(["payos"]);
 
 const DAY_KEYS = [
   "sunday",
@@ -648,15 +649,9 @@ const bookingService = {
   },
 
   async confirmFixedPlan(userId, payload) {
-    const paymentMethod = String(payload?.paymentMethod || "cash").toLowerCase();
+    const paymentMethod = String(payload?.paymentMethod || "payos").toLowerCase();
     if (!ALLOWED_PAYMENT.has(paymentMethod)) {
-      const e = new Error("paymentMethod không hợp lệ");
-      e.statusCode = 400;
-      throw e;
-    }
-
-    if (paymentMethod === "payos") {
-      const e = new Error("Flow lịch cố định hiện chưa hỗ trợ PayOS tự động. Vui lòng chọn cash / momo / vnpay.");
+      const e = new Error("paymentMethod không hợp lệ. Flow này chỉ hỗ trợ PayOS.");
       e.statusCode = 400;
       throw e;
     }
@@ -672,6 +667,7 @@ const bookingService = {
 
     try {
       const plan = await buildValidatedFixedPlan(userId, payload, t);
+      const isPayOS = paymentMethod === "payos";
 
       const selectedSlot = plan.slots.find((s) => `${s.start}:00` === selectedStartTime);
       if (!selectedSlot) {
@@ -704,13 +700,42 @@ const bookingService = {
           amount: plan.package.price,
           transactionType: "package_purchase",
           paymentMethod,
-          paymentStatus: "completed",
-          description: `Mua gói + đặt lịch cố định: ${plan.package.name}`,
-          transactionDate: new Date(),
+          paymentStatus: isPayOS ? "pending" : "completed",
+          description: isPayOS
+            ? `Thanh toán gói + lịch cố định (PayOS): ${plan.package.name}`
+            : `Mua gói + đặt lịch cố định: ${plan.package.name}`,
+          ...(isPayOS ? {} : { transactionDate: new Date() }),
           processedBy: userId,
         },
         { transaction: t }
       );
+
+      let payosCheckoutUrl = null;
+      if (isPayOS) {
+        const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
+        const payosResp = await payosService.createPackagePaymentLink({
+          orderCode: tx.id,
+          amount: plan.package.price,
+          description: `Thanh toán gói ${plan.package.name}`,
+          returnUrl: `${frontendBase}/member/bookings?payos=success&orderCode=${encodeURIComponent(tx.id)}`,
+          cancelUrl: `${frontendBase}/member/bookings?payos=cancel&orderCode=${encodeURIComponent(tx.id)}`,
+        });
+        payosCheckoutUrl = payosResp.checkoutUrl || null;
+
+        await tx.update(
+          {
+            metadata: {
+              ...(tx.metadata || {}),
+              payos: {
+                orderCode: payosResp.orderCode,
+                checkoutUrl: payosResp.checkoutUrl,
+                paymentLinkId: payosResp.paymentLinkId,
+              },
+            },
+          },
+          { transaction: t }
+        );
+      }
 
       let expiryDate = null;
       if (plan.package.durationDays && plan.package.durationDays > 0) {
@@ -741,58 +766,56 @@ const bookingService = {
       const startTimeFixed = `${selectedSlot.start}:00`;
       const endTime = `${selectedSlot.end}:00`;
 
-      const created = [];
+      const conflictChecks = await Promise.all(
+        plan.bookingDates.map(async (bookingDate) => {
+          const [trainerConflict, memberConflict] = await Promise.all([
+            hasTrainerConflict(
+              plan.trainer.id,
+              plan.package.gymId,
+              bookingDate,
+              startTimeFixed,
+              endTime,
+              t
+            ),
+            hasMemberConflict(userId, bookingDate, startTimeFixed, endTime, t),
+          ]);
 
-      for (const bookingDate of plan.bookingDates) {
-        const trainerConflict = await hasTrainerConflict(
-          plan.trainer.id,
-          plan.package.gymId,
-          bookingDate,
-          startTimeFixed,
-          endTime,
-          t
+          return { bookingDate, trainerConflict, memberConflict };
+        })
+      );
+
+      const firstTrainerConflict = conflictChecks.find((x) => x.trainerConflict);
+      if (firstTrainerConflict) {
+        const e = new Error(
+          `Trainer bị trùng lịch tại ${firstTrainerConflict.bookingDate} ${selectedSlot.start}-${selectedSlot.end}`
         );
-        if (trainerConflict) {
-          const e = new Error(
-            `Trainer bị trùng lịch tại ${bookingDate} ${selectedSlot.start}-${selectedSlot.end}`
-          );
-          e.statusCode = 409;
-          throw e;
-        }
-
-        const memberConflict = await hasMemberConflict(
-          userId,
-          bookingDate,
-          startTimeFixed,
-          endTime,
-          t
-        );
-        if (memberConflict) {
-          const e = new Error(
-            `Bạn đang có lịch trùng tại ${bookingDate} ${selectedSlot.start}-${selectedSlot.end}`
-          );
-          e.statusCode = 409;
-          throw e;
-        }
-
-        const row = await db.Booking.create(
-          {
-            memberId: member.id,
-            trainerId: plan.trainer.id,
-            gymId: plan.package.gymId,
-            packageId: plan.package.id,
-            packageActivationId: activation.id,
-            bookingDate,
-            startTime: startTimeFixed,
-            endTime,
-            status: "confirmed",
-            createdBy: userId,
-          },
-          { transaction: t }
-        );
-
-        created.push(row);
+        e.statusCode = 409;
+        throw e;
       }
+
+      const firstMemberConflict = conflictChecks.find((x) => x.memberConflict);
+      if (firstMemberConflict) {
+        const e = new Error(
+          `Bạn đang có lịch trùng tại ${firstMemberConflict.bookingDate} ${selectedSlot.start}-${selectedSlot.end}`
+        );
+        e.statusCode = 409;
+        throw e;
+      }
+
+      const bookingPayload = plan.bookingDates.map((bookingDate) => ({
+        memberId: member.id,
+        trainerId: plan.trainer.id,
+        gymId: plan.package.gymId,
+        packageId: plan.package.id,
+        packageActivationId: activation.id,
+        bookingDate,
+        startTime: startTimeFixed,
+        endTime,
+        status: "confirmed",
+        createdBy: userId,
+      }));
+
+      const created = await db.Booking.bulkCreate(bookingPayload, { transaction: t });
 
       await syncActivationCounters(activation, t);
 
@@ -807,6 +830,8 @@ const bookingService = {
           startTime: toHHMM(b.startTime),
           endTime: toHHMM(b.endTime),
         })),
+        paymentProvider: isPayOS ? "payos" : null,
+        paymentUrl: isPayOS ? payosCheckoutUrl : null,
       };
     } catch (e) {
       await t.rollback();
