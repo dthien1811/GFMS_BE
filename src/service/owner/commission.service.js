@@ -424,6 +424,19 @@ const ownerCommissionService = {
       }
     );
 
+    // Cộng số dư rút được cho PT ngay khi chốt kỳ (không chờ bước "Chi trả")
+    for (const item of items) {
+      const trainer = await Trainer.findByPk(item.trainerId);
+      if (trainer) {
+        const current = Number(trainer.pendingCommission || 0);
+        await trainer.update({
+          pendingCommission: current + Number(item.totalAmount || 0),
+          lastPayoutDate: new Date(),
+        });
+      }
+    }
+    await period.update({ walletCreditedAt: new Date() });
+
     return PayrollPeriod.findByPk(period.id, {
       include: [
         { model: Gym, attributes: ["id", "name"], required: false },
@@ -454,6 +467,8 @@ const ownerCommissionService = {
 
     await ensureGymOwned(ownerUserId, gymId);
 
+    const gym = await ensureGymOwned(ownerUserId, gymId);
+
     const rows = await Commission.findAll({
       where: {
         gymId: Number(gymId),
@@ -463,13 +478,48 @@ const ownerCommissionService = {
           [Op.lte]: new Date(endDate),
         },
       },
-      attributes: ["commissionAmount"],
+      attributes: ["trainerId", "commissionAmount"],
+      include: [
+        {
+          model: Trainer,
+          attributes: ["id"],
+          required: true,
+          include: [{ model: User, attributes: ["username", "email"], required: false }],
+        },
+      ],
     });
 
     const totalSessions = rows.length;
     const totalAmount = rows.reduce((sum, r) => sum + Number(r.commissionAmount || 0), 0);
 
-    return { totalSessions, totalAmount };
+    const byTrainer = new Map();
+    for (const r of rows) {
+      const tid = r.trainerId;
+      const prev = byTrainer.get(tid) || {
+        trainerId: tid,
+        username: r.Trainer?.User?.username || `PT #${tid}`,
+        email: r.Trainer?.User?.email || null,
+        sessions: 0,
+        amount: 0,
+      };
+      prev.sessions += 1;
+      prev.amount += Number(r.commissionAmount || 0);
+      byTrainer.set(tid, prev);
+    }
+
+    const trainers = Array.from(byTrainer.values()).sort((a, b) =>
+      String(a.username || "").localeCompare(String(b.username || ""), "vi")
+    );
+
+    return {
+      totalSessions,
+      totalAmount,
+      gymId: Number(gymId),
+      gymName: gym.name || "",
+      startDate,
+      endDate,
+      trainers,
+    };
   },
 
   async payPayrollPeriod(ownerUserId, periodId) {
@@ -492,14 +542,17 @@ const ownerCommissionService = {
     }
 
     const items = period.items || [];
-    for (const item of items) {
-      const trainer = await Trainer.findByPk(item.trainerId);
-      if (trainer) {
-        const current = Number(trainer.pendingCommission || 0);
-        await trainer.update({
-          pendingCommission: current + Number(item.totalAmount || 0),
-          lastPayoutDate: new Date(),
-        });
+    // Kỳ chốt trước bản sửa: chưa có walletCreditedAt → vẫn cộng số dư ở đây (một lần)
+    if (!period.walletCreditedAt) {
+      for (const item of items) {
+        const trainer = await Trainer.findByPk(item.trainerId);
+        if (trainer) {
+          const current = Number(trainer.pendingCommission || 0);
+          await trainer.update({
+            pendingCommission: current + Number(item.totalAmount || 0),
+            lastPayoutDate: new Date(),
+          });
+        }
       }
     }
 
@@ -508,7 +561,11 @@ const ownerCommissionService = {
       { where: { payrollPeriodId: period.id } }
     );
 
-    await period.update({ status: "paid", paidAt: new Date() });
+    await period.update({
+      status: "paid",
+      paidAt: new Date(),
+      ...(period.walletCreditedAt ? {} : { walletCreditedAt: new Date() }),
+    });
 
     return PayrollPeriod.findByPk(period.id, {
       include: [

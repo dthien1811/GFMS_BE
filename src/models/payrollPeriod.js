@@ -21,6 +21,8 @@ module.exports = (sequelize, DataTypes) => {
       totalAmount: DataTypes.DECIMAL,
       createdBy: DataTypes.INTEGER,
       paidAt: DataTypes.DATE,
+      /** Đã cộng vào trainer.pendingCommission (khi chốt kỳ mới; kỳ cũ null = cộng lúc Chi trả) */
+      walletCreditedAt: DataTypes.DATE,
       notes: DataTypes.TEXT,
     },
     {

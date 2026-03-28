@@ -2,7 +2,7 @@ import db from "../../models";
 import { Op } from "sequelize";
 import ExcelJS from "exceljs";
 
-const { Withdrawal, Trainer, User, Gym } = db;
+const { Withdrawal, Trainer, User, Gym, sequelize } = db;
 
 const parsePaging = (query) => {
   const page = Math.max(1, Number(query.page) || 1);
@@ -18,6 +18,14 @@ const ensureOwnerGymIds = async (ownerUserId) => {
     raw: true,
   });
   return gyms.map((g) => g.id);
+};
+
+const mergeOwnerApprovalNote = (existingNotes, ownerNote) => {
+  const o = String(ownerNote || "").trim();
+  const e = String(existingNotes || "").trim();
+  if (!o) return e || null;
+  if (!e) return o;
+  return `${e}\n\n${o}`;
 };
 
 const ownerWithdrawalService = {
@@ -122,7 +130,7 @@ const ownerWithdrawalService = {
     return { buffer, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename: "withdrawals.xlsx" };
   },
 
-  async approveWithdrawal(ownerUserId, id) {
+  async approveWithdrawal(ownerUserId, id, ownerNote = "") {
     const gymIds = await ensureOwnerGymIds(ownerUserId);
     const withdrawal = await Withdrawal.findByPk(id, {
       include: [{ model: Trainer, attributes: ["id", "gymId", "pendingCommission"] }],
@@ -137,53 +145,97 @@ const ownerWithdrawalService = {
       err.statusCode = 400;
       throw err;
     }
-
-    const pending = Number(withdrawal.Trainer.pendingCommission || 0);
-    const amount = Number(withdrawal.amount || 0);
-    if (amount > pending) {
-      const err = new Error("Số tiền vượt quá hoa hồng đang chờ.");
+    if (withdrawal.status !== "pending") {
+      const err = new Error("Yêu cầu không ở trạng thái chờ duyệt.");
       err.statusCode = 400;
       throw err;
     }
 
-    await withdrawal.update({
+    const amount = Number(withdrawal.amount || 0);
+    const held = Boolean(withdrawal.balanceHeld);
+
+    if (!held) {
+      const pending = Number(withdrawal.Trainer.pendingCommission || 0);
+      if (amount > pending) {
+        const err = new Error("Số tiền vượt quá hoa hồng đang chờ.");
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    const updatePayload = {
       status: "completed",
       processedBy: ownerUserId,
       processedDate: new Date(),
-    });
+    };
+    const mergedNotes = mergeOwnerApprovalNote(withdrawal.notes, ownerNote);
+    if (mergedNotes != null) {
+      updatePayload.notes = mergedNotes;
+    }
+    await withdrawal.update(updatePayload);
 
-    await withdrawal.Trainer.update({
-      pendingCommission: Math.max(0, pending - amount),
-      lastPayoutDate: new Date(),
-    });
+    if (!held) {
+      const pending = Number(withdrawal.Trainer.pendingCommission || 0);
+      await withdrawal.Trainer.update({
+        pendingCommission: Math.max(0, pending - amount),
+        lastPayoutDate: new Date(),
+      });
+    } else {
+      await withdrawal.Trainer.update({
+        lastPayoutDate: new Date(),
+      });
+    }
 
     return withdrawal;
   },
 
   async rejectWithdrawal(ownerUserId, id, reason = "") {
     const gymIds = await ensureOwnerGymIds(ownerUserId);
-    const withdrawal = await Withdrawal.findByPk(id, {
-      include: [{ model: Trainer, attributes: ["id", "gymId"] }],
-    });
-    if (!withdrawal || !withdrawal.Trainer || !gymIds.includes(withdrawal.Trainer.gymId)) {
-      const err = new Error("Không tìm thấy yêu cầu hoặc bạn không có quyền.");
-      err.statusCode = 404;
-      throw err;
-    }
-    if (withdrawal.status === "completed") {
-      const err = new Error("Yêu cầu đã được chi trả.");
-      err.statusCode = 400;
-      throw err;
-    }
+    return sequelize.transaction(async (t) => {
+      const withdrawal = await Withdrawal.findByPk(id, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+        include: [{ model: Trainer, attributes: ["id", "gymId", "pendingCommission"] }],
+      });
+      if (!withdrawal || !withdrawal.Trainer || !gymIds.includes(withdrawal.Trainer.gymId)) {
+        const err = new Error("Không tìm thấy yêu cầu hoặc bạn không có quyền.");
+        err.statusCode = 404;
+        throw err;
+      }
+      if (withdrawal.status === "completed") {
+        const err = new Error("Yêu cầu đã được chi trả.");
+        err.statusCode = 400;
+        throw err;
+      }
+      if (withdrawal.status !== "pending") {
+        const err = new Error("Yêu cầu không ở trạng thái chờ duyệt.");
+        err.statusCode = 400;
+        throw err;
+      }
 
-    await withdrawal.update({
-      status: "rejected",
-      processedBy: ownerUserId,
-      processedDate: new Date(),
-      notes: reason || withdrawal.notes,
-    });
+      const amount = Number(withdrawal.amount || 0);
+      if (withdrawal.balanceHeld) {
+        const tr = await Trainer.findByPk(withdrawal.Trainer.id, {
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+          attributes: ["id", "pendingCommission"],
+        });
+        const pending = Number(tr?.pendingCommission || 0);
+        await tr.update({ pendingCommission: pending + amount }, { transaction: t });
+      }
 
-    return withdrawal;
+      await withdrawal.update(
+        {
+          status: "rejected",
+          processedBy: ownerUserId,
+          processedDate: new Date(),
+          notes: reason || withdrawal.notes,
+        },
+        { transaction: t }
+      );
+
+      return withdrawal;
+    });
   },
 };
 
