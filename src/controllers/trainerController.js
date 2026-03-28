@@ -1,6 +1,8 @@
 // be/src/controllers/trainerController.js
 const db = require('../models');
 const trainerService = require("../service/trainerService");
+const cloudinaryService = require("../service/cloudinaryService");
+const multer = require("multer");
 
 
 // TỰ ĐỘNG BẮT ĐÚNG TÊN MODEL (Trainer hoặc trainer)
@@ -15,9 +17,65 @@ const GymModel = db.Gym || db.gym;
 const PackageActivationModel = db.PackageActivation || db.packageactivation;
 const PackageModel = db.Package || db.package;
 const WithdrawalModel = db.Withdrawal || db.withdrawal;
+const ReviewModel = db.Review || db.review;
+const MemberModel = db.Member || db.member;
+const fs = require("fs");
+const path = require("path");
 const ExcelJS = require("exceljs");
 const socketModule = require("../socket");
 const { emitToUser, emitToTrainer } = socketModule.default || socketModule;
+const uploadVideo = multer({
+  storage: multer.memoryStorage(),
+  // memoryStorage => tăng max fileSize sẽ tốn RAM hơn.
+  // 200MB đủ cho hầu hết demo video trong đồ án.
+  limits: { fileSize: 200 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = String(file?.mimetype || "").startsWith("video/");
+    cb(ok ? null : new Error("Chỉ chấp nhận file video"), ok);
+  },
+});
+const uploadImage = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = String(file?.mimetype || "").startsWith("image/");
+    cb(ok ? null : new Error("Chỉ chấp nhận file ảnh"), ok);
+  },
+});
+const uploadTrainingDoc = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 30 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const mime = String(file?.mimetype || "").toLowerCase();
+    const ok = [
+      "application/pdf",
+      "application/msword",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ].includes(mime);
+    cb(ok ? null : new Error("Chỉ chấp nhận PDF/DOC/DOCX"), ok);
+  },
+});
+
+const getBackendBaseURL = () => {
+  const hostname = process.env.HOSTNAME || "localhost";
+  const port = process.env.PORT || 8080;
+  return `http://${hostname}:${port}`;
+};
+
+const saveBufferToUploads = (buffer, { subdir, filename }) => {
+  const safe = String(filename || "file")
+    .replace(/[^a-zA-Z0-9._-]/g, "_")
+    .slice(0, 120);
+  const finalName = `${Date.now()}_${safe}`;
+
+  const dir = path.join(process.cwd(), "uploads", subdir);
+  fs.mkdirSync(dir, { recursive: true });
+
+  const filePath = path.join(dir, finalName);
+  fs.writeFileSync(filePath, buffer);
+
+  return `${getBackendBaseURL()}/uploads/${subdir}/${finalName}`;
+};
 
 const mustHaveModel = (Model, name) => {
   if (!Model) {
@@ -695,6 +753,375 @@ exports.exportMyCommissions = async (req, res) => {
     return res.status(200).send(buffer);
   } catch (error) {
     console.error('[exportMyCommissions] Error:', error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+// ===================== UC-TR-010: DEMO VIDEOS =====================
+exports.uploadDemoVideoMiddleware = uploadVideo.single("file");
+exports.uploadProfileImageMiddleware = uploadImage.single("file");
+exports.uploadTrainingPlanMiddleware = uploadTrainingDoc.single("file");
+
+exports.uploadMyProfileImage = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "Vui lòng chọn file ảnh" });
+    }
+
+    const imageType = String(req.body?.imageType || "avatar").toLowerCase();
+    if (!["avatar", "cover", "certificate"].includes(imageType)) {
+      return res.status(400).json({ message: "imageType phải là avatar, cover hoặc certificate" });
+    }
+
+    const trainer = await getTrainerByUserId(req.user?.id);
+    let uploaded;
+    try {
+      uploaded = await cloudinaryService.uploadImageBuffer(req.file.buffer, {
+        folder: "gfms/trainers/profile",
+        filename: req.file.originalname,
+      });
+    } catch (err) {
+      // Fallback local: chỉ dùng khi Cloudinary chưa cấu hình
+      const msg = String(err?.message || "");
+      const missingCloudinary = msg.includes("Cloudinary chưa được cấu hình") || msg.includes("CLOUDINARY_");
+      if (!missingCloudinary) throw err;
+
+      const url = saveBufferToUploads(req.file.buffer, {
+        subdir:
+          imageType === "avatar"
+            ? "pt-avatars"
+            : imageType === "cover"
+              ? "pt-covers"
+              : "pt-certificates",
+        filename: req.file.originalname,
+      });
+
+      uploaded = { secure_url: url, public_id: null };
+    }
+
+    const trainerRow = await TrainerModel.findByPk(trainer.id);
+    const links = trainerRow?.socialLinks || {};
+    const profileImages = links.profileImages || {};
+    const currentCertificates = Array.isArray(links?.certificates) ? links.certificates : [];
+    const nextProfileImages = {
+      ...profileImages,
+      ...(imageType === "avatar"
+        ? { avatarUrl: uploaded.secure_url }
+        : imageType === "cover"
+          ? { coverImageUrl: uploaded.secure_url }
+          : { certificateUrl: uploaded.secure_url }),
+    };
+
+    const certificateName =
+      String(req.body?.certificateName || "").trim() ||
+      String(req.file?.originalname || "").trim() ||
+      "Certificate";
+    const nextCertificates =
+      imageType === "certificate"
+        ? [
+            {
+              id: `cert_${Date.now()}`,
+              name: certificateName,
+              url: uploaded.secure_url,
+              publicId: uploaded.public_id || null,
+              uploadedAt: new Date().toISOString(),
+            },
+            ...currentCertificates,
+          ]
+        : currentCertificates;
+
+    trainerRow.socialLinks = {
+      ...links,
+      profileImages: nextProfileImages,
+      certificates: nextCertificates,
+    };
+    await trainerRow.save();
+
+    return res.status(200).json({
+      data: {
+        imageType,
+        url: uploaded.secure_url,
+        publicId: uploaded.public_id,
+      },
+      message: "Upload ảnh thành công",
+    });
+  } catch (error) {
+    console.error("[uploadMyProfileImage] Error:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message || "Upload ảnh thất bại" });
+  }
+};
+
+exports.getMyDemoVideos = async (req, res) => {
+  try {
+    const trainer = await getTrainerByUserId(req.user?.id);
+    const fullTrainer = await TrainerModel.findByPk(trainer.id, {
+      attributes: ["id", "socialLinks"],
+      raw: true,
+    });
+    const socialLinks = fullTrainer?.socialLinks || {};
+    const demoVideos = Array.isArray(socialLinks?.demoVideos) ? socialLinks.demoVideos : [];
+    return res.status(200).json({ data: demoVideos });
+  } catch (error) {
+    console.error("[getMyDemoVideos] Error:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+exports.getMyTrainingPlans = async (req, res) => {
+  try {
+    const trainer = await getTrainerByUserId(req.user?.id);
+    const fullTrainer = await TrainerModel.findByPk(trainer.id, {
+      attributes: ["id", "socialLinks"],
+      raw: true,
+    });
+    const socialLinks = fullTrainer?.socialLinks || {};
+    const trainingPlans = Array.isArray(socialLinks?.trainingPlans) ? socialLinks.trainingPlans : [];
+    return res.status(200).json({ data: trainingPlans });
+  } catch (error) {
+    console.error("[getMyTrainingPlans] Error:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+exports.uploadMyDemoVideo = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "Vui lòng chọn file video" });
+    }
+    const trainer = await getTrainerByUserId(req.user?.id);
+    const trainerRow = await TrainerModel.findByPk(trainer.id);
+    if (!trainerRow) return res.status(404).json({ message: "Trainer not found" });
+
+    let uploaded;
+    try {
+      uploaded = await cloudinaryService.uploadVideoBuffer(req.file.buffer, {
+        folder: "gfms/trainers/demo-videos",
+        filename: req.file.originalname,
+      });
+    } catch (err) {
+      // Fallback local: chỉ dùng khi Cloudinary chưa được cấu hình
+      const msg = String(err?.message || "");
+      const missingCloudinary = msg.includes("Cloudinary chưa được cấu hình") || msg.includes("CLOUDINARY_");
+      if (!missingCloudinary) throw err;
+
+      const url = saveBufferToUploads(req.file.buffer, {
+        subdir: "pt-demo-videos",
+        filename: req.file.originalname,
+      });
+
+      uploaded = {
+        secure_url: url,
+        public_id: null,
+        // để FE hiển thị format bytes thay vì N/A
+        bytes: req.file?.size,
+      };
+    }
+
+    const currentLinks = trainerRow.socialLinks || {};
+    const currentVideos = Array.isArray(currentLinks.demoVideos) ? currentLinks.demoVideos : [];
+    const item = {
+      id: `vid_${Date.now()}`,
+      title: String(req.body?.title || "").trim() || req.file.originalname,
+      url: uploaded.secure_url,
+      publicId: uploaded.public_id,
+      duration: uploaded.duration || null,
+      format: uploaded.format || null,
+      bytes: uploaded.bytes || null,
+      uploadedAt: new Date().toISOString(),
+    };
+
+    trainerRow.socialLinks = {
+      ...currentLinks,
+      demoVideos: [item, ...currentVideos],
+    };
+    await trainerRow.save();
+
+    return res.status(201).json({ data: item, message: "Upload video demo thành công" });
+  } catch (error) {
+    console.error("[uploadMyDemoVideo] Error:", error);
+    return res.status(500).json({ message: error.message || "Upload thất bại" });
+  }
+};
+
+exports.uploadMyTrainingPlan = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: "Vui lòng chọn file kế hoạch" });
+    }
+    const trainer = await getTrainerByUserId(req.user?.id);
+    const trainerRow = await TrainerModel.findByPk(trainer.id);
+    if (!trainerRow) return res.status(404).json({ message: "Trainer not found" });
+
+    let uploaded;
+    try {
+      uploaded = await cloudinaryService.uploadRawBuffer(req.file.buffer, {
+        folder: "gfms/trainers/training-plans",
+        filename: req.file.originalname,
+      });
+    } catch (err) {
+      const msg = String(err?.message || "");
+      const missingCloudinary = msg.includes("Cloudinary chưa được cấu hình") || msg.includes("CLOUDINARY_");
+      if (!missingCloudinary) throw err;
+
+      const url = saveBufferToUploads(req.file.buffer, {
+        subdir: "pt-training-plans",
+        filename: req.file.originalname,
+      });
+
+      uploaded = { secure_url: url, public_id: null, bytes: req.file?.size, format: null };
+    }
+
+    const currentLinks = trainerRow.socialLinks || {};
+    const currentPlans = Array.isArray(currentLinks.trainingPlans) ? currentLinks.trainingPlans : [];
+    const item = {
+      id: `plan_${Date.now()}`,
+      title: String(req.body?.title || "").trim() || req.file.originalname,
+      url: uploaded.secure_url,
+      publicId: uploaded.public_id,
+      bytes: uploaded.bytes || req.file?.size || null,
+      format: uploaded.format || null,
+      mimeType: req.file?.mimetype || null,
+      uploadedAt: new Date().toISOString(),
+    };
+
+    trainerRow.socialLinks = {
+      ...currentLinks,
+      trainingPlans: [item, ...currentPlans],
+    };
+    await trainerRow.save();
+
+    return res.status(201).json({ data: item, message: "Upload file kế hoạch thành công" });
+  } catch (error) {
+    console.error("[uploadMyTrainingPlan] Error:", error);
+    return res.status(500).json({ message: error.message || "Upload thất bại" });
+  }
+};
+
+exports.deleteMyDemoVideo = async (req, res) => {
+  try {
+    const videoId = String(req.params?.videoId || "");
+    if (!videoId) return res.status(400).json({ message: "videoId is required" });
+
+    const trainer = await getTrainerByUserId(req.user?.id);
+    const trainerRow = await TrainerModel.findByPk(trainer.id);
+    if (!trainerRow) return res.status(404).json({ message: "Trainer not found" });
+
+    const currentLinks = trainerRow.socialLinks || {};
+    const currentVideos = Array.isArray(currentLinks.demoVideos) ? currentLinks.demoVideos : [];
+    const target = currentVideos.find((x) => String(x?.id) === videoId);
+    if (!target) return res.status(404).json({ message: "Video không tồn tại" });
+
+    if (target.publicId) {
+      try {
+        await cloudinaryService.destroy(target.publicId, "video");
+      } catch (e) {
+        // ignore cloudinary delete error and still remove local reference
+      }
+    }
+
+    trainerRow.socialLinks = {
+      ...currentLinks,
+      demoVideos: currentVideos.filter((x) => String(x?.id) !== videoId),
+    };
+    await trainerRow.save();
+    return res.status(200).json({ message: "Đã xóa video demo" });
+  } catch (error) {
+    console.error("[deleteMyDemoVideo] Error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+exports.deleteMyTrainingPlan = async (req, res) => {
+  try {
+    const planId = String(req.params?.planId || "");
+    if (!planId) return res.status(400).json({ message: "planId is required" });
+
+    const trainer = await getTrainerByUserId(req.user?.id);
+    const trainerRow = await TrainerModel.findByPk(trainer.id);
+    if (!trainerRow) return res.status(404).json({ message: "Trainer not found" });
+
+    const currentLinks = trainerRow.socialLinks || {};
+    const currentPlans = Array.isArray(currentLinks.trainingPlans) ? currentLinks.trainingPlans : [];
+    const target = currentPlans.find((x) => String(x?.id) === planId);
+    if (!target) return res.status(404).json({ message: "File kế hoạch không tồn tại" });
+
+    if (target.publicId) {
+      try {
+        await cloudinaryService.destroy(target.publicId, "raw");
+      } catch (e) {
+        // ignore cloud delete
+      }
+    }
+
+    trainerRow.socialLinks = {
+      ...currentLinks,
+      trainingPlans: currentPlans.filter((x) => String(x?.id) !== planId),
+    };
+    await trainerRow.save();
+    return res.status(200).json({ message: "Đã xóa file kế hoạch" });
+  } catch (error) {
+    console.error("[deleteMyTrainingPlan] Error:", error);
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+// ===================== UC-TR-011 + UC-TR-012: REVIEWS =====================
+exports.getMyReviews = async (req, res) => {
+  try {
+    mustHaveModel(ReviewModel, "Review");
+    const trainer = await getTrainerByUserId(req.user?.id);
+
+    const where = { trainerId: trainer.id };
+    const rating = Number(req.query?.rating);
+    if (rating >= 1 && rating <= 5) where.rating = rating;
+
+    const rows = await ReviewModel.findAll({
+      where,
+      include: [
+        {
+          model: MemberModel,
+          required: false,
+          include: [{ model: UserModel, attributes: ["id", "username", "email"], required: false }],
+        },
+        {
+          model: db.Booking || db.booking,
+          required: false,
+          attributes: ["id", "bookingDate", "startTime", "endTime", "status"],
+        },
+      ],
+      order: [["createdAt", "DESC"]],
+    });
+
+    return res.status(200).json({ data: rows });
+  } catch (error) {
+    console.error("[getMyReviews] Error:", error);
+    return res.status(error.statusCode || 500).json({ message: error.message });
+  }
+};
+
+exports.replyReview = async (req, res) => {
+  try {
+    mustHaveModel(ReviewModel, "Review");
+    const trainer = await getTrainerByUserId(req.user?.id);
+    const reviewId = Number(req.params?.id);
+    const trainerReply = String(req.body?.reply || "").trim();
+
+    if (!reviewId) return res.status(400).json({ message: "review id is required" });
+    if (!trainerReply) return res.status(400).json({ message: "reply is required" });
+    if (trainerReply.length > 2000) return res.status(400).json({ message: "reply is too long" });
+
+    const row = await ReviewModel.findOne({
+      where: { id: reviewId, trainerId: trainer.id },
+    });
+    if (!row) return res.status(404).json({ message: "Không tìm thấy review" });
+
+    row.trainerReply = trainerReply;
+    row.repliedAt = new Date();
+    await row.save();
+
+    return res.status(200).json({ data: row, message: "Đã phản hồi đánh giá" });
+  } catch (error) {
+    console.error("[replyReview] Error:", error);
     return res.status(error.statusCode || 500).json({ message: error.message });
   }
 };
