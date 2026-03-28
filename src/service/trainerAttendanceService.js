@@ -290,7 +290,8 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
     });
   }
 
-  booking.status = "in_progress";
+  // Điểm danh "có mặt" = buổi tập đã kết thúc góc nhìn PT (không giữ in_progress)
+  booking.status = "completed";
   await booking.save();
 
   try {
