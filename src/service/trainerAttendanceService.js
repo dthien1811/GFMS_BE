@@ -31,7 +31,9 @@ const ensureAttendanceEditable = async (bookingId) => {
 
   const existing = await Commission.findOne({ where: { bookingId } });
   if (existing && existing.status && existing.status !== "pending") {
-    const err = new Error("Buổi này đã được chốt/chi trả, không thể chỉnh sửa điểm danh.");
+    const err = new Error(
+      "Buổi tập này đã được chốt kỳ lương hoặc đã chi trả cho PT. Không thể thay đổi điểm danh."
+    );
     err.statusCode = 400;
     throw err;
   }
@@ -232,6 +234,22 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
     trainerAttendances = [];
   }
 
+  const Commission = db.Commission || db.commission;
+  let commissionByBookingId = new Map();
+  try {
+    if (Commission && bookingIds.length) {
+      const commRows = await Commission.findAll({
+        where: { bookingId: bookingIds },
+        attributes: ["bookingId", "status"],
+      });
+      commissionByBookingId = new Map(
+        commRows.map((c) => [c.bookingId, c.status])
+      );
+    }
+  } catch (e) {
+    commissionByBookingId = new Map();
+  }
+
   const attByBookingId = new Map();
   for (const a of trainerAttendances) {
     attByBookingId.set(a.bookingId, a.toJSON ? a.toJSON() : a);
@@ -242,6 +260,7 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
     return {
       ...plainBooking,
       trainerAttendance: attByBookingId.get(b.id) || null,
+      commissionStatus: commissionByBookingId.get(b.id) || null,
     };
   });
 

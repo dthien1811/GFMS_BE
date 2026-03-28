@@ -31,7 +31,8 @@ const getTrainerByUserId = async (userId) => {
   mustHaveModel(TrainerModel, 'Trainer');
   const trainer = await TrainerModel.findOne({
     where: { userId },
-    attributes: ['id', 'userId', 'gymId'],
+    // pendingCommission cần cho ví PT + validate rút tiền (trước đây thiếu → số dư luôn 0)
+    attributes: ['id', 'userId', 'gymId', 'pendingCommission'],
   });
   if (!trainer) {
     const err = new Error('Trainer profile not found');
@@ -583,15 +584,39 @@ exports.requestWithdrawal = async (req, res) => {
       return res.status(400).json({ message: "Số tiền vượt quá phần hoa hồng đang chờ" });
     }
 
-    const row = await WithdrawalModel.create({
-      trainerId: trainer.id,
-      amount,
-      withdrawalMethod,
-      accountInfo: JSON.stringify(accountInfo || {}),
-      status: "pending",
-      processedBy: null,
-      processedDate: null,
-      notes,
+    const row = await db.sequelize.transaction(async (t) => {
+      const tr = await TrainerModel.findByPk(trainer.id, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+        attributes: ["id", "pendingCommission", "gymId"],
+      });
+      if (!tr) {
+        const err = new Error("Trainer profile not found");
+        err.statusCode = 404;
+        throw err;
+      }
+      const pending = Number(tr.pendingCommission || 0);
+      if (Number(amount) > pending) {
+        const err = new Error("Số tiền vượt quá phần hoa hồng đang chờ");
+        err.statusCode = 400;
+        throw err;
+      }
+      const w = await WithdrawalModel.create(
+        {
+          trainerId: tr.id,
+          amount,
+          withdrawalMethod,
+          accountInfo: JSON.stringify(accountInfo || {}),
+          status: "pending",
+          processedBy: null,
+          processedDate: null,
+          notes,
+          balanceHeld: true,
+        },
+        { transaction: t }
+      );
+      await tr.update({ pendingCommission: Math.max(0, pending - Number(amount)) }, { transaction: t });
+      return w;
     });
 
     try {

@@ -15,7 +15,9 @@ module.exports = (sequelize, DataTypes) => {
     status: DataTypes.STRING,
     processedBy: DataTypes.INTEGER,
     processedDate: DataTypes.DATE,
-    notes: DataTypes.TEXT
+    notes: DataTypes.TEXT,
+    /** PT gửi yêu cầu: đã trừ pendingCommission; false = yêu cầu cũ (trừ khi owner duyệt) */
+    balanceHeld: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
   }, {
     sequelize,
     modelName: 'Withdrawal',
