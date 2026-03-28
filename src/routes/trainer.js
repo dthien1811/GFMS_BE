@@ -15,6 +15,27 @@ router.get('/me/commissions/export', trainerController.exportMyCommissions);
 router.get('/me/withdrawals', trainerController.getMyWithdrawals);
 router.get('/me/wallet-summary', trainerController.getMyWalletSummary);
 router.post('/me/withdrawals', trainerController.requestWithdrawal);
+router.post(
+  "/me/profile-image/upload",
+  trainerController.uploadProfileImageMiddleware,
+  trainerController.uploadMyProfileImage
+);
+router.get("/me/demo-videos", trainerController.getMyDemoVideos);
+router.get("/me/training-plans", trainerController.getMyTrainingPlans);
+router.post(
+  "/me/demo-videos/upload",
+  trainerController.uploadDemoVideoMiddleware,
+  trainerController.uploadMyDemoVideo
+);
+router.post(
+  "/me/training-plans/upload",
+  trainerController.uploadTrainingPlanMiddleware,
+  trainerController.uploadMyTrainingPlan
+);
+router.delete("/me/demo-videos/:videoId", trainerController.deleteMyDemoVideo);
+router.delete("/me/training-plans/:planId", trainerController.deleteMyTrainingPlan);
+router.get("/me/reviews", trainerController.getMyReviews);
+router.post("/reviews/:id/reply", trainerController.replyReview);
 // router.get('/me/bookings', trainerController.getTrainerBookings);
 
 // Endpoint: Xem danh sách PT

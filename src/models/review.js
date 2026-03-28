@@ -14,6 +14,8 @@ module.exports = (sequelize, DataTypes) => {
     bookingId: DataTypes.INTEGER,
     rating: { type: DataTypes.INTEGER, validate: { min: 1, max: 5 } },
     comment: DataTypes.TEXT,
+    trainerReply: DataTypes.TEXT,
+    repliedAt: DataTypes.DATE,
     status: { 
       type: DataTypes.ENUM('active', 'hidden'), 
       defaultValue: 'active' 
