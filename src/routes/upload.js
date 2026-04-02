@@ -26,16 +26,39 @@ const upload = multer({
 
 router.use(jwtAction.checkUserJWT);
 
+const pickUploadedFile = (req) => {
+  if (req.file) return req.file;
+
+  if (Array.isArray(req.files) && req.files.length > 0) {
+    return req.files[0];
+  }
+
+  if (req.files && typeof req.files === "object") {
+    const candidates = [
+      ...(Array.isArray(req.files.file) ? req.files.file : []),
+      ...(Array.isArray(req.files.image) ? req.files.image : []),
+      ...(Array.isArray(req.files.images) ? req.files.images : []),
+    ];
+    if (candidates.length > 0) return candidates[0];
+  }
+
+  return null;
+};
+
 // ===== GYM IMAGE =====
-router.post("/gym-image", upload.single("file"), async (req, res) => {
+router.post("/gym-image", upload.any(), async (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "Không có file" });
+    const uploadedFile = pickUploadedFile(req);
+
+    if (!uploadedFile) {
+      return res.status(400).json({
+        error: "Không có file. Hãy gửi multipart field: file hoặc image",
+      });
     }
 
-    const result = await cloudinaryService.uploadImageBuffer(req.file.buffer, {
+    const result = await cloudinaryService.uploadImageBuffer(uploadedFile.buffer, {
       folder: "gfms/gyms",
-      filename: req.file.originalname,
+      filename: uploadedFile.originalname,
     });
 
     return res.status(200).json({
@@ -49,7 +72,7 @@ router.post("/gym-image", upload.single("file"), async (req, res) => {
   } catch (e) {
     console.error("UPLOAD /gym-image ERROR:", e);
     return res.status(500).json({
-      error: e?.message || "Upload failed",
+      error: e?.message || "Upload gym image failed",
     });
   }
 });
