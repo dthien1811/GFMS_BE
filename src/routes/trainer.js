@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const trainerController = require('../controllers/trainerController');
+const activationMaterialController = require('../controllers/activationMaterial.controller');
 const trainerRequestController = require("../controllers/trainerRequestController");
 const trainerAttendanceController = require("../controllers/trainerAttendanceController");
 const { checkUserJWT } = require('../middleware/JWTAction');
@@ -34,6 +35,10 @@ router.post(
 );
 router.delete("/me/demo-videos/:videoId", trainerController.deleteMyDemoVideo);
 router.delete("/me/training-plans/:planId", trainerController.deleteMyTrainingPlan);
+router.get("/me/eligible-activations", activationMaterialController.listEligibleActivations);
+router.get("/me/activation-materials", activationMaterialController.listForTrainer);
+router.post("/me/activation-materials", activationMaterialController.sendMaterial);
+router.delete("/me/activation-materials/:id", activationMaterialController.deleteMaterial);
 router.get("/me/reviews", trainerController.getMyReviews);
 router.post("/reviews/:id/reply", trainerController.replyReview);
 // router.get('/me/bookings', trainerController.getTrainerBookings);
@@ -75,5 +80,6 @@ router.patch('/bookings/:id/confirm', trainerController.confirmBooking);
 router.get("/attendance/today", trainerAttendanceController.getToday);
 router.post("/attendance/check-in", trainerAttendanceController.checkIn);
 router.post("/attendance/check-out", trainerAttendanceController.checkOut);
+router.post("/attendance/reset", trainerAttendanceController.reset);
 
 module.exports = router;

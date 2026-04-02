@@ -1,12 +1,14 @@
 import express from "express";
 import { requireGroupName } from "../../middleware/role";
 import memberMyPackageController from "../../controllers/member/myPackages.controller";
+import activationMaterialController from "../../controllers/activationMaterial.controller";
 
 const router = express.Router();
 
 router.use(requireGroupName(["Members", "Member"]));
 
 router.get("/", memberMyPackageController.getMyPackages);
+router.get("/:activationId/materials", activationMaterialController.listForMember);
 router.get("/:activationId", memberMyPackageController.getMyPackageDetail);
 
 // OPTIONAL: nếu bạn không cần thì xoá route + controller + service tương ứng
