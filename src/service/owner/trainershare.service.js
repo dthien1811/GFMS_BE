@@ -354,7 +354,7 @@ const getMyTrainerShareDetail = async (userId, shareId) => {
 };
 
 /**
- * Owner cập nhật trainer share (chỉ khi pending)
+ * Owner cập nhật trainer share (chỉ khi waiting_acceptance)
  */
 const updateMyTrainerShare = async (userId, shareId, data) => {
   const trainerShare = await TrainerShare.findOne({
@@ -370,8 +370,8 @@ const updateMyTrainerShare = async (userId, shareId, data) => {
     throw error;
   }
 
-  // Chỉ cho phép update khi status là pending
-  if (trainerShare.status !== "pending") {
+  // Chỉ cho phép update khi status là waiting_acceptance
+  if (trainerShare.status !== "waiting_acceptance") {
     const error = new Error(`Không thể cập nhật trainer share với status '${trainerShare.status}'`);
     error.statusCode = 400;
     throw error;
@@ -426,7 +426,7 @@ const updateMyTrainerShare = async (userId, shareId, data) => {
 };
 
 /**
- * Owner xóa trainer share (chỉ khi pending)
+ * Owner xóa trainer share (chỉ khi waiting_acceptance)
  */
 const deleteMyTrainerShare = async (userId, shareId) => {
   const trainerShare = await TrainerShare.findOne({
@@ -442,8 +442,8 @@ const deleteMyTrainerShare = async (userId, shareId) => {
     throw error;
   }
 
-  // Chỉ cho phép xóa khi status là pending
-  if (trainerShare.status !== "pending") {
+  // Chỉ cho phép xóa khi status là waiting_acceptance
+  if (trainerShare.status !== "waiting_acceptance") {
     const error = new Error(`Không thể xóa trainer share với status '${trainerShare.status}'`);
     error.statusCode = 400;
     throw error;
@@ -571,8 +571,8 @@ const acceptTrainerShareRequest = async (userId, requestId) => {
     throw error;
   }
 
-  // Cập nhật status -> pending (chờ admin duyệt)
-  request.status = 'pending';
+  request.status = 'approved';
+  request.approvedBy = userId;
   request.acceptedBy = userId;
   request.acceptedAt = new Date();
   await request.save();

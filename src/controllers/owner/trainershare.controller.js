@@ -62,7 +62,7 @@ const ownerTrainerShareController = {
 
   /**
    * PUT /api/owner/trainer-shares/:id
-   * Cập nhật trainer share (chỉ khi pending)
+    * Cập nhật trainer share (chỉ khi waiting_acceptance)
    */
   async updateMyTrainerShare(req, res) {
     try {
@@ -87,7 +87,7 @@ const ownerTrainerShareController = {
 
   /**
    * DELETE /api/owner/trainer-shares/:id
-   * Xóa trainer share (chỉ khi pending)
+    * Xóa trainer share (chỉ khi waiting_acceptance)
    */
   async deleteMyTrainerShare(req, res) {
     try {
