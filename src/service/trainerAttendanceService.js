@@ -37,6 +37,25 @@ const ensureAttendanceEditable = async (bookingId) => {
   }
 };
 
+const assertSessionAllowsUndoAttendance = (booking) => {
+  const raw = booking?.bookingDate;
+  if (!raw) return;
+  const dateStr =
+    typeof raw === "string"
+      ? raw.slice(0, 10)
+      : new Date(raw).toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return;
+  let endPart = String(booking.endTime || "23:59:59");
+  if (/^\d{2}:\d{2}$/.test(endPart)) endPart = `${endPart}:00`;
+  const end = new Date(`${dateStr}T${endPart}`);
+  if (Number.isNaN(end.getTime())) return;
+  if (Date.now() > end.getTime()) {
+    const err = new Error("Buổi tập đã kết thúc, không thể hoàn tác điểm danh.");
+    err.statusCode = 400;
+    throw err;
+  }
+};
+
 // Đồng bộ hoa hồng theo trạng thái điểm danh của 1 booking
 // - Nếu status = present/completed  → đảm bảo có 1 dòng commission (pending)
 // - Nếu status khác (absent, ...)   → xóa commission pending của booking đó
@@ -356,4 +375,45 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   return { booking, attendance };
 };
 
-module.exports = { getMyScheduleForDate, checkIn, checkOut };
+const resetAttendance = async ({ userId, bookingId }) => {
+  const Booking = db.Booking || db.booking;
+  const Attendance = db.Attendance || db.attendance;
+
+  mustHaveModel(Booking, "Booking");
+  mustHaveModel(Attendance, "Attendance");
+
+  const trainer = await getTrainerByAuthId(userId);
+  const booking = await Booking.findOne({ where: { id: bookingId } });
+  if (!booking) throw Object.assign(new Error("Booking not found"), { statusCode: 404 });
+
+  const bookingTrainerId = Number(booking.trainerId || booking.ptId || 0);
+  if (bookingTrainerId && bookingTrainerId !== Number(trainer.id)) {
+    throw Object.assign(new Error("Không có quyền cập nhật điểm danh buổi này"), { statusCode: 403 });
+  }
+
+  assertSessionAllowsUndoAttendance(booking);
+
+  await ensureAttendanceEditable(booking.id);
+
+  const attendance = await Attendance.findOne({
+    where: { bookingId: booking.id, attendanceType: "trainer", userId },
+    attributes: SAFE_ATT_COLS,
+  });
+
+  if (attendance) {
+    await attendance.destroy();
+  }
+
+  booking.status = "confirmed";
+  await booking.save();
+
+  try {
+    await syncCommissionForAttendance({ trainer, booking, normalizedStatus: "reset" });
+  } catch (e) {
+    console.error("[trainerAttendanceService] commission sync error (resetAttendance):", e.message);
+  }
+
+  return { booking, attendance: null };
+};
+
+module.exports = { getMyScheduleForDate, checkIn, checkOut, resetAttendance };
