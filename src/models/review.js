@@ -21,6 +21,8 @@ module.exports = (sequelize, DataTypes) => {
     reviewType: { type: DataTypes.ENUM('trainer', 'gym', 'package'), allowNull: false, defaultValue: 'trainer' },
     rating: { type: DataTypes.INTEGER, allowNull: false, validate: { min: 1, max: 5 } },
     comment: DataTypes.TEXT,
+    trainerReply: DataTypes.TEXT,
+    repliedAt: DataTypes.DATE,
     status: { 
       type: DataTypes.ENUM('active', 'hidden'), 
       defaultValue: 'active' 

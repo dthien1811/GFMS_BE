@@ -20,7 +20,8 @@ const ownerWithdrawalController = {
     try {
       const userId = req.user.id;
       const { id } = req.params;
-      const result = await ownerWithdrawalService.approveWithdrawal(userId, id);
+      const { notes } = req.body || {};
+      const result = await ownerWithdrawalService.approveWithdrawal(userId, id, notes);
       const trainerId = result?.Trainer?.id;
       emitToTrainer(trainerId, "withdrawal:approved", { id: result.id, status: result.status });
       emitToUser(userId, "withdrawal:approved", { id: result.id, status: result.status });

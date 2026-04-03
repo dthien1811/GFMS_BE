@@ -91,4 +91,26 @@ module.exports = {
       });
     }
   },
+
+  async reset(req, res, next) {
+    try {
+      const userId = getUserId(req);
+      const { bookingId } = req.body || {};
+      if (!bookingId) return res.status(400).json({ EM: "bookingId is required" });
+
+      const result = await attendanceService.resetAttendance({
+        userId,
+        bookingId,
+      });
+
+      res.status(200).json(result);
+    } catch (e) {
+      console.error(">>> RESET ATTENDANCE ERROR:", e);
+      res.status(e.statusCode || 500).json({
+        EM: "Error during reset attendance",
+        DT: e.message,
+        message: e.message,
+      });
+    }
+  },
 };

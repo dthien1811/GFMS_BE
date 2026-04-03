@@ -24,6 +24,7 @@ import memberPackageRoute from "./member/package.route";
 import memberMyPackagesRoute from "./member/myPackages.route";
 import memberMetricRoute from "./member/metric.route";
 import memberProfileRoute from "./member/profile.route";
+import memberReviewRoute from "./member/review.route";
 
 import memberMessageRoute from "./member/message.route";
 import memberNotificationRoute from "./member/notification.route";
@@ -66,6 +67,7 @@ const useApi = (app) => {
   router.use("/member/my-packages", memberMyPackagesRoute);
   router.use("/member/metrics", memberMetricRoute);
   router.use("/member/profile", memberProfileRoute);
+  router.use("/member/reviews", memberReviewRoute);
 
   router.use("/member/messages", memberMessageRoute);
   router.use("/member/notifications", memberNotificationRoute);

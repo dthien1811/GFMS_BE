@@ -3,6 +3,21 @@ const db = require('../models');
 // Sử dụng dòng này thay cho { Trainer, ... } cũ để tránh lệch tên model
 const Trainer = db.trainer || db.Trainer; 
 const { TrainerShare, SessionProgress, Booking, Member, Gym, User } = db;
+const Attendance = db.Attendance || db.attendance;
+
+const TRAINER_ATT_SAFE = [
+  "id",
+  "userId",
+  "gymId",
+  "bookingId",
+  "checkInTime",
+  "checkOutTime",
+  "attendanceType",
+  "method",
+  "status",
+  "createdAt",
+  "updatedAt",
+];
 // ===== Hard rules for schedule slots =====
 const SLOT_DURATION_MIN = 60;
 
@@ -237,27 +252,59 @@ const updateTrainerSkills = async (id, skillsData) => {
 };
 const getTrainerBookings = async (trainerId) => {
   try {
-    // Viết hoa chữ cái đầu (Booking, Member, User, Gym) để khớp với const { ... } = db;
-    return await Booking.findAll({
+    const rows = await Booking.findAll({
       where: { trainerId },
       include: [
-        { 
+        {
           model: Member,
-          // attributes: ['id', 'membershipNumber'], 
           include: [
-            { 
-              model: User, 
-              as: 'User', // Giữ nguyên alias nếu trong models/index.js bạn đặt là 'user'
-              attributes: ['username', 'email', 'phone'] 
-            }
-          ]
+            {
+              model: User,
+              as: "User",
+              attributes: ["username", "email", "phone"],
+            },
+          ],
         },
-        { 
-          model: Gym, 
-          attributes: ['name'] 
-        }
+        {
+          model: Gym,
+          attributes: ["name"],
+        },
       ],
-      order: [['createdAt', 'DESC']]
+      order: [["createdAt", "DESC"]],
+    });
+
+    const trainer = await Trainer.findByPk(trainerId, { attributes: ["id", "userId"] });
+    const userId = trainer?.userId;
+    const bookingIds = rows.map((b) => b.id);
+
+    let attByBookingId = new Map();
+    if (Attendance && userId && bookingIds.length) {
+      try {
+        const atts = await Attendance.findAll({
+          where: {
+            bookingId: bookingIds,
+            attendanceType: "trainer",
+            userId,
+          },
+          attributes: TRAINER_ATT_SAFE,
+        });
+        attByBookingId = new Map(
+          atts.map((a) => {
+            const j = a.toJSON ? a.toJSON() : a;
+            return [j.bookingId, j];
+          })
+        );
+      } catch (e) {
+        attByBookingId = new Map();
+      }
+    }
+
+    return rows.map((b) => {
+      const plain = b.toJSON ? b.toJSON() : b;
+      return {
+        ...plain,
+        trainerAttendance: attByBookingId.get(b.id) || null,
+      };
     });
   } catch (error) {
     console.error("❌ Lỗi Database Query:", error);
