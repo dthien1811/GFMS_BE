@@ -24,7 +24,12 @@ import memberPackageRoute from "./member/package.route";
 import memberMyPackagesRoute from "./member/myPackages.route";
 import memberMetricRoute from "./member/metric.route";
 import memberProfileRoute from "./member/profile.route";
+
+import memberMessageRoute from "./member/message.route";
+import memberNotificationRoute from "./member/notification.route";
 import memberReviewRoute from "./member/review.route";
+import trainerMessageRoute from "./trainer/message.route";
+import trainerNotificationRoute from "./trainer/notification.route";
 
 import trainerRoute from "./trainer";
 
@@ -63,6 +68,10 @@ const useApi = (app) => {
   router.use("/member/profile", memberProfileRoute);
   router.use("/member/reviews", memberReviewRoute);
 
+  router.use("/member/messages", memberMessageRoute);
+  router.use("/member/notifications", memberNotificationRoute);
+  router.use("/trainer/messages", trainerMessageRoute);
+  router.use("/trainer/notifications", trainerNotificationRoute);
   // trainer route
   router.use("/trainer", trainerRoute);
 

@@ -13,6 +13,11 @@ const normalizeStatus = (value) => {
   return "active";
 };
 
+
+const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+const isValidPhone = (value) => !value || /^(\+84|0)\d{9,10}$/.test(String(value || "").replace(/\s+/g, ""));
+const isStrongPassword = (value) => /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/.test(String(value || ""));
+
 const toSafeUser = (user, member = null, gym = null, activation = null, latestMetric = null) => {
   return {
     id: user.id,
@@ -166,6 +171,12 @@ const memberProfileService = {
         throw err;
       }
 
+      if (!isValidEmail(nextEmail)) {
+        const err = new Error("Email không đúng định dạng");
+        err.statusCode = 400;
+        throw err;
+      }
+
       if (!nextUsername) {
         const err = new Error("Tên người dùng là bắt buộc");
         err.statusCode = 400;
@@ -192,6 +203,24 @@ const memberProfileService = {
 
       if (usernameExist && Number(usernameExist.id) !== Number(userId)) {
         const err = new Error("Username đã tồn tại");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      if (nextUsername.length < 2 || nextUsername.length > 100) {
+        const err = new Error("Tên người dùng phải từ 2 đến 100 ký tự");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      if (nextAddress.length > 255) {
+        const err = new Error("Địa chỉ tối đa 255 ký tự");
+        err.statusCode = 400;
+        throw err;
+      }
+
+      if (!isValidPhone(nextPhone)) {
+        const err = new Error("Số điện thoại không hợp lệ");
         err.statusCode = 400;
         throw err;
       }
@@ -246,8 +275,8 @@ const memberProfileService = {
       throw err;
     }
 
-    if (newPassword.length < 6) {
-      const err = new Error("Mật khẩu mới phải có ít nhất 6 ký tự");
+    if (!isStrongPassword(newPassword)) {
+      const err = new Error("Mật khẩu mới phải từ 8 ký tự và có ít nhất 1 chữ cái, 1 số");
       err.statusCode = 400;
       throw err;
     }
