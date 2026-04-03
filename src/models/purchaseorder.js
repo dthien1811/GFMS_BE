@@ -34,10 +34,11 @@ module.exports = (sequelize, DataTypes) => {
       orderDate: { type: DataTypes.DATE, allowNull: false },
       expectedDeliveryDate: { type: DataTypes.DATE, allowNull: true },
 
-      // ✅ migration status only these values
+      // VARCHAR: draft, deposit_pending, deposit_paid, ordered, partially_received, received, final_payment_pending, completed, cancelled, …
       status: {
-        type: DataTypes.ENUM("pending", "approved", "ordered", "delivered", "cancelled"),
-        defaultValue: "pending",
+        type: DataTypes.STRING(40),
+        allowNull: false,
+        defaultValue: "draft",
       },
 
       totalAmount: { type: DataTypes.DECIMAL(15, 2), defaultValue: 0 },

@@ -2,6 +2,57 @@
 const adminPurchaseWorkflowService = require("../service/adminPurchaseWorkflowService");
 
 class AdminPurchaseWorkflowController {
+  /* ========================= PURCHASE REQUESTS ========================= */
+
+  getPurchaseRequests = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.getPurchaseRequests(req.query);
+      return res.status(200).json(result);
+    } catch (e) {
+      return res.status(500).json({ message: e.message });
+    }
+  };
+
+  getPurchaseRequestDetail = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.getPurchaseRequestDetail(req.params.id);
+      return res.status(200).json(result);
+    } catch (e) {
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 500;
+      return res.status(code).json({ message: e.message });
+    }
+  };
+
+  rejectPurchaseRequest = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.rejectPurchaseRequest(
+        req.params.id,
+        req.body,
+        req.user?.id,
+        req
+      );
+      return res.status(200).json(result);
+    } catch (e) {
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
+      return res.status(code).json({ message: e.message });
+    }
+  };
+
+  convertPurchaseRequestToQuotation = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.convertPurchaseRequestToQuotation(
+        req.params.id,
+        req.body,
+        req.user?.id,
+        req
+      );
+      return res.status(201).json(result);
+    } catch (e) {
+      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
+      return res.status(code).json({ message: e.message });
+    }
+  };
+
   /* ========================= QUOTATIONS ========================= */
 
   getQuotations = async (req, res) => {
