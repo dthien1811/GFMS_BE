@@ -25,6 +25,9 @@ const marketplaceController = {
   listPackages: async (req, res) =>
     res.json({ EC: 0, EM: "OK", DT: await marketplaceService.listPackages(req.query) }),
 
+  listLandingHighlights: async (req, res) =>
+    res.json({ EC: 0, EM: "OK", DT: await marketplaceService.getLandingHighlights() }),
+
   getPackageDetail: async (req, res) =>
     res.json({ EC: 0, EM: "OK", DT: await marketplaceService.getPackageDetail(req.params.id) }),
 

@@ -1,4 +1,5 @@
 const db = require("../models");
+const realtimeService = require("./realtime.service").default;
 
 const mustHaveModel = (Model, name) => {
   if (!Model) {
@@ -384,6 +385,19 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
 
   booking.status = "completed";
   await booking.save();
+
+  try {
+    const member = booking.memberId ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] }) : null;
+    await realtimeService.notifyUser(member?.userId, {
+      title: "Buổi tập đã hoàn thành",
+      message: `Buổi tập #${booking.id} của bạn đã được PT xác nhận hoàn thành.`,
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId: booking.id,
+    });
+  } catch (e) {
+    console.error("[trainerAttendanceService] notify member error:", e.message);
+  }
 
   try {
     await syncCommissionForAttendance({ trainer, booking, normalizedStatus });

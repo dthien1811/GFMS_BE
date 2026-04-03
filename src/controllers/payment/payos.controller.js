@@ -1,5 +1,6 @@
 import db from "../../models";
 import payosService from "../../service/payment/payos.service";
+import realtimeService from "../../service/realtime.service";
 
 const PAID_STATUSES = new Set(["PAID", "SUCCESS", "SUCCEEDED"]);
 const ALLOWED_STATUSES = new Set(["pending", "completed", "failed", "refunded", "cancelled"]);
@@ -131,6 +132,34 @@ const payosController = {
       }
 
       const activation = await activatePackageFromTransaction(tx, amount, "payosWebhook", data);
+      const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
+      await realtimeService.notifyUser(tx.processedBy || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId, {
+        title: "Thanh toán gói thành công",
+        message: `Gói ${pkg?.name || "tập"} đã được kích hoạt cho tài khoản của bạn.`,
+        notificationType: "package_purchase",
+        relatedType: "packageActivation",
+        relatedId: activation.id,
+      });
+      if (tx.trainerId) {
+        const trainer = await db.Trainer.findByPk(tx.trainerId, { attributes: ["userId"] });
+        await realtimeService.notifyUser(trainer?.userId, {
+          title: "Có hội viên mới từ PayOS",
+          message: `Một hội viên vừa hoàn tất thanh toán gói ${pkg?.name || "tập"}.`,
+          notificationType: "package_purchase",
+          relatedType: "packageActivation",
+          relatedId: activation.id,
+        });
+      }
+      if (pkg?.gymId) {
+        const gym = await db.Gym.findByPk(pkg.gymId, { attributes: ["ownerId"] });
+        await realtimeService.notifyUser(gym?.ownerId, {
+          title: "Gym có giao dịch mới",
+          message: `Một hội viên vừa thanh toán gói ${pkg?.name || "tập"} thành công.`,
+          notificationType: "package_purchase",
+          relatedType: "transaction",
+          relatedId: tx.id,
+        });
+      }
       return res.status(200).json({ message: "OK", activationId: activation.id });
     } catch (e) {
       console.error("[payOS webhook] error:", e);
@@ -208,6 +237,34 @@ const payosController = {
         "payosConfirm",
         info
       );
+      const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
+      await realtimeService.notifyUser(userId, {
+        title: "Thanh toán gói thành công",
+        message: `Gói ${pkg?.name || "tập"} đã được kích hoạt cho tài khoản của bạn.`,
+        notificationType: "package_purchase",
+        relatedType: "packageActivation",
+        relatedId: activation.id,
+      });
+      if (tx.trainerId) {
+        const trainer = await db.Trainer.findByPk(tx.trainerId, { attributes: ["userId"] });
+        await realtimeService.notifyUser(trainer?.userId, {
+          title: "Có hội viên mới từ PayOS",
+          message: `Một hội viên vừa hoàn tất thanh toán gói ${pkg?.name || "tập"}.`,
+          notificationType: "package_purchase",
+          relatedType: "packageActivation",
+          relatedId: activation.id,
+        });
+      }
+      if (pkg?.gymId) {
+        const gym = await db.Gym.findByPk(pkg.gymId, { attributes: ["ownerId"] });
+        await realtimeService.notifyUser(gym?.ownerId, {
+          title: "Gym có giao dịch mới",
+          message: `Một hội viên vừa thanh toán gói ${pkg?.name || "tập"} thành công.`,
+          notificationType: "package_purchase",
+          relatedType: "transaction",
+          relatedId: tx.id,
+        });
+      }
       return res.status(200).json({ message: "OK", activationId: activation.id });
     } catch (e) {
       const status = e.statusCode || 500;

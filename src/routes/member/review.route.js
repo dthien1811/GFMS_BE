@@ -1,22 +1,19 @@
 import express from "express";
+import { requireGroupName } from "../../middleware/role";
 import reviewController from "../../controllers/member/review.controller";
 
 const router = express.Router();
 
-const requireMember = (req, res, next) => {
-  if (!req.user || req.user.groupId !== 4) {
-    return res.status(403).json({
-      EC: -1,
-      EM: "Forbidden (member only)",
-    });
-  }
-  next();
-};
+router.use(requireGroupName(["Members", "Member"]));
 
-router.use(requireMember);
+// API mới của nhánh bạn
+router.get("/eligible", reviewController.getEligible);
+router.get("/me", reviewController.listMine);
+router.post("/", reviewController.create);
 
+// Alias để không làm vỡ FE/dev cũ
 router.get("/eligible-courses", reviewController.getEligibleCourses);
 router.get("/", reviewController.getMyReviews);
-router.post("/", reviewController.createReview);
+router.post("/create", reviewController.createReview);
 
 export default router;

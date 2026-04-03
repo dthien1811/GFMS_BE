@@ -1,5 +1,5 @@
 import db from "../../models";
-import { Op } from "sequelize";
+import { Op, fn, col, literal } from "sequelize";
 
 const toMin = (hhmm) => {
   const s = String(hhmm || "00:00").slice(0, 5);
@@ -72,9 +72,18 @@ const parsePatternDays = (pattern) => {
     .filter((n) => Number.isInteger(n) && DAY_INDEX_TO_KEY[n]);
 };
 
+const normalizeGymRow = (row = {}) => {
+  const data = typeof row.toJSON === "function" ? row.toJSON() : row;
+  return {
+    ...data,
+    images: Array.isArray(data.images) ? data.images : parseJsonSafe(data.images, []),
+  };
+};
+
 const marketplaceService = {
   async listGyms() {
-    return db.Gym.findAll({ where: { status: "active" } });
+    const rows = await db.Gym.findAll({ where: { status: "active" } });
+    return rows.map(normalizeGymRow);
   },
 
   async getGymDetail(id) {
@@ -144,88 +153,194 @@ const marketplaceService = {
     });
   },
 
-  // =========================================================
-  // PUBLIC SLOTS for wizard step 3
-  // GET /api/marketplace/slots?trainerId=&packageId=&pattern=1,3,5
-  //
-  // Logic:
-  // - chỉ lấy các ngày thuộc pattern
-  // - tạo slot 60 phút cho từng ngày
-  // - lấy GIAO NHAU giữa các ngày trong pattern
-  // - tạm thời check booking theo giờ chung để disable slot nếu bị conflict
-  // =========================================================
+  async getLandingHighlights() {
+    const [gymRows, trainerRows, packageRows, gymBookings, trainerBookings, packageActivations, gymReviews, trainerReviews, packageReviews] = await Promise.all([
+      db.Gym.findAll({ where: { status: "active" } }),
+      db.Trainer.findAll({
+        where: { isActive: true },
+        include: [{ model: db.User, attributes: ["id", "username", "avatar"] }, { model: db.Gym, attributes: ["id", "name", "address"] }],
+      }),
+      db.Package.findAll({
+        where: { isActive: true },
+        include: [{ model: db.Gym, attributes: ["id", "name", "address"] }],
+      }),
+      db.Booking.findAll({
+        attributes: ["gymId", [fn("COUNT", col("id")), "bookingCount"]],
+        where: { status: { [Op.in]: MARKETPLACE_BOOKING_STATUSES } },
+        group: ["gymId"],
+        raw: true,
+      }),
+      db.Booking.findAll({
+        attributes: ["trainerId", [fn("COUNT", col("id")), "bookingCount"]],
+        where: { trainerId: { [Op.ne]: null }, status: { [Op.in]: MARKETPLACE_BOOKING_STATUSES } },
+        group: ["trainerId"],
+        raw: true,
+      }),
+      db.PackageActivation.findAll({
+        attributes: ["packageId", [fn("COUNT", col("id")), "purchaseCount"]],
+        where: { packageId: { [Op.ne]: null } },
+        group: ["packageId"],
+        raw: true,
+      }),
+      db.Review.findAll({
+        attributes: ["gymId", [fn("AVG", col("rating")), "avgRating"], [fn("COUNT", col("id")), "reviewCount"]],
+        where: { reviewType: "gym", gymId: { [Op.ne]: null }, status: "active" },
+        group: ["gymId"],
+        raw: true,
+      }),
+      db.Review.findAll({
+        attributes: ["trainerId", [fn("AVG", col("rating")), "avgRating"], [fn("COUNT", col("id")), "reviewCount"]],
+        where: { reviewType: "trainer", trainerId: { [Op.ne]: null }, status: "active" },
+        group: ["trainerId"],
+        raw: true,
+      }),
+      db.Review.findAll({
+        attributes: ["packageId", [fn("AVG", col("rating")), "avgRating"], [fn("COUNT", col("id")), "reviewCount"]],
+        where: { reviewType: "package", packageId: { [Op.ne]: null }, status: "active" },
+        group: ["packageId"],
+        raw: true,
+      }),
+    ]);
+
+    const gymBookingMap = new Map(gymBookings.map((x) => [Number(x.gymId), Number(x.bookingCount || 0)]));
+    const trainerBookingMap = new Map(trainerBookings.map((x) => [Number(x.trainerId), Number(x.bookingCount || 0)]));
+    const packageActivationMap = new Map(packageActivations.map((x) => [Number(x.packageId), Number(x.purchaseCount || 0)]));
+    const gymReviewMap = new Map(gymReviews.map((x) => [Number(x.gymId), { avgRating: Number(x.avgRating || 0), reviewCount: Number(x.reviewCount || 0) }]));
+    const trainerReviewMap = new Map(trainerReviews.map((x) => [Number(x.trainerId), { avgRating: Number(x.avgRating || 0), reviewCount: Number(x.reviewCount || 0) }]));
+    const packageReviewMap = new Map(packageReviews.map((x) => [Number(x.packageId), { avgRating: Number(x.avgRating || 0), reviewCount: Number(x.reviewCount || 0) }]));
+
+    const gyms = gymRows
+      .map((row) => {
+        const gym = normalizeGymRow(row);
+        const review = gymReviewMap.get(Number(gym.id)) || { avgRating: 0, reviewCount: 0 };
+        const bookingCount = gymBookingMap.get(Number(gym.id)) || 0;
+        return {
+          ...gym,
+          bookingCount,
+          avgRating: review.avgRating,
+          reviewCount: review.reviewCount,
+          popularityScore: bookingCount * 3 + review.reviewCount * 2 + review.avgRating,
+        };
+      })
+      .sort((a, b) => b.popularityScore - a.popularityScore || b.reviewCount - a.reviewCount || String(a.name || "").localeCompare(String(b.name || "")))
+      .slice(0, 6);
+
+    const trainers = trainerRows
+      .map((row) => {
+        const data = typeof row.toJSON === "function" ? row.toJSON() : row;
+        const review = trainerReviewMap.get(Number(data.id)) || { avgRating: Number(data.rating || 0), reviewCount: 0 };
+        const bookingCount = trainerBookingMap.get(Number(data.id)) || Number(data.totalSessions || 0) || 0;
+        return {
+          ...data,
+          avgRating: review.avgRating || Number(data.rating || 0) || 0,
+          reviewCount: review.reviewCount,
+          bookingCount,
+          popularityScore: bookingCount * 3 + review.reviewCount * 2 + (review.avgRating || 0),
+        };
+      })
+      .sort((a, b) => b.popularityScore - a.popularityScore || b.avgRating - a.avgRating || String(a.User?.username || "").localeCompare(String(b.User?.username || "")))
+      .slice(0, 8);
+
+    const packages = packageRows
+      .map((row) => {
+        const data = typeof row.toJSON === "function" ? row.toJSON() : row;
+        const review = packageReviewMap.get(Number(data.id)) || { avgRating: 0, reviewCount: 0 };
+        const purchaseCount = packageActivationMap.get(Number(data.id)) || 0;
+        return {
+          ...data,
+          avgRating: review.avgRating,
+          reviewCount: review.reviewCount,
+          purchaseCount,
+          popularityScore: purchaseCount * 3 + review.reviewCount * 2 + review.avgRating,
+        };
+      })
+      .sort((a, b) => b.popularityScore - a.popularityScore || Number(a.price || 0) - Number(b.price || 0) || String(a.name || "").localeCompare(String(b.name || "")))
+      .slice(0, 6);
+
+    const totalMembers = await db.Member.count();
+    const totalActiveGyms = await db.Gym.count({ where: { status: "active" } });
+    const totalActiveTrainers = await db.Trainer.count({ where: { isActive: true } });
+
+    return {
+      stats: {
+        totalMembers,
+        totalActiveGyms,
+        totalActiveTrainers,
+      },
+      gyms,
+      trainers,
+      packages,
+    };
+  },
+
   async getAvailableSlotsPublic({ trainerId, packageId, pattern }) {
-  const tId = Number(trainerId);
-  const pId = Number(packageId);
+    const tId = Number(trainerId);
+    const pId = Number(packageId);
 
-  if (!tId || !pId) {
-    const err = new Error("trainerId và packageId là bắt buộc");
-    err.statusCode = 400;
-    throw err;
+    if (!tId || !pId) {
+      const err = new Error("trainerId và packageId là bắt buộc");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const patternDays = parsePatternDays(pattern);
+    if (!patternDays.length) {
+      const err = new Error("pattern là bắt buộc");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const trainer = await db.Trainer.findByPk(tId, {
+      attributes: ["id", "availableHours", "isActive"],
+    });
+
+    if (!trainer || !trainer.isActive) {
+      const err = new Error("Trainer không tồn tại hoặc đã bị khóa");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const pkg = await db.Package.findByPk(pId, {
+      attributes: ["id", "isActive"],
+    });
+
+    if (!pkg || pkg.isActive === false) {
+      const err = new Error("Gói tập không tồn tại hoặc đã ngừng hoạt động");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    let availableHours = parseJsonSafe(trainer.availableHours, {});
+    if (!availableHours || typeof availableHours !== "object") {
+      availableHours = {};
+    }
+
+    const step = 60;
+
+    const daySlotSets = patternDays.map((dayIndex) => {
+      const dayKey = DAY_INDEX_TO_KEY[dayIndex];
+      const dayRanges = normalizeRanges(availableHours[dayKey]);
+      return buildSlotsFromRanges(dayRanges, step);
+    });
+
+    if (!daySlotSets.length || daySlotSets.some((set) => set.size === 0)) {
+      return [];
+    }
+
+    let intersection = [...daySlotSets[0]];
+    for (let i = 1; i < daySlotSets.length; i++) {
+      intersection = intersection.filter((slotKey) => daySlotSets[i].has(slotKey));
+    }
+
+    if (!intersection.length) return [];
+
+    return intersection
+      .map((slotKey) => {
+        const [start, end] = slotKey.split("-");
+        return { start, end, ok: true };
+      })
+      .sort((a, b) => toMin(a.start) - toMin(b.start));
   }
-
-  const patternDays = parsePatternDays(pattern);
-  if (!patternDays.length) {
-    const err = new Error("pattern là bắt buộc");
-    err.statusCode = 400;
-    throw err;
-  }
-
-  const trainer = await db.Trainer.findByPk(tId, {
-    attributes: ["id", "availableHours", "isActive"],
-  });
-
-  if (!trainer || !trainer.isActive) {
-    const err = new Error("Trainer không tồn tại hoặc đã bị khóa");
-    err.statusCode = 404;
-    throw err;
-  }
-
-  const pkg = await db.Package.findByPk(pId, {
-    attributes: ["id", "isActive"],
-  });
-
-  if (!pkg || pkg.isActive === false) {
-    const err = new Error("Gói tập không tồn tại hoặc đã ngừng hoạt động");
-    err.statusCode = 404;
-    throw err;
-  }
-
-  let availableHours = parseJsonSafe(trainer.availableHours, {});
-  if (!availableHours || typeof availableHours !== "object") {
-    availableHours = {};
-  }
-
-  const step = 60;
-
-  // 1) Lấy slot cho từng ngày trong pattern
-  const daySlotSets = patternDays.map((dayIndex) => {
-    const dayKey = DAY_INDEX_TO_KEY[dayIndex];
-    const dayRanges = normalizeRanges(availableHours[dayKey]);
-    return buildSlotsFromRanges(dayRanges, step);
-  });
-
-  if (!daySlotSets.length || daySlotSets.some((set) => set.size === 0)) {
-    return [];
-  }
-
-  // 2) Giao nhau giữa các ngày trong pattern
-  let intersection = [...daySlotSets[0]];
-  for (let i = 1; i < daySlotSets.length; i++) {
-    intersection = intersection.filter((slotKey) => daySlotSets[i].has(slotKey));
-  }
-
-  if (!intersection.length) return [];
-
-  // 3) Step 3 chỉ trả slot "lý thuyết" theo availableHours
-  // KHÔNG check booking thực tế ở đây nữa
-  return intersection
-    .map((slotKey) => {
-      const [start, end] = slotKey.split("-");
-      return { start, end, ok: true };
-    })
-    .sort((a, b) => toMin(a.start) - toMin(b.start));
-}
 };
 
 export default marketplaceService;
