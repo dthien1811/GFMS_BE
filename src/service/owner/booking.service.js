@@ -643,6 +643,37 @@ const updateBookingStatus = async (userId, bookingId, newStatus) => {
 
   await booking.update(updateData);
 
+  try {
+    const member = booking.memberId ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] }) : null;
+    const trainer = booking.trainerId ? await db.Trainer.findByPk(booking.trainerId, { attributes: ["userId"] }) : null;
+    const statusLabels = {
+      confirmed: "đã được xác nhận",
+      in_progress: "đang diễn ra",
+      completed: "đã hoàn thành",
+      cancelled: "đã bị hủy",
+      no_show: "được ghi nhận vắng mặt",
+    };
+    const label = statusLabels[newStatus] || `đã cập nhật sang ${newStatus}`;
+    await realtimeService.notifyUser(member?.userId, {
+      title: "Lịch tập được cập nhật",
+      message: `Booking #${booking.id} ${label}.`,
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId: booking.id,
+    });
+    if (trainer?.userId && ["cancelled", "confirmed"].includes(newStatus)) {
+      await realtimeService.notifyUser(trainer.userId, {
+        title: "Lịch PT thay đổi",
+        message: `Booking #${booking.id} ${label}.`,
+        notificationType: "booking_update",
+        relatedType: "booking",
+        relatedId: booking.id,
+      });
+    }
+  } catch (notifyError) {
+    console.error("[owner.booking] notify error:", notifyError.message);
+  }
+
   return booking;
 };
 
