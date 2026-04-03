@@ -9,6 +9,13 @@ module.exports = (sequelize, DataTypes) => {
       Quotation.belongsTo(models.Gym, { foreignKey: "gymId", as: "gym" });
       Quotation.belongsTo(models.User, { foreignKey: "requestedBy", as: "requester" });
 
+      if (models.PurchaseRequest) {
+        Quotation.belongsTo(models.PurchaseRequest, {
+          foreignKey: "purchaseRequestId",
+          as: "purchaseRequest",
+        });
+      }
+
       Quotation.hasMany(models.QuotationItem, { foreignKey: "quotationId", as: "items" });
     }
   }
@@ -23,6 +30,8 @@ module.exports = (sequelize, DataTypes) => {
       supplierId: { type: DataTypes.INTEGER, allowNull: true },
       gymId: { type: DataTypes.INTEGER, allowNull: true },
       requestedBy: { type: DataTypes.INTEGER, allowNull: true },
+
+      purchaseRequestId: { type: DataTypes.INTEGER, allowNull: true },
 
       // ✅ migration dùng validUntil
       validUntil: { type: DataTypes.DATE, allowNull: true },

@@ -18,7 +18,61 @@ const {
   AuditLog,
   Notification,
   Message,
+  PurchaseRequest,
 } = require("../models");
+
+const EPS = 0.01;
+
+async function findEquipmentPurchaseTxsForPO(poId, transaction) {
+  const poIdN = Number(poId);
+  try {
+    return await Transaction.findAll({
+      where: {
+        transactionType: "equipment_purchase",
+        [Op.and]: [sequelize.where(sequelize.json("metadata.purchaseOrderId"), poIdN)],
+      },
+      transaction,
+      lock: transaction ? transaction.LOCK.SHARE : undefined,
+    });
+  } catch (e) {
+    return await Transaction.findAll({
+      where: {
+        transactionType: "equipment_purchase",
+        metadata: { [Op.like]: `%\"purchaseOrderId\":${poIdN}%` },
+      },
+      transaction,
+      lock: transaction ? transaction.LOCK.SHARE : undefined,
+    });
+  }
+}
+
+function sumCompletedPayments(txs) {
+  return (txs || [])
+    .filter((x) => String(x.paymentStatus || "").toLowerCase() === "completed")
+    .reduce((s, x) => s + Number(x.amount || 0), 0);
+}
+
+function sumDepositPhasePayments(txs) {
+  return (txs || [])
+    .filter(
+      (x) =>
+        String(x.paymentStatus || "").toLowerCase() === "completed" &&
+        String(x.metadata?.paymentPhase || "").toLowerCase() === "deposit"
+    )
+    .reduce((s, x) => s + Number(x.amount || 0), 0);
+}
+
+function depositRequirementMet(totalAmount, txs) {
+  const total = Number(totalAmount || 0);
+  const need = total * 0.3;
+  const dep = sumDepositPhasePayments(txs);
+  if (dep >= need - EPS) return true;
+  const anyLabeled = (txs || []).some((x) => x.metadata && x.metadata.paymentPhase);
+  if (!anyLabeled) {
+    return sumCompletedPayments(txs) >= need - EPS;
+  }
+  return dep >= need - EPS;
+}
 
 function toInt(v, fallback) {
   const n = parseInt(v, 10);
@@ -343,7 +397,7 @@ class AdminPurchaseWorkflowService {
           approvedBy: null,
           orderDate: new Date(),
           expectedDeliveryDate: null,
-          status: "pending",
+          status: "draft",
           totalAmount: quotation.totalAmount || 0,
           notes: `Created from quotation ${quotation.code}`,
         },
@@ -448,11 +502,11 @@ class AdminPurchaseWorkflowService {
     return sequelize.transaction(async (t) => {
       const po = await PurchaseOrder.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       if (!po) throw new Error("PurchaseOrder not found");
-      if (po.status !== "pending") throw new Error("Only pending PO can be approved");
+      if (po.status !== "draft") throw new Error("Only draft PO can move to deposit_pending");
 
       const oldPO = po.toJSON();
 
-      po.status = "approved";
+      po.status = "deposit_pending";
       po.approvedBy = adminId || null;
       await po.save({ transaction: t });
 
@@ -489,7 +543,7 @@ class AdminPurchaseWorkflowService {
     return sequelize.transaction(async (t) => {
       const po = await PurchaseOrder.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       if (!po) throw new Error("PurchaseOrder not found");
-      if (po.status !== "approved") throw new Error("Only approved PO can be set to ordered");
+      if (po.status !== "deposit_paid") throw new Error("PO must be deposit_paid (30% received) before ordered");
 
       const oldPO = po.toJSON();
 
@@ -530,7 +584,7 @@ class AdminPurchaseWorkflowService {
     return sequelize.transaction(async (t) => {
       const po = await PurchaseOrder.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       if (!po) throw new Error("PurchaseOrder not found");
-      if (po.status === "delivered" || po.status === "cancelled") throw new Error("PO cannot be cancelled");
+      if (po.status === "completed" || po.status === "cancelled") throw new Error("PO cannot be cancelled");
 
       const reason = String(body?.reason || "").trim();
       if (!reason) throw new Error("Missing reason");
@@ -712,8 +766,9 @@ class AdminPurchaseWorkflowService {
         lock: t.LOCK.UPDATE,
       });
       if (!po) throw new Error("PurchaseOrder not found");
-      if (!(po.status === "approved" || po.status === "ordered"))
-        throw new Error("PO must be approved/ordered to create inbound receipt");
+      const okRecv = ["deposit_paid", "ordered", "partially_received", "received"];
+      if (!okRecv.includes(po.status))
+        throw new Error("PO must be deposit_paid or ordered (receiving) to create inbound receipt");
 
       // Enterprise: receipt tạo theo phần còn lại (partial delivery supported)
       const remainingItems = (po.items || [])
@@ -884,27 +939,44 @@ class AdminPurchaseWorkflowService {
         }
 
         if (po) {
-          const allDone = (po.items || []).every(
+          await po.reload({
+            include: [{ model: PurchaseOrderItem, as: "items" }],
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+          });
+
+          const items = po.items || [];
+          const allDone = items.every(
             (x) => Number(x.receivedQuantity || 0) >= Number(x.quantity || 0)
           );
-          if (allDone) {
-            const oldPO = po.toJSON();
-            po.status = "delivered";
-            await po.save({ transaction: t });
+          const anyRecv = items.some((x) => Number(x.receivedQuantity || 0) > 0);
 
-            await createAudit(
-              {
-                userId: adminId,
-                action: "PO_DELIVERED",
-                tableName: "purchaseorder",
-                recordId: po.id,
-                oldValues: oldPO,
-                newValues: po.toJSON(),
-                req,
-              },
-              t
-            );
+          const txs = await findEquipmentPurchaseTxsForPO(po.id, t);
+          const paid = sumCompletedPayments(txs);
+          const totalAmt = Number(po.totalAmount || 0);
+
+          const oldPO = po.toJSON();
+
+          if (allDone) {
+            po.status = paid >= totalAmt - EPS ? "completed" : "received";
+          } else if (anyRecv) {
+            po.status = "partially_received";
           }
+
+          await po.save({ transaction: t });
+
+          await createAudit(
+            {
+              userId: adminId,
+              action: "PO_STATUS_AFTER_RECEIPT",
+              tableName: "purchaseorder",
+              recordId: po.id,
+              oldValues: oldPO,
+              newValues: po.toJSON(),
+              req,
+            },
+            t
+          );
         }
       }
 
@@ -966,41 +1038,22 @@ class AdminPurchaseWorkflowService {
       const po = await PurchaseOrder.findByPk(poId, { transaction: t, lock: t.LOCK.UPDATE });
       if (!po) throw new Error("PurchaseOrder not found");
       if (po.status === "cancelled") throw new Error("Cannot add payment for cancelled PO");
+      if (po.status === "draft") throw new Error("PO đang nháp — duyệt PO (chờ cọc) trước khi thanh toán");
 
       const amount = Number(body?.amount);
       if (!Number.isFinite(amount) || amount <= 0) throw new Error("Invalid amount");
 
-      const status = String(body?.status || "completed"); // completed/pending/failed
-      const paymentMethod = String(body?.paymentMethod || "manual");
-
-      const poTotal = Number(po.totalAmount || 0);
-
-      // ===== LEVEL 2 RULE (server-side) =====
-      // Sum paid (completed only)
-      let paid = 0;
-      try {
-        const existing = await Transaction.findAll({
-          where: this._buildPOPaymentWhere(poId),
-          transaction: t,
-          lock: t.LOCK.SHARE,
-        });
-        paid = (existing || [])
-          .filter((x) => String(x.paymentStatus || "").toLowerCase() === "completed")
-          .reduce((s, x) => s + Number(x.amount || 0), 0);
-      } catch (e) {
-        const existing = await Transaction.findAll({
-          where: {
-            transactionType: "equipment_purchase",
-            metadata: { [Op.like]: `%\"purchaseOrderId\":${poId}%` },
-          },
-          transaction: t,
-          lock: t.LOCK.SHARE,
-        });
-        paid = (existing || [])
-          .filter((x) => String(x.paymentStatus || "").toLowerCase() === "completed")
-          .reduce((s, x) => s + Number(x.amount || 0), 0);
+      const paymentStatus = String(body?.paymentStatus || body?.status || "completed").toLowerCase();
+      if (paymentStatus !== "completed") {
+        throw new Error("Flow mua sắm chỉ ghi nhận paymentStatus completed tại bước này");
       }
 
+      const paymentMethod = String(body?.paymentMethod || "manual");
+      const phase = String(body?.paymentPhase || "").toLowerCase();
+
+      const existing = await findEquipmentPurchaseTxsForPO(poId, t);
+      const paid = sumCompletedPayments(existing);
+      const poTotal = Number(po.totalAmount || 0);
       const remaining = Math.max(0, poTotal - paid);
 
       if (remaining <= 0) {
@@ -1010,6 +1063,30 @@ class AdminPurchaseWorkflowService {
         throw new Error(`Amount exceeds remaining. Remaining = ${remaining}`);
       }
 
+      let paymentPhaseMeta = "deposit";
+
+      if (po.status === "deposit_pending") {
+        const ph = phase || "deposit";
+        if (ph !== "deposit") {
+          throw new Error('Khi chờ cọc 30%, paymentPhase phải là "deposit"');
+        }
+        const depLabeled = sumDepositPhasePayments(existing);
+        if (depLabeled + amount > poTotal * 0.3 + EPS) {
+          throw new Error(`Tổng thanh toán loại cọc không được vượt 30% PO (tối đa ${(poTotal * 0.3).toFixed(2)})`);
+        }
+        paymentPhaseMeta = "deposit";
+      } else if (po.status === "received") {
+        const ph = phase || "final";
+        if (ph !== "final") {
+          throw new Error('Sau khi nhận đủ hàng, paymentPhase phải là "final"');
+        }
+        paymentPhaseMeta = "final";
+      } else {
+        throw new Error(
+          `Không ghi nhận thanh toán ở trạng thái "${po.status}". Cọc: deposit_pending. Phần còn lại: received / final_payment_pending.`
+        );
+      }
+
       const tx = await Transaction.create(
         {
           transactionCode: genCode("TX"),
@@ -1017,9 +1094,13 @@ class AdminPurchaseWorkflowService {
           amount,
           transactionType: "equipment_purchase",
           paymentMethod,
-          paymentStatus: status,
-          description: `Payment for PO ${po.code}`,
-          metadata: { purchaseOrderId: po.id, purchaseOrderCode: po.code },
+          paymentStatus,
+          description: `Payment for PO ${po.code} (${paymentPhaseMeta})`,
+          metadata: {
+            purchaseOrderId: po.id,
+            purchaseOrderCode: po.code,
+            paymentPhase: paymentPhaseMeta,
+          },
           transactionDate: new Date(),
           processedBy: adminId || null,
         },
@@ -1039,13 +1120,56 @@ class AdminPurchaseWorkflowService {
         t
       );
 
+      const txsAfter = await findEquipmentPurchaseTxsForPO(poId, t);
+
+      if (po.status === "deposit_pending" && depositRequirementMet(po.totalAmount, txsAfter)) {
+        const oldPO = po.toJSON();
+        po.status = "deposit_paid";
+        await po.save({ transaction: t });
+        await createAudit(
+          {
+            userId: adminId,
+            action: "PO_DEPOSIT_PAID",
+            tableName: "purchaseorder",
+            recordId: po.id,
+            oldValues: oldPO,
+            newValues: po.toJSON(),
+            req,
+          },
+          t
+        );
+      }
+
+      const paidAfter = sumCompletedPayments(txsAfter);
+      const items = await PurchaseOrderItem.findAll({
+        where: { purchaseOrderId: po.id },
+        transaction: t,
+      });
+      const allReceived = items.every((x) => Number(x.receivedQuantity || 0) >= Number(x.quantity || 0));
+      if (allReceived && paidAfter >= poTotal - EPS) {
+        const oldPO = po.toJSON();
+        po.status = "completed";
+        await po.save({ transaction: t });
+        await createAudit(
+          {
+            userId: adminId,
+            action: "PO_COMPLETED",
+            tableName: "purchaseorder",
+            recordId: po.id,
+            oldValues: oldPO,
+            newValues: po.toJSON(),
+            req,
+          },
+          t
+        );
+      }
+
+      const remainingAfter = Math.max(0, poTotal - paidAfter);
       await createNotification(
         {
           userId: po.requestedBy,
           title: "Payment recorded",
-          message: `Đã ghi nhận thanh toán ${amount.toLocaleString("vi-VN")}đ cho PO ${
-            po.code
-          }. Remaining: ${(remaining - amount).toLocaleString("vi-VN")}đ.`,
+          message: `Đã ghi nhận thanh toán ${amount.toLocaleString("vi-VN")}đ cho PO ${po.code}. Còn lại: ${remainingAfter.toLocaleString("vi-VN")}đ.`,
           notificationType: "payment",
           relatedType: "purchaseorder",
           relatedId: po.id,
@@ -1054,6 +1178,168 @@ class AdminPurchaseWorkflowService {
       );
 
       return tx;
+    });
+  }
+
+  /* ========================= PURCHASE REQUESTS (owner → admin) ========================= */
+
+  async getPurchaseRequests(query) {
+    const { page, limit, offset } = paging(query);
+    const where = {};
+    if (query.status && query.status !== "all") where.status = query.status;
+    if (query.gymId && query.gymId !== "all") where.gymId = toInt(query.gymId, query.gymId);
+    if (query.q && String(query.q).trim()) {
+      const q = String(query.q).trim();
+      where[Op.or] = [{ code: { [Op.like]: `%${q}%` } }, { note: { [Op.like]: `%${q}%` } }];
+    }
+
+    const { rows, count } = await PurchaseRequest.findAndCountAll({
+      where,
+      limit,
+      offset,
+      order: [["createdAt", "DESC"]],
+      include: [
+        { model: Gym, as: "gym", attributes: ["id", "name"] },
+        { model: Equipment, as: "equipment", attributes: ["id", "name", "code", "minStockLevel"] },
+        { model: Supplier, as: "expectedSupplier", attributes: ["id", "name"] },
+        { model: User, as: "requester", attributes: ["id", "username", "email"] },
+        { model: Quotation, as: "quotation", attributes: ["id", "code", "status"] },
+      ],
+    });
+
+    return { data: rows, meta: { page, limit, total: count } };
+  }
+
+  async getPurchaseRequestDetail(id) {
+    const pr = await PurchaseRequest.findByPk(id, {
+      include: [
+        { model: Gym, as: "gym", attributes: ["id", "name"] },
+        { model: Equipment, as: "equipment", attributes: ["id", "name", "code", "minStockLevel"] },
+        { model: Supplier, as: "expectedSupplier", attributes: ["id", "name", "code", "email", "phone"] },
+        { model: User, as: "requester", attributes: ["id", "username", "email"] },
+        { model: Quotation, as: "quotation", attributes: ["id", "code", "status", "totalAmount"] },
+      ],
+    });
+    if (!pr) throw new Error("Purchase request not found");
+    return pr;
+  }
+
+  async rejectPurchaseRequest(requestId, body, adminId, req) {
+    return sequelize.transaction(async (t) => {
+      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!pr) throw new Error("Purchase request not found");
+      if (pr.status !== "submitted") throw new Error("Only submitted requests can be rejected");
+
+      const reason = String(body?.rejectionReason || body?.reason || "").trim();
+      if (!reason) throw new Error("Missing rejectionReason");
+
+      const old = pr.toJSON();
+      pr.status = "rejected";
+      pr.adminRejectionNote = reason;
+      await pr.save({ transaction: t });
+
+      await createAudit(
+        {
+          userId: adminId,
+          action: "PURCHASE_REQUEST_REJECTED",
+          tableName: "purchaserequest",
+          recordId: pr.id,
+          oldValues: old,
+          newValues: pr.toJSON(),
+          req,
+        },
+        t
+      );
+
+      await createNotification(
+        {
+          userId: pr.requestedBy,
+          title: "Yêu cầu mua sắm bị từ chối",
+          message: `${pr.code}: ${reason}`,
+          notificationType: "purchase_request",
+          relatedType: "purchaserequest",
+          relatedId: pr.id,
+        },
+        t
+      );
+
+      return pr;
+    });
+  }
+
+  async convertPurchaseRequestToQuotation(requestId, body, adminId, req) {
+    return sequelize.transaction(async (t) => {
+      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!pr) throw new Error("Purchase request not found");
+      if (pr.status !== "submitted") throw new Error("Only submitted requests can be converted");
+
+      const supplierId = Number(body?.supplierId || pr.expectedSupplierId);
+      if (!supplierId) throw new Error("supplierId is required (or set expected supplier on request)");
+
+      const supplier = await Supplier.findByPk(supplierId, { transaction: t });
+      if (!supplier) throw new Error("Supplier not found");
+
+      const count = await Quotation.count({ transaction: t });
+      const code = `QUO-${Date.now()}-${count + 1}`;
+      const unitPrice = Number(pr.expectedUnitPrice || 0);
+      const qty = Number(pr.quantity || 0);
+      const totalAmount = qty * unitPrice;
+
+      const quotation = await Quotation.create(
+        {
+          code,
+          gymId: pr.gymId,
+          supplierId,
+          requestedBy: pr.requestedBy,
+          status: "pending",
+          notes: body?.notes || pr.note || `Từ yêu cầu ${pr.code}`,
+          totalAmount,
+          purchaseRequestId: pr.id,
+        },
+        { transaction: t }
+      );
+
+      await QuotationItem.create(
+        {
+          quotationId: quotation.id,
+          equipmentId: pr.equipmentId,
+          quantity: qty,
+          unitPrice,
+          totalPrice: totalAmount,
+        },
+        { transaction: t }
+      );
+
+      pr.status = "converted";
+      pr.quotationId = quotation.id;
+      await pr.save({ transaction: t });
+
+      await createAudit(
+        {
+          userId: adminId,
+          action: "PURCHASE_REQUEST_CONVERTED",
+          tableName: "purchaserequest",
+          recordId: pr.id,
+          oldValues: null,
+          newValues: { quotationId: quotation.id, quotationCode: quotation.code },
+          req,
+        },
+        t
+      );
+
+      await createNotification(
+        {
+          userId: pr.requestedBy,
+          title: "Yêu cầu mua sắm đã được tiếp nhận",
+          message: `Đã tạo báo giá ${quotation.code} từ ${pr.code}.`,
+          notificationType: "quotation",
+          relatedType: "quotation",
+          relatedId: quotation.id,
+        },
+        t
+      );
+
+      return quotation;
     });
   }
 

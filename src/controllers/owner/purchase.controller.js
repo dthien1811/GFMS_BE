@@ -33,15 +33,6 @@ const ownerPurchaseController = {
     }
   },
 
-  async createQuotation(req, res) {
-    try {
-      const data = await ownerPurchaseService.createQuotation(req.user.id, req.body);
-      return res.status(201).json({ data });
-    } catch (e) {
-      console.error("Create quotation error:", e);
-      return res.status(e.statusCode || 500).json({ message: e.message });
-    }
-  },
 
   // Purchase Orders
   async getPurchaseOrders(req, res) {
@@ -64,6 +55,17 @@ const ownerPurchaseController = {
     }
   },
 
+
+  async getProcurementPayments(req, res) {
+    try {
+      const data = await ownerPurchaseService.getProcurementPayments(req.user.id, req.query);
+      return res.status(200).json(data);
+    } catch (e) {
+      console.error("Get procurement payments error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
   // Receipts
   async getReceipts(req, res) {
     try {
@@ -81,6 +83,46 @@ const ownerPurchaseController = {
       return res.status(200).json({ data });
     } catch (e) {
       console.error("Get receipt detail error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async previewPurchaseStock(req, res) {
+    try {
+      const result = await ownerPurchaseService.previewPurchaseStock(req.user.id, req.query);
+      return res.status(200).json(result);
+    } catch (e) {
+      console.error("Preview purchase stock error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async createPurchaseRequest(req, res) {
+    try {
+      const data = await ownerPurchaseService.createPurchaseRequest(req.user.id, req.body);
+      return res.status(201).json({ data });
+    } catch (e) {
+      console.error("Create purchase request error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async getPurchaseRequests(req, res) {
+    try {
+      const data = await ownerPurchaseService.getPurchaseRequests(req.user.id, req.query);
+      return res.status(200).json(data);
+    } catch (e) {
+      console.error("Get purchase requests error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async getPurchaseRequestDetail(req, res) {
+    try {
+      const data = await ownerPurchaseService.getPurchaseRequestDetail(req.user.id, req.params.id);
+      return res.status(200).json({ data });
+    } catch (e) {
+      console.error("Get purchase request detail error:", e);
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
