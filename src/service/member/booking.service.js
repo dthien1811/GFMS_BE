@@ -1099,7 +1099,39 @@ const bookingService = {
       order: [["bookingDate", "ASC"], ["startTime", "ASC"]],
     });
 
-    return rows;
+    const bookingIds = rows.map((b) => b.id);
+    let trainerAttendances = [];
+    if (bookingIds.length && db.Attendance) {
+      trainerAttendances = await db.Attendance.findAll({
+        where: {
+          bookingId: bookingIds,
+          attendanceType: "trainer",
+        },
+        attributes: [
+          "id",
+          "bookingId",
+          "status",
+          "checkInTime",
+          "checkOutTime",
+          "method",
+          "attendanceType",
+        ],
+      });
+    }
+
+    const attByBookingId = new Map();
+    for (const a of trainerAttendances) {
+      const plain = a.toJSON ? a.toJSON() : a;
+      attByBookingId.set(plain.bookingId, plain);
+    }
+
+    return rows.map((b) => {
+      const plain = b.toJSON ? b.toJSON() : b;
+      return {
+        ...plain,
+        trainerAttendance: attByBookingId.get(b.id) || null,
+      };
+    });
   },
 };
 

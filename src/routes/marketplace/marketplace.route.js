@@ -15,6 +15,7 @@ router.get("/trainers/:id", marketplaceController.getTrainerDetail);
 router.get("/trainers/:id/packages", marketplaceController.listTrainerPackages);
 
 /* ================== PACKAGES ================== */
+router.get("/highlights", marketplaceController.listLandingHighlights);
 router.get("/packages", marketplaceController.listPackages);
 router.get("/packages/:id", marketplaceController.getPackageDetail);
 

@@ -6,58 +6,70 @@ const path = require('path');
 const Sequelize = require('sequelize');
 
 const basename = path.basename(__filename);
-const env = process.env.NODE_ENV || 'development';
+const rawEnv = String(process.env.NODE_ENV || 'development').toLowerCase();
+const env = rawEnv === 'production' ? 'production' : 'development';
 
 const configPath = path.join(__dirname, '..', 'config', 'config.js');
 const config = require(configPath)[env];
-
 const db = {};
-let sequelize;
 
-if (env === 'production') {
-  const host = process.env.AIVEN_HOST;
-  const port = Number(process.env.AIVEN_PORT || 3306);
-  const database = process.env.AIVEN_DB;
-  const username = process.env.AIVEN_USER;
-  const password = process.env.AIVEN_PASSWORD;
-  const caPath = process.env.AIVEN_SSL_CA;
+function resolveCAPath() {
+  const candidates = [
+    process.env.AIVEN_SSL_CA,
+    './ca.pem',
+    './src/config/ca.pem',
+    path.join(__dirname, '..', 'config', 'ca.pem'),
+  ].filter(Boolean);
 
-  if (!host || !database || !username || !password) {
-    throw new Error(
-      'Missing Aiven env vars: AIVEN_HOST, AIVEN_DB, AIVEN_USER, AIVEN_PASSWORD (and optional AIVEN_PORT, AIVEN_SSL_CA)'
-    );
+  for (const candidate of candidates) {
+    const full = path.isAbsolute(candidate) ? candidate : path.resolve(process.cwd(), candidate);
+    if (fs.existsSync(full)) return full;
   }
-  if (!caPath) throw new Error('Missing AIVEN_SSL_CA (path to ca.pem)');
+  return null;
+}
 
-  sequelize = new Sequelize(database, username, password, {
-    ...config,
-    host,
-    port,
+function buildSequelizeOptions(baseConfig) {
+  const options = {
+    ...baseConfig,
     dialect: 'mysql',
     logging: false,
     define: {
-      ...(config.define || {}),
+      ...(baseConfig.define || {}),
       freezeTableName: true,
+    },
+    pool: {
+      max: Number(process.env.DB_POOL_MAX || baseConfig?.pool?.max || 10),
+      min: Number(process.env.DB_POOL_MIN || baseConfig?.pool?.min || 0),
+      acquire: Number(process.env.DB_POOL_ACQUIRE || baseConfig?.pool?.acquire || 60000),
+      idle: Number(process.env.DB_POOL_IDLE || baseConfig?.pool?.idle || 10000),
+      evict: Number(process.env.DB_POOL_EVICT || baseConfig?.pool?.evict || 1000),
     },
     dialectOptions: {
-      ...(config.dialectOptions || {}),
-      ssl: {
-        ca: fs.readFileSync(path.resolve(caPath), 'utf8'),
+      ...(baseConfig.dialectOptions || {}),
+      connectTimeout: Number(process.env.DB_CONNECT_TIMEOUT || baseConfig?.dialectOptions?.connectTimeout || 60000),
+    },
+  };
+
+  if (env === 'production') {
+    const caPath = resolveCAPath();
+    if (caPath) {
+      options.dialectOptions.ssl = {
+        ca: fs.readFileSync(caPath, 'utf8'),
         rejectUnauthorized: true,
-      },
-    },
-  });
-} else {
-  sequelize = new Sequelize(config.database, config.username, config.password, {
-    ...config,
-    define: {
-      ...(config.define || {}),
-      freezeTableName: true,
-    },
-  });
+      };
+    }
+  }
+
+  return options;
 }
 
-// Load models (recursive)
+const sequelize = new Sequelize(
+  config.database,
+  config.username,
+  config.password,
+  buildSequelizeOptions(config)
+);
+
 const readModels = (dir) => {
   fs.readdirSync(dir).forEach((file) => {
     const fullPath = path.join(dir, file);
@@ -74,7 +86,6 @@ const readModels = (dir) => {
 
 readModels(__dirname);
 
-// Associate
 Object.keys(db).forEach((modelName) => {
   if (db[modelName].associate) db[modelName].associate(db);
 });

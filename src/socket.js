@@ -13,61 +13,100 @@ const getTokenFromSocket = (socket) => {
   return null;
 };
 
+async function hydrateActor(userId) {
+  const user = await db.User.findByPk(userId, {
+    include: [
+      { model: db.Group, attributes: ["name"] },
+      { model: db.Member, attributes: ["id", "gymId"] },
+      { model: db.Trainer, attributes: ["id", "gymId"] },
+      { model: db.Gym, as: "ownedGym", attributes: ["id"] },
+    ],
+  });
+  if (!user) return null;
+
+  return {
+    userId: user.id,
+    groupName: user.Group?.name || null,
+    memberId: user.Member?.id || null,
+    trainerId: user.Trainer?.id || null,
+    gymId: user.Member?.gymId || user.Trainer?.gymId || user.ownedGym?.id || null,
+  };
+}
+
+function joinActorRooms(socket, actor) {
+  socket.join(`user:${actor.userId}`);
+  if (actor.groupName) socket.join(`group:${String(actor.groupName).toLowerCase()}`);
+  if (actor.memberId) socket.join(`member:${actor.memberId}`);
+  if (actor.trainerId) socket.join(`trainer:${actor.trainerId}`);
+  if (actor.gymId) socket.join(`gym:${actor.gymId}`);
+}
+
 export const initSocket = (httpServer) => {
   const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
   io = new SocketIOServer(httpServer, {
-    cors: {
-      origin: FRONTEND_URL,
-      credentials: true,
-    },
+    cors: { origin: FRONTEND_URL, credentials: true },
   });
 
-  io.use((socket, next) => {
-    const token = getTokenFromSocket(socket);
-    if (!token) return next(new Error("Unauthorized"));
-    const decoded = jwtAction.verifyToken(token);
-    if (!decoded) return next(new Error("Unauthorized"));
-    socket.data.user = decoded;
-    return next();
-  });
-
-  io.on("connection", async (socket) => {
-    const userId = socket.data?.user?.id;
-    if (userId) {
-      socket.join(`user:${userId}`);
-    }
-
+  io.use(async (socket, next) => {
     try {
-      const trainer = await db.Trainer.findOne({
-        where: { userId },
-        attributes: ["id"],
-      });
-      if (trainer?.id) {
-        socket.join(`trainer:${trainer.id}`);
-      }
+      const token = getTokenFromSocket(socket);
+      if (!token) return next(new Error("Unauthorized"));
+      const decoded = jwtAction.verifyToken(token);
+      if (!decoded?.id) return next(new Error("Unauthorized"));
+      const actor = await hydrateActor(decoded.id);
+      if (!actor) return next(new Error("Unauthorized"));
+      socket.data.user = decoded;
+      socket.data.actor = actor;
+      return next();
     } catch (e) {
-      // ignore lookup errors
+      return next(new Error("Unauthorized"));
     }
+  });
+
+  io.on("connection", (socket) => {
+    const actor = socket.data.actor;
+    joinActorRooms(socket, actor);
+
+    socket.on("conversation:join", ({ conversationKey }) => {
+      if (!conversationKey) return;
+      socket.join(`conversation:${conversationKey}`);
+    });
+
+    socket.on("conversation:leave", ({ conversationKey }) => {
+      if (!conversationKey) return;
+      socket.leave(`conversation:${conversationKey}`);
+    });
+
+    socket.on("conversation:typing", ({ conversationKey, isTyping }) => {
+      if (!conversationKey) return;
+      io.to(`conversation:${conversationKey}`).emit("conversation:typing", {
+        conversationKey,
+        senderId: socket.data?.actor?.userId,
+        isTyping: Boolean(isTyping),
+      });
+    });
   });
 
   return io;
 };
 
 export const getSocket = () => io;
-
-export const emitToUser = (userId, event, payload) => {
-  if (!io || !userId) return;
-  io.to(`user:${userId}`).emit(event, payload);
-};
-
-export const emitToTrainer = (trainerId, event, payload) => {
-  if (!io || !trainerId) return;
-  io.to(`trainer:${trainerId}`).emit(event, payload);
-};
+export const emitToRoom = (room, event, payload) => io?.to(room).emit(event, payload);
+export const emitToUser = (userId, event, payload) => emitToRoom(`user:${userId}`, event, payload);
+export const emitToTrainer = (trainerId, event, payload) => emitToRoom(`trainer:${trainerId}`, event, payload);
+export const emitToMember = (memberId, event, payload) => emitToRoom(`member:${memberId}`, event, payload);
+export const emitToGym = (gymId, event, payload) => emitToRoom(`gym:${gymId}`, event, payload);
+export const emitToGroup = (groupName, event, payload) => emitToRoom(`group:${String(groupName).toLowerCase()}`, event, payload);
+export const emitToConversation = (conversationKey, event, payload) => emitToRoom(`conversation:${conversationKey}`, event, payload);
 
 export default {
   initSocket,
   getSocket,
+  emitToRoom,
   emitToUser,
   emitToTrainer,
+  emitToMember,
+  emitToGym,
+  emitToGroup,
+  emitToConversation,
 };

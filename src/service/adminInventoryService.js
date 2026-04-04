@@ -106,6 +106,7 @@ const pickEquipmentPayload = (payload = {}) => {
     "model",
     "specifications",
     "unit",
+    "price",
     "minStockLevel",
     "maxStockLevel",
     "status",

@@ -1,6 +1,7 @@
 // src/service/member/package.service.js
 import db from "../../models";
 import payosService from "../payment/payos.service";
+import realtimeService from "../realtime.service";
 
 function genCode(prefix = "TX") {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -115,7 +116,15 @@ const memberPackageService = {
         throw err;
       }
 
-      const trainerId = payload?.trainerId || null;
+      let trainerId = Number(payload?.trainerId || pkg.trainerId || 0) || null;
+      if (trainerId) {
+        const trainer = await db.Trainer.findOne({ where: { id: trainerId, gymId: pkg.gymId, status: "active" }, transaction: t });
+        if (!trainer) {
+          const err = new Error("PT được chọn không hợp lệ hoặc không thuộc gym của gói.");
+          err.statusCode = 400;
+          throw err;
+        }
+      }
 
       // 4) PAYOS FLOW
       if (paymentMethod === "payos") {
@@ -157,6 +166,13 @@ const memberPackageService = {
         );
 
         await t.commit();
+        await realtimeService.notifyUser(userId, {
+          title: "Đã tạo thanh toán gói tập",
+          message: `Đơn thanh toán cho gói ${pkg.name} đã được tạo.`,
+          notificationType: "package_purchase",
+          relatedType: "transaction",
+          relatedId: tx.id,
+        });
         return {
           transaction: tx,
           paymentProvider: "payos",
@@ -208,6 +224,32 @@ const memberPackageService = {
       await tx.update({ packageActivationId: activation.id }, { transaction: t });
 
       await t.commit();
+
+      await realtimeService.notifyUser(userId, {
+        title: "Mua gói thành công",
+        message: `Bạn đã kích hoạt gói ${pkg.name} thành công.`,
+        notificationType: "package_purchase",
+        relatedType: "packageActivation",
+        relatedId: activation.id,
+      });
+      if (trainerId) {
+        const trainer = await db.Trainer.findByPk(trainerId, { attributes: ["userId"] });
+        await realtimeService.notifyUser(trainer?.userId, {
+          title: "Bạn có hội viên mới",
+          message: `Một hội viên mới đã mua gói ${pkg.name} của bạn.`,
+          notificationType: "package_purchase",
+          relatedType: "packageActivation",
+          relatedId: activation.id,
+        });
+      }
+      const gym = await db.Gym.findByPk(pkg.gymId, { attributes: ["ownerId"] });
+      await realtimeService.notifyUser(gym?.ownerId, {
+        title: "Gym có giao dịch gói mới",
+        message: `Một hội viên vừa mua gói ${pkg.name}.`,
+        notificationType: "package_purchase",
+        relatedType: "transaction",
+        relatedId: tx.id,
+      });
       return { transaction: tx, activation };
     } catch (e) {
       await t.rollback();

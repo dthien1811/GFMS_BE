@@ -6,6 +6,7 @@ module.exports = (sequelize, DataTypes) => {
   class Receipt extends Model {
     static associate(models) {
       Receipt.belongsTo(models.Gym, { foreignKey: "gymId", as: "gym" });
+      Receipt.belongsTo(models.Supplier, { foreignKey: "supplierId", as: "supplier" });
       Receipt.belongsTo(models.User, { foreignKey: "processedBy", as: "processor" });
       Receipt.belongsTo(models.PurchaseOrder, { foreignKey: "purchaseOrderId", as: "purchaseOrder" });
 
@@ -23,6 +24,7 @@ module.exports = (sequelize, DataTypes) => {
       type: { type: DataTypes.ENUM("inbound", "outbound"), allowNull: false },
 
       gymId: { type: DataTypes.INTEGER, allowNull: true },
+      supplierId: { type: DataTypes.INTEGER, allowNull: true },
       processedBy: { type: DataTypes.INTEGER, allowNull: true },
 
       receiptDate: { type: DataTypes.DATE, allowNull: false },

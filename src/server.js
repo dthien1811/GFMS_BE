@@ -1,6 +1,13 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+process.on("unhandledRejection", (reason) => {
+  console.error("UNHANDLED REJECTION:", reason);
+});
+process.on("uncaughtException", (error) => {
+  console.error("UNCAUGHT EXCEPTION:", error);
+});
+
 import express from "express";
 import { createServer } from "http";
 import bodyParser from "body-parser";
@@ -20,7 +27,8 @@ import jwtAction from "./middleware/JWTAction";
 import { checkUserPermission } from "./middleware/permission";
 
 import marketplaceRoute from "./routes/marketplace/marketplace.route";
-
+import aiRoute from "./routes/ai/ai.route";
+import optionalUserJWT from "./middleware/optionalJWT";
 import ownerRequestRoutes from './routes/owner/request.route';
 
 // CommonJS routes (support both CJS + ESM default export)
@@ -134,6 +142,8 @@ app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 
 // ===== MARKETPLACE ROUTE (public) =====
 app.use("/api/marketplace", marketplaceRoute);
+// ===== AI ROUTES (optionalUserJWT) =====
+app.use("/api/ai", optionalUserJWT, aiRoute);
 
 app.use('/api/owner', ownerRequestRoutes);
 // ===== ✅ PUBLIC SIGNING API (NO JWT) =====

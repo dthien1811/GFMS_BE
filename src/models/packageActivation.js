@@ -7,6 +7,9 @@ module.exports = (sequelize, DataTypes) => {
       PackageActivation.belongsTo(models.Package, { foreignKey: 'packageId' });
       PackageActivation.belongsTo(models.Transaction, { foreignKey: 'transactionId' });
       PackageActivation.hasMany(models.Booking, { foreignKey: 'packageActivationId' });
+      if (models.ActivationMaterial) {
+        PackageActivation.hasMany(models.ActivationMaterial, { foreignKey: 'packageActivationId' });
+      }
     }
   };
   PackageActivation.init({

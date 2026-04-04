@@ -24,6 +24,7 @@ module.exports = (sequelize, DataTypes) => {
 
       if (models.Commission) Trainer.hasMany(models.Commission, { foreignKey: 'trainerId' });
       if (models.Review) Trainer.hasMany(models.Review, { foreignKey: 'trainerId' });
+      if (models.ActivationMaterial) Trainer.hasMany(models.ActivationMaterial, { foreignKey: 'trainerId' });
     }
   }
 
