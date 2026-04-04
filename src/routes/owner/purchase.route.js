@@ -30,4 +30,7 @@ router.get("/procurement-payments", ownerPurchaseController.getProcurementPaymen
 router.get("/receipts", ownerPurchaseController.getReceipts);
 router.get("/receipts/:id", ownerPurchaseController.getReceiptDetail);
 
+// Procurement payments
+router.get("/procurement-payments", ownerPurchaseController.getProcurementPayments);
+
 export default router;

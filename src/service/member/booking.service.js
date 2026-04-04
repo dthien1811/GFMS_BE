@@ -65,6 +65,9 @@ const getDateDow = (isoDate) => {
 const genCode = (prefix = "TX") =>
   `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
 
+const genMembershipNumber = () =>
+  `MEM${Date.now()}${Math.floor(Math.random() * 1000)}`;
+
 const overlap = (aStart, aEnd, bStart, bEnd) =>
   aStart < bEnd && bStart < aEnd;
 
@@ -251,9 +254,15 @@ async function ensureMemberForGym({ userId, gymId, transaction }) {
       {
         userId,
         gymId,
+        membershipNumber: genMembershipNumber(),
         status: "active",
         joinDate: new Date(),
       },
+      { transaction }
+    );
+  } else if (!member.membershipNumber) {
+    await member.update(
+      { membershipNumber: genMembershipNumber() },
       { transaction }
     );
   }
