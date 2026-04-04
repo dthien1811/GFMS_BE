@@ -24,4 +24,7 @@ router.get("/purchase-orders/:id", ownerPurchaseController.getPurchaseOrderDetai
 router.get("/receipts", ownerPurchaseController.getReceipts);
 router.get("/receipts/:id", ownerPurchaseController.getReceiptDetail);
 
+// Procurement payments
+router.get("/procurement-payments", ownerPurchaseController.getProcurementPayments);
+
 export default router;

@@ -12,6 +12,7 @@ const {
   Equipment, 
   EquipmentStock,
   Gym,
+  Transaction,
   sequelize
 } = db;
 
@@ -308,6 +309,96 @@ const ownerPurchaseService = {
     ensure(receipt.gym?.ownerId === ownerUserId, "Not authorized", 403);
 
     return receipt;
+  },
+
+  // ===== PROCUREMENT PAYMENTS =====
+  async getProcurementPayments(ownerUserId, query) {
+    const { page, limit, offset } = parsePaging(query);
+    const { q, status } = query;
+
+    const ownerGyms = await Gym.findAll({
+      where: { ownerId: ownerUserId },
+      attributes: ["id"],
+      raw: true,
+    });
+    const gymIds = ownerGyms.map((g) => g.id);
+
+    if (gymIds.length === 0) {
+      return { data: [], meta: { page, limit, totalItems: 0, totalPages: 0 } };
+    }
+
+    const where = {
+      gymId: { [Op.in]: gymIds },
+      transactionType: "equipment_purchase",
+    };
+
+    if (status && status !== "all") {
+      where.paymentStatus = status;
+    }
+
+    if (q) {
+      where[Op.or] = [
+        { transactionCode: { [Op.like]: `%${q}%` } },
+        { description: { [Op.like]: `%${q}%` } },
+      ];
+    }
+
+    const { rows, count } = await Transaction.findAndCountAll({
+      where,
+      include: [{ model: Gym, attributes: ["id", "name"] }],
+      order: [["createdAt", "DESC"]],
+      limit,
+      offset,
+    });
+
+    const parseMetadata = (meta) => {
+      if (!meta) return {};
+      if (typeof meta === "string") {
+        try {
+          return JSON.parse(meta);
+        } catch (e) {
+          return {};
+        }
+      }
+      return meta;
+    };
+
+    const poIds = Array.from(
+      new Set(
+        rows
+          .map((row) => Number(parseMetadata(row.metadata)?.purchaseOrderId))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      )
+    );
+
+    const purchaseOrders = poIds.length
+      ? await PurchaseOrder.findAll({
+          where: { id: { [Op.in]: poIds } },
+          include: [
+            { model: Supplier, as: "supplier", attributes: ["id", "name"] },
+            { model: Gym, as: "gym", attributes: ["id", "name"] },
+          ],
+        })
+      : [];
+
+    const poById = new Map(purchaseOrders.map((po) => [po.id, po]));
+
+    const data = rows.map((row) => {
+      const json = row.toJSON();
+      const metadata = parseMetadata(json.metadata);
+      const poId = Number(metadata?.purchaseOrderId);
+      return {
+        ...json,
+        metadata,
+        paymentPhase: metadata?.paymentPhase || null,
+        purchaseOrder: Number.isFinite(poId) ? poById.get(poId) || null : null,
+      };
+    });
+
+    return {
+      data,
+      meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
+    };
   },
 };
 

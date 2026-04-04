@@ -84,6 +84,16 @@ const ownerPurchaseController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+
+  async getProcurementPayments(req, res) {
+    try {
+      const data = await ownerPurchaseService.getProcurementPayments(req.user.id, req.query);
+      return res.status(200).json(data);
+    } catch (e) {
+      console.error("Get procurement payments error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerPurchaseController;

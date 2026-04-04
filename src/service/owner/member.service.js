@@ -2,6 +2,33 @@ import db from "../../models/index";
 
 const { Member, User, Gym, Package, PackageActivation, Trainer } = db;
 
+const resolveTrainerIdForPackage = async (gymId, packageData, transaction, selectedTrainerId = null) => {
+  if (selectedTrainerId) {
+    const selected = await Trainer.findOne({
+      where: { id: Number(selectedTrainerId), gymId, isActive: true },
+      attributes: ["id"],
+      transaction,
+    });
+    if (!selected) {
+      const error = new Error("Huấn luyện viên không hợp lệ hoặc không thuộc gym");
+      error.statusCode = 400;
+      throw error;
+    }
+    return Number(selected.id);
+  }
+
+  if (packageData?.trainerId) return Number(packageData.trainerId);
+
+  const trainer = await Trainer.findOne({
+    where: { gymId, isActive: true },
+    attributes: ["id"],
+    order: [["rating", "DESC"], ["id", "ASC"]],
+    transaction,
+  });
+
+  return trainer?.id || null;
+};
+
 /**
  * Lấy danh sách users chưa là member của bất kỳ gym nào
  */
@@ -63,7 +90,7 @@ const getAvailableUsers = async () => {
  * Owner tạo member mới từ user chưa đăng ký
  */
 const createMember = async (userId, data) => {
-  const { targetUserId, gymId, packageId } = data;
+  const { targetUserId, gymId, packageId, trainerId } = data;
 
   // Kiểm tra gym thuộc về owner
   const gym = await Gym.findOne({
@@ -110,6 +137,13 @@ const createMember = async (userId, data) => {
     });
 
     if (packageData) {
+      const resolvedTrainerId = await resolveTrainerIdForPackage(gymId, packageData, null, trainerId);
+      if (!resolvedTrainerId) {
+        const error = new Error("Gym chưa có huấn luyện viên hoạt động để gán cho gói này");
+        error.statusCode = 400;
+        throw error;
+      }
+
       // Tính ngày hết hạn
       let expiryDate = null;
       if (packageData.durationDays && packageData.durationDays > 0) {
@@ -120,6 +154,7 @@ const createMember = async (userId, data) => {
       // Tạo transaction
       const transaction = await db.Transaction.create({
         memberId: newMember.id,
+        trainerId: resolvedTrainerId,
         gymId: gymId,
         packageId: packageData.id,
         amount: packageData.price,
@@ -241,6 +276,50 @@ const getMyMembers = async (userId, query = {}) => {
     distinct: true,
   });
 
+  const missingCurrentPackageMemberIds = rows
+    .filter((m) => !m.currentPackage && m.id)
+    .map((m) => m.id);
+
+  if (missingCurrentPackageMemberIds.length > 0) {
+    const activeActivations = await PackageActivation.findAll({
+      where: {
+        memberId: { [db.Sequelize.Op.in]: missingCurrentPackageMemberIds },
+        status: "active",
+      },
+      include: [
+        {
+          model: Package,
+          attributes: ["id", "name", "price"],
+          required: false,
+        },
+      ],
+      order: [["activationDate", "DESC"], ["createdAt", "DESC"]],
+    });
+
+    const latestPackageByMemberId = new Map();
+    activeActivations.forEach((a) => {
+      if (!latestPackageByMemberId.has(a.memberId) && a.Package) {
+        latestPackageByMemberId.set(a.memberId, a.Package);
+      }
+    });
+
+    rows.forEach((member) => {
+      if (!member.currentPackage) {
+        const fallbackPkg = latestPackageByMemberId.get(member.id);
+        if (fallbackPkg) {
+          member.setDataValue("currentPackage", fallbackPkg);
+        }
+      }
+    });
+  }
+
+  // Backward compatibility: dữ liệu cũ có thể chưa có membershipNumber
+  rows.forEach((member) => {
+    if (!member.membershipNumber) {
+      member.setDataValue("membershipNumber", `MEM${member.id}`);
+    }
+  });
+
   return {
     members: rows,
     pagination: {
@@ -288,6 +367,24 @@ const getMemberDetail = async (userId, memberId) => {
         as: "PackageActivations",
         attributes: ["id", "activationDate", "expiryDate", "totalSessions", "sessionsUsed", "sessionsRemaining", "status", "packageId"],
         include: [
+          {
+            model: db.Transaction,
+            attributes: ["id", "trainerId", "transactionDate"],
+            required: false,
+            include: [
+              {
+                model: Trainer,
+                attributes: ["id"],
+                required: false,
+                include: [
+                  {
+                    model: User,
+                    attributes: ["id", "username"],
+                  },
+                ],
+              },
+            ],
+          },
           {
             model: Package,
             attributes: ["id", "name", "packageType", "trainerId"],
@@ -514,11 +611,14 @@ const deleteMember = async (userId, memberId) => {
 /**
  * Owner gia hạn gói cho member
  */
-const renewMemberPackage = async (userId, memberId, packageId) => {
+const renewMemberPackage = async (userId, memberId, packageId, trainerId = null) => {
+  const t = await db.sequelize.transaction();
+  try {
   // Lấy danh sách gym của owner
   const myGyms = await Gym.findAll({
     where: { ownerId: userId },
     attributes: ["id"],
+    transaction: t,
   });
   const myGymIds = myGyms.map((g) => g.id);
 
@@ -532,6 +632,7 @@ const renewMemberPackage = async (userId, memberId, packageId) => {
       { model: Gym, attributes: ["id", "name"] },
       { model: User, attributes: ["id", "username", "email"] },
     ],
+    transaction: t,
   });
 
   if (!member) {
@@ -549,7 +650,8 @@ const renewMemberPackage = async (userId, memberId, packageId) => {
     },
     include: [
       { model: db.Trainer, attributes: ["id"], include: [{ model: User, attributes: ["username"] }], required: false }
-    ]
+    ],
+    transaction: t,
   });
 
   if (!packageData) {
@@ -558,75 +660,106 @@ const renewMemberPackage = async (userId, memberId, packageId) => {
     throw error;
   }
 
-  console.log(`Mua gói: ${packageData.name}, Type: ${packageData.packageType}, TrainerId: ${packageData.trainerId}`);
-
-  // Xử lý khác nhau cho Membership vs Personal Training
-  const isMembership = packageData.packageType === 'membership';
-  const isPersonalTraining = packageData.packageType === 'personal_training';
-
-  // Nếu là membership, expire membership cũ
-  if (isMembership) {
-    await PackageActivation.update(
-      { status: 'expired', notes: 'Thay thế bởi membership mới' },
-      {
-        where: {
-          memberId: member.id,
-          status: 'active'
-        },
-        include: [{
-          model: Package,
-          where: { packageType: 'membership' }
-        }]
-      }
-    );
-    console.log(`Đã expire membership cũ của member ${memberId}`);
+  const resolvedTrainerId = await resolveTrainerIdForPackage(member.gymId, packageData, t, trainerId);
+  if (!resolvedTrainerId) {
+    const error = new Error("Gym chưa có huấn luyện viên hoạt động để gán cho gói này");
+    error.statusCode = 400;
+    throw error;
   }
+
+  console.log(`Gia hạn gói: ${packageData.name}, Type: ${packageData.packageType}, TrainerId: ${packageData.trainerId}`);
+
+  const activeActivationsBeforeRenew = await PackageActivation.findAll({
+    where: {
+      memberId: member.id,
+      status: "active",
+    },
+    attributes: ["id", "expiryDate", "sessionsRemaining"],
+    transaction: t,
+  });
+
+  const carryRemainingSessions = activeActivationsBeforeRenew.reduce((sum, a) => {
+    const remaining = Number(a.sessionsRemaining || 0);
+    return sum + (Number.isFinite(remaining) && remaining > 0 ? remaining : 0);
+  }, 0);
+
+  // Với mô hình mới: luôn thay thế gói đang active bằng gói mới.
+  await PackageActivation.update(
+    { status: 'expired', notes: 'Thay thế bởi gói mới từ Owner' },
+    {
+      where: {
+        memberId: member.id,
+        status: 'active'
+      },
+      transaction: t,
+    }
+  );
 
   // Tính ngày hết hạn
   let expiryDate = null;
   if (packageData.durationDays && packageData.durationDays > 0) {
-    expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + packageData.durationDays);
+    const now = new Date();
+    let baseDate = now;
+
+    activeActivationsBeforeRenew.forEach((a) => {
+      if (!a.expiryDate) return;
+      const candidate = new Date(a.expiryDate);
+      if (!Number.isNaN(candidate.getTime()) && candidate > baseDate) {
+        baseDate = candidate;
+      }
+    });
+
+    expiryDate = new Date(baseDate);
+    expiryDate.setDate(expiryDate.getDate() + Number(packageData.durationDays));
   }
 
   // Tạo transaction
   const transaction = await db.Transaction.create({
     memberId: member.id,
+    trainerId: resolvedTrainerId,
     gymId: member.gymId,
     packageId: packageData.id,
     amount: packageData.price,
     transactionType: "package_purchase",
     paymentStatus: "completed",
     paymentMethod: "cash",
-    transactionCode: `OWNER-${isMembership ? 'MEMBERSHIP' : 'PT'}-${Date.now()}-${member.id}`,
-    description: `Mua ${isMembership ? 'Membership' : 'gói PT'} ${packageData.name}${isPersonalTraining ? ` với PT ${packageData.Trainer?.User?.username || packageData.trainerId}` : ''} bởi Owner`,
+    transactionCode: `OWNER-PACKAGE-${Date.now()}-${member.id}`,
+    description: `Gia hạn gói ${packageData.name} bởi Owner`,
     transactionDate: new Date(),
     processedBy: userId,
-  });
+  }, { transaction: t });
 
   // Tạo PackageActivation mới
+  const baseSessions = Number(packageData.sessions || 0);
+  const renewedTotalSessions = baseSessions + carryRemainingSessions;
+
   const newActivation = await PackageActivation.create({
     memberId: member.id,
     packageId: packageData.id,
     transactionId: transaction.id,
     activationDate: new Date(),
     expiryDate: expiryDate,
-    totalSessions: packageData.sessions || 0,
+    totalSessions: renewedTotalSessions,
     sessionsUsed: 0,
-    sessionsRemaining: packageData.sessions || 0,
+    sessionsRemaining: renewedTotalSessions,
     pricePerSession: packageData.pricePerSession || (packageData.sessions > 0 ? packageData.price / packageData.sessions : 0),
     status: "active",
-    notes: `${isMembership ? 'Membership' : 'Gói PT'} kích hoạt bởi Owner`,
-  });
+    notes: `Gói kích hoạt bởi Owner`,
+  }, { transaction: t });
 
-  // Chỉ cập nhật currentPackageId nếu là membership
-  const memberUpdateData = { status: "active" };
-  if (isMembership) {
-    memberUpdateData.currentPackageId = packageData.id;
-    memberUpdateData.packageExpiryDate = expiryDate;
-  }
-  
-  await member.update(memberUpdateData);
+  await transaction.update({ packageActivationId: newActivation.id }, { transaction: t });
+
+  const memberUpdateData = {
+    status: "active",
+    currentPackageId: packageData.id,
+    packageActivationId: newActivation.id,
+    packageExpiryDate: expiryDate,
+    sessionsRemaining: renewedTotalSessions,
+  };
+
+  await member.update(memberUpdateData, { transaction: t });
+
+  await t.commit();
 
   // Load lại activation với relations
   const result = await PackageActivation.findByPk(newActivation.id, {
@@ -643,8 +776,12 @@ const renewMemberPackage = async (userId, memberId, packageId) => {
       membershipNumber: member.membershipNumber,
       User: member.User,
     },
-    message: `Đã ${isMembership ? 'kích hoạt membership' : 'mua gói PT'} thành công`,
+    message: "Gia hạn gói thành công",
   };
+  } catch (error) {
+    await t.rollback();
+    throw error;
+  }
 };
 
 /**

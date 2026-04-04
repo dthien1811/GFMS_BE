@@ -8,6 +8,10 @@ function genCode(prefix = "TX") {
 
 const ALLOWED_PAYMENT = new Set(["cash", "momo", "vnpay", "payos"]);
 
+function genMembershipNumber() {
+  return `MEM${Date.now()}${Math.floor(Math.random() * 1000)}`;
+}
+
 async function getMembersByUserId(userId) {
   return db.Member.findAll({ where: { userId } });
 }
@@ -23,9 +27,15 @@ async function ensureMemberForGym({ userId, gymId, transaction }) {
       {
         userId,
         gymId,
+        membershipNumber: genMembershipNumber(),
         status: "active",
         joinDate: new Date(),
       },
+      { transaction }
+    );
+  } else if (!member.membershipNumber) {
+    await member.update(
+      { membershipNumber: genMembershipNumber() },
       { transaction }
     );
   }
