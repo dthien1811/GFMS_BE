@@ -11,6 +11,12 @@ router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owner
 // Suppliers
 router.get("/suppliers", ownerPurchaseController.getSuppliers);
 
+// Purchase requests (bước 1 — nhu cầu mua từ owner)
+router.get("/purchase-requests/stock-preview", ownerPurchaseController.previewPurchaseStock);
+router.post("/purchase-requests", ownerPurchaseController.createPurchaseRequest);
+router.get("/purchase-requests", ownerPurchaseController.getPurchaseRequests);
+router.get("/purchase-requests/:id", ownerPurchaseController.getPurchaseRequestDetail);
+
 // Quotations
 router.get("/quotations", ownerPurchaseController.getQuotations);
 router.get("/quotations/:id", ownerPurchaseController.getQuotationDetail);

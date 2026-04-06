@@ -1,19 +1,23 @@
 import db from "../../models";
 import { Op } from "sequelize";
+import procurementStockHelper from "../procurementStockHelper";
 
-const { 
-  Supplier, 
-  Quotation, 
+const { buildStockContext, validateRequestReason } = procurementStockHelper;
+
+const {
+  Supplier,
+  Quotation,
   QuotationItem,
-  PurchaseOrder, 
+  PurchaseOrder,
   PurchaseOrderItem,
-  Receipt, 
+  Receipt,
   ReceiptItem,
-  Equipment, 
+  Equipment,
   EquipmentStock,
   Gym,
+  PurchaseRequest,
   Transaction,
-  sequelize
+  sequelize,
 } = db;
 
 const parsePaging = (query) => {
@@ -309,6 +313,140 @@ const ownerPurchaseService = {
     ensure(receipt.gym?.ownerId === ownerUserId, "Not authorized", 403);
 
     return receipt;
+  },
+
+  // ===== PURCHASE REQUESTS (bước 1: nhu cầu từ owner) =====
+  async previewPurchaseStock(ownerUserId, query) {
+    const gymId = Number(query.gymId);
+    const equipmentId = Number(query.equipmentId);
+    ensure(gymId && equipmentId, "gymId and equipmentId are required");
+
+    const gym = await Gym.findByPk(gymId);
+    ensure(gym && gym.ownerId === ownerUserId, "Gym not found or not authorized", 403);
+
+    const ctx = await buildStockContext(gymId, equipmentId, null);
+    ensure(ctx, "Equipment not found", 404);
+    return { data: ctx };
+  },
+
+  async createPurchaseRequest(ownerUserId, payload) {
+    const {
+      gymId,
+      equipmentId,
+      quantity,
+      expectedUnitPrice,
+      expectedSupplierId,
+      reason,
+      priority,
+      note,
+    } = payload;
+
+    ensure(gymId && equipmentId, "gymId and equipmentId are required");
+    const qty = Number(quantity);
+    ensure(Number.isFinite(qty) && qty > 0, "quantity must be a positive number");
+
+    const gym = await Gym.findByPk(Number(gymId));
+    ensure(gym && gym.ownerId === ownerUserId, "Gym not found or not authorized", 403);
+
+    const equipment = await Equipment.findByPk(Number(equipmentId));
+    ensure(equipment, "Equipment not found", 404);
+    ensure(equipment.status === "active", "Equipment is discontinued", 400);
+
+    if (expectedSupplierId) {
+      const sup = await Supplier.findByPk(Number(expectedSupplierId));
+      ensure(sup, "Supplier not found", 404);
+    }
+
+    return sequelize.transaction(async (t) => {
+      const ctx = await buildStockContext(gymId, equipmentId, t);
+      const v = validateRequestReason(reason, ctx);
+      ensure(v.ok, v.message, 400);
+
+      const count = await PurchaseRequest.count({ transaction: t });
+      const code = `PR-${Date.now()}-${count + 1}`;
+
+      const pr = await PurchaseRequest.create(
+        {
+          code,
+          gymId: Number(gymId),
+          equipmentId: Number(equipmentId),
+          expectedSupplierId: expectedSupplierId ? Number(expectedSupplierId) : null,
+          requestedBy: ownerUserId,
+          quantity: qty,
+          expectedUnitPrice: Number(expectedUnitPrice || 0),
+          reason: String(reason || "").trim(),
+          priority: String(priority || "normal").trim() || "normal",
+          note: note ? String(note) : null,
+          status: "submitted",
+          stockSnapshot: ctx,
+        },
+        { transaction: t }
+      );
+
+      return pr;
+    });
+  },
+
+  async getPurchaseRequests(ownerUserId, query) {
+    const { page, limit, offset } = parsePaging(query);
+    const { status, q } = query;
+
+    const ownerGyms = await Gym.findAll({
+      where: { ownerId: ownerUserId },
+      attributes: ["id"],
+      raw: true,
+    });
+    const gymIds = ownerGyms.map((g) => g.id);
+
+    if (gymIds.length === 0) {
+      return { data: [], meta: { page, limit, totalItems: 0, totalPages: 0 } };
+    }
+
+    const where = { gymId: { [Op.in]: gymIds } };
+    if (status && status !== "all") {
+      where.status = status;
+    }
+    if (q) {
+      where[Op.or] = [
+        { code: { [Op.like]: `%${q}%` } },
+        { note: { [Op.like]: `%${q}%` } },
+      ];
+    }
+
+    const { rows, count } = await PurchaseRequest.findAndCountAll({
+      where,
+      include: [
+        { model: Gym, as: "gym", attributes: ["id", "name"] },
+        { model: Equipment, as: "equipment", attributes: ["id", "name", "code"] },
+        { model: Supplier, as: "expectedSupplier", attributes: ["id", "name", "code"] },
+        { model: Quotation, as: "quotation", attributes: ["id", "code", "status"] },
+      ],
+      order: [["createdAt", "DESC"]],
+      limit,
+      offset,
+      distinct: true,
+    });
+
+    return {
+      data: rows,
+      meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
+    };
+  },
+
+  async getPurchaseRequestDetail(ownerUserId, requestId) {
+    const pr = await PurchaseRequest.findByPk(requestId, {
+      include: [
+        { model: Gym, as: "gym", attributes: ["id", "name", "ownerId"] },
+        { model: Equipment, as: "equipment", attributes: ["id", "name", "code", "minStockLevel"] },
+        { model: Supplier, as: "expectedSupplier", attributes: ["id", "name", "code", "email", "phone"] },
+        { model: Quotation, as: "quotation", attributes: ["id", "code", "status", "totalAmount"] },
+      ],
+    });
+
+    ensure(pr, "Purchase request not found", 404);
+    ensure(pr.gym?.ownerId === ownerUserId, "Not authorized", 403);
+
+    return pr;
   },
 
   // ===== PROCUREMENT PAYMENTS =====
