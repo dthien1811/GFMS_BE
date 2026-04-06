@@ -13,6 +13,7 @@ module.exports = (sequelize, DataTypes) => {
       Booking.belongsTo(models.Gym, { foreignKey: 'gymId' });
       Booking.belongsTo(models.Package, { foreignKey: 'packageId' });
       Booking.belongsTo(models.User, { foreignKey: 'createdBy', as: 'creator' });
+      if (models.BookingRescheduleRequest) Booking.hasMany(models.BookingRescheduleRequest, { foreignKey: 'bookingId' });
 
       // ✅ only if exists
       if (models.PackageActivation) {
@@ -49,6 +50,11 @@ module.exports = (sequelize, DataTypes) => {
 
       rating: { type: DataTypes.INTEGER, validate: { min: 1, max: 5 } },
       reviewComment: DataTypes.TEXT,
+      isRescheduled: { type: DataTypes.BOOLEAN, defaultValue: false },
+      rescheduledAt: DataTypes.DATE,
+      originalBookingDate: DataTypes.DATEONLY,
+      originalStartTime: DataTypes.TIME,
+      originalEndTime: DataTypes.TIME,
     },
     {
       sequelize,
