@@ -38,6 +38,7 @@ const ownerDashboardController = {
           upcomingBookings: [],
           expiringMembers: [],
           lowStock: [],
+          bestSellingPackages: [],
           totalRevenue: 0,
         });
       }
@@ -221,6 +222,43 @@ const ownerDashboardController = {
       });
       const totalRevenue = parseFloat(revenueResult?.total || 0);
 
+      // ── 8. Gói bán chạy nhất (mua/gia hạn, giảm dần theo lượt bán) ─────────
+      const bestSellingRows = await Transaction.findAll({
+        attributes: [
+          "packageId",
+          [Sequelize.fn("COUNT", Sequelize.col("Transaction.id")), "soldCount"],
+          [
+            Sequelize.fn("COALESCE", Sequelize.fn("SUM", Sequelize.col("amount")), 0),
+            "revenue",
+          ],
+        ],
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          paymentStatus: "completed",
+          packageId: { [Sequelize.Op.ne]: null },
+          transactionType: { [Sequelize.Op.in]: ["package_purchase", "package_renewal"] },
+        },
+        include: [
+          {
+            model: Package,
+            attributes: ["id", "name"],
+          },
+        ],
+        group: ["Transaction.packageId", "Package.id", "Package.name"],
+        order: [
+          [Sequelize.literal("soldCount"), "DESC"],
+          [Sequelize.literal("revenue"), "DESC"],
+        ],
+        limit: 10,
+      });
+
+      const bestSellingPackages = bestSellingRows.map((row) => ({
+        packageId: row.packageId,
+        packageName: row.Package?.name || "—",
+        soldCount: Number(row.get("soldCount") || 0),
+        revenue: Number(row.get("revenue") || 0),
+      }));
+
       return res.status(200).json({
         gyms: myGyms,
         todayBookings,
@@ -230,6 +268,7 @@ const ownerDashboardController = {
         upcomingBookings,
         expiringMembers,
         lowStock,
+        bestSellingPackages,
         totalRevenue,
       });
     } catch (e) {

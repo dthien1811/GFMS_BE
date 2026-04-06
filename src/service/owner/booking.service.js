@@ -2,6 +2,67 @@ import db from "../../models/index";
 
 const { Booking, Member, Trainer, Gym, Package, User, TrainerShare } = db;
 
+const ACTIVE_PT_PACKAGE_INCLUDE = [{
+  model: db.Package,
+  where: {
+    packageType: 'personal_training',
+  },
+  required: true,
+}];
+
+const applyPackageActivationCompletion = async (booking) => {
+  if (!booking?.packageActivationId) return null;
+
+  const activation = await db.PackageActivation.findByPk(booking.packageActivationId);
+  if (!activation || activation.sessionsRemaining <= 0) return activation;
+
+  await activation.update({
+    sessionsUsed: (activation.sessionsUsed || 0) + 1,
+    sessionsRemaining: Math.max(0, activation.sessionsRemaining - 1),
+    status: activation.sessionsRemaining - 1 <= 0 ? 'completed' : activation.status,
+  });
+
+  return activation;
+};
+
+const resolveBookingPackageActivation = async ({ memberId, trainerId, packageId, packageActivationId, allowSharedTrainer }) => {
+  const whereClause = {
+    memberId,
+    status: 'active',
+    sessionsRemaining: { [db.Sequelize.Op.gt]: 0 },
+  };
+
+  if (packageActivationId) {
+    whereClause.id = packageActivationId;
+  }
+
+  const include = [{
+    model: db.Package,
+    where: {
+      packageType: 'personal_training',
+      ...(packageId ? { id: packageId } : {}),
+      ...(!allowSharedTrainer && trainerId ? { trainerId } : {}),
+    },
+    required: true,
+  }];
+
+  let activation = await db.PackageActivation.findOne({
+    where: whereClause,
+    include,
+    order: [['createdAt', 'DESC']],
+  });
+
+  if (!activation && allowSharedTrainer && trainerId) {
+    activation = await db.PackageActivation.findOne({
+      where: whereClause,
+      include: ACTIVE_PT_PACKAGE_INCLUDE,
+      order: [['createdAt', 'DESC']],
+    });
+  }
+
+  return activation;
+};
+
 /**
  * Owner xem danh sách bookings của gyms mình quản lý
  */
@@ -186,7 +247,7 @@ const getBookingDetail = async (userId, bookingId) => {
  * Owner tạo booking mới
  */
 const createBooking = async (userId, data) => {
-  const { memberId, trainerId, gymId, packageId, bookingDate, startTime, endTime, notes } = data;
+  const { memberId, trainerId, gymId, packageId, packageActivationId, bookingDate, startTime, endTime, notes } = data;
 
   // Kiểm tra gym có thuộc owner không
   const gym = await Gym.findOne({
@@ -199,11 +260,22 @@ const createBooking = async (userId, data) => {
     throw error;
   }
 
-  // Kiểm tra member tồn tại
-  const member = await Member.findByPk(memberId);
+  // Kiểm tra member tồn tại, thuộc đúng gym và đang active
+  const member = await Member.findOne({
+    where: {
+      id: memberId,
+      gymId,
+    },
+  });
   if (!member) {
-    const error = new Error("Member không tồn tại");
+    const error = new Error("Member không tồn tại trong gym này");
     error.statusCode = 404;
+    throw error;
+  }
+
+  if (member.status !== 'active') {
+    const error = new Error("Hội viên đang ngừng hoạt động và không có quyền đặt lịch");
+    error.statusCode = 400;
     throw error;
   }
 
@@ -275,23 +347,28 @@ const createBooking = async (userId, data) => {
         error.statusCode = 400;
         throw error;
       }
+
+      ptPackageActivation = await resolveBookingPackageActivation({
+        memberId,
+        trainerId,
+        packageId,
+        packageActivationId,
+        allowSharedTrainer: true,
+      });
+
+      if (!ptPackageActivation) {
+        const error = new Error("Hội viên chưa có gói PT đang hoạt động để áp dụng cho lịch với PT thay thế.");
+        error.statusCode = 400;
+        throw error;
+      }
     } else {
       // Trainer KHÔNG phải shared trainer → kiểm tra gói PT bình thường
-      ptPackageActivation = await db.PackageActivation.findOne({
-        where: {
-          memberId: memberId,
-          status: 'active',
-          sessionsRemaining: { [db.Sequelize.Op.gt]: 0 }
-        },
-        include: [{
-          model: db.Package,
-          where: {
-            packageType: 'personal_training',
-            trainerId: trainerId
-          },
-          required: true
-        }],
-        order: [['createdAt', 'DESC']]
+      ptPackageActivation = await resolveBookingPackageActivation({
+        memberId,
+        trainerId,
+        packageId,
+        packageActivationId,
+        allowSharedTrainer: false,
       });
 
       if (!ptPackageActivation) {
@@ -624,18 +701,7 @@ const updateBookingStatus = async (userId, bookingId, newStatus) => {
     updateData.checkinTime = new Date();
   } else if (newStatus === 'completed') {
     updateData.checkoutTime = new Date();
-    
-    // Trừ số buổi trong PackageActivation nếu booking có liên kết
-    if (booking.packageActivationId) {
-      const activation = await db.PackageActivation.findByPk(booking.packageActivationId);
-      if (activation && activation.sessionsRemaining > 0) {
-        await activation.update({
-          sessionsUsed: (activation.sessionsUsed || 0) + 1,
-          sessionsRemaining: activation.sessionsRemaining - 1,
-          status: activation.sessionsRemaining - 1 === 0 ? 'completed' : activation.status
-        });
-      }
-    }
+    await applyPackageActivationCompletion(booking);
   } else if (newStatus === 'cancelled') {
     updateData.cancellationDate = new Date();
     updateData.cancellationBy = userId;

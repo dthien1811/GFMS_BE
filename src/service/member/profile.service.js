@@ -1,5 +1,6 @@
 import db from "../../models";
 import bcrypt from "bcryptjs";
+import realtimeService from "../realtime.service";
 
 const normalizeSex = (value) => {
   const v = String(value || "").trim().toLowerCase();
@@ -17,6 +18,65 @@ const normalizeStatus = (value) => {
 const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
 const isValidPhone = (value) => !value || /^(\+84|0)\d{9,10}$/.test(String(value || "").replace(/\s+/g, ""));
 const isStrongPassword = (value) => /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/.test(String(value || ""));
+
+const ALLOWED_SPECIALIZATIONS = [
+  "Yoga",
+  "Pilates",
+  "HIIT",
+  "CrossFit",
+  "Thể hình",
+  "Tăng sức mạnh",
+  "Tập chức năng",
+  "Giảm mỡ",
+  "Huấn luyện dinh dưỡng",
+  "Phục hồi chức năng",
+  "Quyền anh",
+  "Tập cardio",
+  "Bơi lội",
+  "Chạy bộ",
+  "Đạp xe",
+];
+
+const normalizeCertificateLinks = (input) => {
+  const raw = Array.isArray(input)
+    ? input
+    : String(input || "")
+        .split(/[\n,;]+/)
+        .map((v) => v.trim())
+        .filter(Boolean);
+
+  const unique = [...new Set(raw)].slice(0, 10);
+  for (const link of unique) {
+    try {
+      const u = new URL(link);
+      if (!["http:", "https:"].includes(u.protocol)) {
+        return { ok: false, message: `Link không hợp lệ: ${link}` };
+      }
+    } catch (_e) {
+      return { ok: false, message: `Link không hợp lệ: ${link}` };
+    }
+  }
+
+  return { ok: true, value: unique };
+};
+
+const normalizeSpecializations = (input) => {
+  const list = Array.isArray(input)
+    ? input
+    : String(input || "")
+        .split(/[\n,;|]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+  const unique = [...new Set(list)];
+  if (!unique.length) return { ok: false, message: "Vui lòng chọn ít nhất 1 chuyên môn" };
+  if (unique.length > 6) return { ok: false, message: "Tối đa 6 chuyên môn" };
+
+  const invalid = unique.find((s) => !ALLOWED_SPECIALIZATIONS.includes(s));
+  if (invalid) return { ok: false, message: `Chuyên môn không hợp lệ: ${invalid}` };
+
+  return { ok: true, value: unique };
+};
 
 const toSafeUser = (user, member = null, gym = null, activation = null, latestMetric = null) => {
   return {
@@ -84,6 +144,221 @@ const toSafeUser = (user, member = null, gym = null, activation = null, latestMe
 };
 
 const memberProfileService = {
+  async getMyBecomeTrainerRequests(userId) {
+    const requests = await db.Request.findAll({
+      where: {
+        requesterId: userId,
+        requestType: "BECOME_TRAINER",
+      },
+      order: [["createdAt", "DESC"]],
+      raw: true,
+    });
+
+    const gymIds = [...new Set(
+      requests
+        .map((r) => Number(r?.data?.application?.gymId))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    )];
+
+    const gymMap = new Map();
+    if (gymIds.length > 0) {
+      const gyms = await db.Gym.findAll({
+        where: { id: gymIds },
+        attributes: ["id", "name"],
+        raw: true,
+      });
+      gyms.forEach((g) => gymMap.set(Number(g.id), g.name));
+    }
+
+    return requests.map((request) => {
+      const app = request?.data?.application || {};
+      const gymId = Number(app.gymId);
+
+      return {
+        id: request.id,
+        requestType: request.requestType,
+        status: request.status,
+        reason: request.reason || "",
+        requestContent: request?.data?.content || "",
+        reviewNote: request.approveNote || "",
+        processedAt: request.processedAt || null,
+        createdAt: request.createdAt || null,
+        application: {
+          gymId: Number.isInteger(gymId) && gymId > 0 ? gymId : null,
+          gymName: Number.isInteger(gymId) && gymId > 0 ? (gymMap.get(gymId) || null) : null,
+          specializations: Array.isArray(app.specializations) ? app.specializations.filter(Boolean) : [],
+          certification: String(app.certification || "").trim() || null,
+          certificationLinks: Array.isArray(app.certificationLinks) ? app.certificationLinks.filter(Boolean) : [],
+          hourlyRate: Number(app.hourlyRate) > 0 ? Number(app.hourlyRate) : null,
+        },
+      };
+    });
+  },
+
+  async createBecomeTrainerRequest(userId, payload = {}) {
+    const reason = String(payload.reason || "").trim();
+    const content = String(payload.content || "").trim();
+    const application = payload?.application && typeof payload.application === "object"
+      ? payload.application
+      : {};
+
+    if (!reason || reason.length < 10) {
+      const err = new Error("Vui lòng nhập lý do từ 10 ký tự trở lên");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (reason.length > 2000) {
+      const err = new Error("Lý do tối đa 2000 ký tự");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (content && content.length > 4000) {
+      const err = new Error("Nội dung đơn tối đa 4000 ký tự");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const spec = normalizeSpecializations(application.specializations);
+    if (!spec.ok) {
+      const err = new Error(spec.message);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const certLinks = normalizeCertificateLinks(application.certificationLinks);
+    if (!certLinks.ok) {
+      const err = new Error(certLinks.message);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const hourlyRate = Number(application.hourlyRate);
+    if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
+      const err = new Error("Giá/giờ phải lớn hơn 0");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const gymId = Number(application.gymId);
+    if (!Number.isInteger(gymId) || gymId <= 0) {
+      const err = new Error("Vui lòng chọn phòng gym");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const gym = await db.Gym.findByPk(gymId, { raw: true });
+    if (!gym) {
+      const err = new Error("Phòng gym không tồn tại");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const certificateImageUrls = Array.isArray(application.certificateImageUrls)
+      ? application.certificateImageUrls
+          .map((v) => String(v || "").trim())
+          .filter(Boolean)
+          .slice(0, 10)
+      : [];
+
+    for (const url of certificateImageUrls) {
+      try {
+        const parsed = new URL(url);
+        if (!["http:", "https:"].includes(parsed.protocol)) {
+          const err = new Error(`URL ảnh chứng chỉ không hợp lệ: ${url}`);
+          err.statusCode = 400;
+          throw err;
+        }
+      } catch (_e) {
+        const err = new Error(`URL ảnh chứng chỉ không hợp lệ: ${url}`);
+        err.statusCode = 400;
+        throw err;
+      }
+    }
+
+    const user = await db.User.findOne({
+      where: { id: userId },
+      raw: true,
+    });
+
+    if (!user) {
+      const err = new Error("Không tìm thấy người dùng");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (Number(user.groupId) === 3) {
+      const err = new Error("Bạn đã là huấn luyện viên");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const pendingRequest = await db.Request.findOne({
+      where: {
+        requesterId: userId,
+        requestType: "BECOME_TRAINER",
+        status: "PENDING",
+      },
+      order: [["createdAt", "DESC"]],
+      raw: true,
+    });
+
+    if (pendingRequest) {
+      const err = new Error("Bạn đã có đơn chờ duyệt trở thành huấn luyện viên");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const created = await db.Request.create({
+      requesterId: userId,
+      requestType: "BECOME_TRAINER",
+      status: "PENDING",
+      reason,
+      data: {
+        source: "member_profile",
+        content: content || null,
+        application: {
+          gymId,
+          specializations: spec.value,
+          certification: String(application.certification || "").trim() || null,
+          certificationLinks: certLinks.value,
+          certificateImageUrls,
+          hourlyRate,
+        },
+      },
+    });
+
+    const ownerGym = await db.Gym.findByPk(Number(gymId), {
+      attributes: ["id", "name", "ownerId"],
+    });
+
+    if (ownerGym?.ownerId) {
+      await realtimeService.notifyUser(ownerGym.ownerId, {
+        title: "Có đơn đăng ký huấn luyện viên mới",
+        message: `Có đơn mới gửi tới gym ${ownerGym.name}.`,
+        notificationType: "trainer_request",
+        relatedType: "request",
+        relatedId: created.id,
+      });
+      realtimeService.emitUser(ownerGym.ownerId, "request:changed", {
+        requestId: created.id,
+        status: created.status,
+        action: "created",
+        requestType: created.requestType,
+      });
+    }
+
+    return {
+      id: created.id,
+      requestType: created.requestType,
+      status: created.status,
+      reason: created.reason,
+      requestContent: created?.data?.content || null,
+      createdAt: created.createdAt,
+    };
+  },
+
   async getMyProfile(userId) {
     const user = await db.User.findOne({
       where: { id: userId },

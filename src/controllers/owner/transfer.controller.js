@@ -43,7 +43,8 @@ const ownerTransferController = {
       const data = await ownerTransferService.rejectTransfer(
         req.user.id,
         req.params.id,
-        req.body?.reason
+        req.body?.reason,
+        req.body?.gymId || req.query?.gymId || req.headers["x-selected-gym-id"]
       );
       return res.status(200).json({ data });
     } catch (e) {
@@ -53,7 +54,11 @@ const ownerTransferController = {
 
   async completeTransfer(req, res) {
     try {
-      const data = await ownerTransferService.completeTransfer(req.user.id, req.params.id);
+      const data = await ownerTransferService.completeTransfer(
+        req.user.id,
+        req.params.id,
+        req.body?.gymId || req.query?.gymId || req.headers["x-selected-gym-id"]
+      );
       return res.status(200).json({ data });
     } catch (e) {      console.error("Create transfer error:", e);      return res.status(e.statusCode || 500).json({ message: e.message });
     }

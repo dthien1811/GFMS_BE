@@ -1,6 +1,13 @@
 import db from "../../models/index";
+import realtimeService from "../realtime.service";
 
 const { FranchiseRequest, User } = db;
+
+const emitFranchiseChanged = (userIds = [], payload = {}) => {
+  [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
+    realtimeService.emitUser(userId, "franchise:changed", payload);
+  });
+};
 
 /**
  * Owner tạo yêu cầu nhượng quyền
@@ -42,6 +49,12 @@ const createFranchiseRequest = async (userId, data) => {
     investmentAmount,
     businessPlan,
     status: "pending",
+  });
+
+  emitFranchiseChanged([userId], {
+    requestId: franchiseRequest.id,
+    status: franchiseRequest.status,
+    action: "created",
   });
 
   return franchiseRequest;
@@ -175,6 +188,12 @@ const updateMyFranchiseRequest = async (userId, requestId, data) => {
 
   await franchiseRequest.save();
 
+  emitFranchiseChanged([userId], {
+    requestId: franchiseRequest.id,
+    status: franchiseRequest.status,
+    action: "updated",
+  });
+
   return franchiseRequest;
 };
 
@@ -203,6 +222,12 @@ const deleteMyFranchiseRequest = async (userId, requestId) => {
     error.statusCode = 400;
     throw error;
   }
+
+  emitFranchiseChanged([userId], {
+    requestId: franchiseRequest.id,
+    status: franchiseRequest.status,
+    action: "deleted",
+  });
 
   await franchiseRequest.destroy();
 

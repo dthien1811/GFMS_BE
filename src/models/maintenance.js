@@ -6,6 +6,9 @@ module.exports = (sequelize, DataTypes) => {
     static associate(models) {
       Maintenance.belongsTo(models.Equipment, { foreignKey: 'equipmentId' });
       Maintenance.belongsTo(models.Gym, { foreignKey: 'gymId' });
+      if (models.EquipmentUnit) {
+        Maintenance.belongsTo(models.EquipmentUnit, { foreignKey: 'equipmentUnitId', as: 'equipmentUnit' });
+      }
 
       Maintenance.belongsTo(models.User, { foreignKey: 'requestedBy', as: 'requester' });
       Maintenance.belongsTo(models.User, { foreignKey: 'assignedTo', as: 'technician' });
@@ -15,6 +18,7 @@ module.exports = (sequelize, DataTypes) => {
   Maintenance.init(
     {
       equipmentId: { type: DataTypes.INTEGER, allowNull: false },
+      equipmentUnitId: { type: DataTypes.INTEGER, allowNull: true },
       gymId: { type: DataTypes.INTEGER, allowNull: false },
 
       issueDescription: { type: DataTypes.TEXT, allowNull: true },

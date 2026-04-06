@@ -119,36 +119,6 @@ const ownerMemberController = {
   },
 
   /**
-   * POST /api/owner/members/:id/renew-package
-   * Gia hạn gói cho member
-   */
-  async renewMemberPackage(req, res) {
-    try {
-      const userId = req.user.id;
-      const memberId = req.params.id;
-      const { packageId, trainerId } = req.body;
-
-      if (!packageId) {
-        return res.status(400).json({ message: "Vui lòng chọn gói cần gia hạn" });
-      }
-
-      const result = await ownerMemberService.renewMemberPackage(userId, memberId, packageId, trainerId);
-
-      return res.status(200).json({
-        success: true,
-        data: result,
-        message: result.message,
-      });
-    } catch (e) {
-      console.error('Error in renewMemberPackage controller:', e);
-      return res.status(e.statusCode || 500).json({ 
-        success: false,
-        message: e.message 
-      });
-    }
-  },
-
-  /**
    * PATCH /api/owner/members/:id/toggle-status
    * Toggle member status (active/inactive)
    */

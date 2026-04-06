@@ -1,6 +1,13 @@
 import db from "../../models/index";
+import realtimeService from "../realtime.service";
 
 const { TrainerShare, Trainer, Gym, User, Policy } = db;
+
+const emitTrainerShareChanged = (userIds = [], payload = {}) => {
+  [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((targetUserId) => {
+    realtimeService.emitUser(targetUserId, "trainer_share:changed", payload);
+  });
+};
 
 /**
  * Owner tạo yêu cầu chia sẻ trainer
@@ -186,6 +193,31 @@ const createTrainerShare = async (userId, data) => {
     requestedBy: userId,
     notes,
   });
+
+  const trainerProfile = await Trainer.findByPk(trainerId, {
+    include: [{ model: User, attributes: ["username"] }],
+    attributes: ["id"],
+  });
+  const trainerName = trainerProfile?.User?.username || `PT #${trainerId}`;
+
+  emitTrainerShareChanged([userId, fromGym.ownerId], {
+    shareId: trainerShare.id,
+    status: trainerShare.status,
+    action: "created",
+    trainerId,
+    fromGymId,
+    toGymId,
+  });
+
+  if (fromGym.ownerId && Number(fromGym.ownerId) !== Number(userId)) {
+    await realtimeService.notifyUser(fromGym.ownerId, {
+      title: "Có yêu cầu mượn huấn luyện viên mới",
+      message: `${toGym.name} vừa gửi yêu cầu mượn ${trainerName}.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
 
   return trainerShare;
 };
@@ -422,6 +454,16 @@ const updateMyTrainerShare = async (userId, shareId, data) => {
 
   await trainerShare.save();
 
+  const fromGym = await Gym.findByPk(trainerShare.fromGymId, { attributes: ["ownerId"] });
+  emitTrainerShareChanged([userId, fromGym?.ownerId], {
+    shareId: trainerShare.id,
+    status: trainerShare.status,
+    action: "updated",
+    trainerId: trainerShare.trainerId,
+    fromGymId: trainerShare.fromGymId,
+    toGymId: trainerShare.toGymId,
+  });
+
   return trainerShare;
 };
 
@@ -448,6 +490,16 @@ const deleteMyTrainerShare = async (userId, shareId) => {
     error.statusCode = 400;
     throw error;
   }
+
+  const fromGym = await Gym.findByPk(trainerShare.fromGymId, { attributes: ["ownerId"] });
+  emitTrainerShareChanged([userId, fromGym?.ownerId], {
+    shareId: trainerShare.id,
+    status: trainerShare.status,
+    action: "deleted",
+    trainerId: trainerShare.trainerId,
+    fromGymId: trainerShare.fromGymId,
+    toGymId: trainerShare.toGymId,
+  });
 
   await trainerShare.destroy();
 
@@ -547,7 +599,13 @@ const getReceivedTrainerShareRequests = async (userId, query = {}) => {
 const acceptTrainerShareRequest = async (userId, requestId) => {
   const request = await TrainerShare.findByPk(requestId, {
     include: [
-      { model: Gym, as: 'fromGym' }
+      { model: Gym, as: 'fromGym' },
+      { model: Gym, as: 'toGym' },
+      {
+        model: Trainer,
+        include: [{ model: User, attributes: ["username"] }],
+        attributes: ["id"],
+      },
     ]
   });
 
@@ -577,6 +635,25 @@ const acceptTrainerShareRequest = async (userId, requestId) => {
   request.acceptedAt = new Date();
   await request.save();
 
+  emitTrainerShareChanged([userId, request.requestedBy], {
+    shareId: request.id,
+    status: request.status,
+    action: "approved",
+    trainerId: request.trainerId,
+    fromGymId: request.fromGymId,
+    toGymId: request.toGymId,
+  });
+
+  if (request.requestedBy && Number(request.requestedBy) !== Number(userId)) {
+    await realtimeService.notifyUser(request.requestedBy, {
+      title: "Yêu cầu mượn huấn luyện viên đã được chấp nhận",
+      message: `${request.fromGym?.name || "Đối tác"} đã chấp nhận yêu cầu mượn ${request.Trainer?.User?.username || `PT #${request.trainerId}`}.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: request.id,
+    });
+  }
+
   return request;
 };
 
@@ -586,7 +663,12 @@ const acceptTrainerShareRequest = async (userId, requestId) => {
 const rejectTrainerShareRequest = async (userId, requestId, reason) => {
   const request = await TrainerShare.findByPk(requestId, {
     include: [
-      { model: Gym, as: 'fromGym' }
+      { model: Gym, as: 'fromGym' },
+      {
+        model: Trainer,
+        include: [{ model: User, attributes: ["username"] }],
+        attributes: ["id"],
+      },
     ]
   });
 
@@ -619,6 +701,25 @@ const rejectTrainerShareRequest = async (userId, requestId, reason) => {
     request.notes = `Lý do từ chối: ${reason}`;
   }
   await request.save();
+
+  emitTrainerShareChanged([userId, request.requestedBy], {
+    shareId: request.id,
+    status: request.status,
+    action: "rejected",
+    trainerId: request.trainerId,
+    fromGymId: request.fromGymId,
+    toGymId: request.toGymId,
+  });
+
+  if (request.requestedBy && Number(request.requestedBy) !== Number(userId)) {
+    await realtimeService.notifyUser(request.requestedBy, {
+      title: "Yêu cầu mượn huấn luyện viên bị từ chối",
+      message: `${request.fromGym?.name || "Đối tác"} đã từ chối yêu cầu mượn ${request.Trainer?.User?.username || `PT #${request.trainerId}`}.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: request.id,
+    });
+  }
 
   return request;
 };

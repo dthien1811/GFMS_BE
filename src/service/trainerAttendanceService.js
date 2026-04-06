@@ -174,6 +174,33 @@ const getTrainerByAuthId = async (authId) => {
   return trainer;
 };
 
+const emitBookingStatusRealtime = async ({ booking, trainer, attendanceStatus }) => {
+  try {
+    const gymId = booking?.gymId || trainer?.gymId || null;
+    const payload = {
+      bookingId: booking?.id,
+      status: booking?.status,
+      attendanceStatus,
+      gymId,
+      trainerId: booking?.trainerId || trainer?.id || null,
+      memberId: booking?.memberId || null,
+      bookingDate: booking?.bookingDate || null,
+      startTime: booking?.startTime || null,
+      endTime: booking?.endTime || null,
+    };
+
+    if (gymId) {
+      realtimeService.emitGym(gymId, "booking:status-changed", payload);
+      const gym = await db.Gym.findByPk(gymId, { attributes: ["ownerId"] });
+      if (gym?.ownerId) {
+        realtimeService.emitUser(gym.ownerId, "booking:status-changed", payload);
+      }
+    }
+  } catch (error) {
+    console.error("[trainerAttendanceService] emit booking status error:", error.message);
+  }
+};
+
 const pickAllowed = (Model, data) => {
   if (!Model?.rawAttributes) return data;
   const allowed = new Set(Object.keys(Model.rawAttributes));
@@ -187,6 +214,40 @@ const pickAllowed = (Model, data) => {
 const pickField = (Model, candidates) => {
   const attrs = Model?.rawAttributes || {};
   return candidates.find((c) => !!attrs[c]) || null;
+};
+
+const consumePackageSessionForBooking = async (booking) => {
+  if (!booking?.packageActivationId) return null;
+  const PackageActivation = db.PackageActivation || db.packageactivation;
+  mustHaveModel(PackageActivation, "PackageActivation");
+
+  const activation = await PackageActivation.findByPk(booking.packageActivationId);
+  if (!activation || activation.sessionsRemaining <= 0) return activation;
+
+  await activation.update({
+    sessionsUsed: (activation.sessionsUsed || 0) + 1,
+    sessionsRemaining: Math.max(0, activation.sessionsRemaining - 1),
+    status: activation.sessionsRemaining - 1 <= 0 ? "completed" : activation.status,
+  });
+
+  return activation;
+};
+
+const restorePackageSessionForBooking = async (booking) => {
+  if (!booking?.packageActivationId) return null;
+  const PackageActivation = db.PackageActivation || db.packageactivation;
+  mustHaveModel(PackageActivation, "PackageActivation");
+
+  const activation = await PackageActivation.findByPk(booking.packageActivationId);
+  if (!activation) return activation;
+
+  await activation.update({
+    sessionsUsed: Math.max(0, (activation.sessionsUsed || 0) - 1),
+    sessionsRemaining: (activation.sessionsRemaining || 0) + 1,
+    status: "active",
+  });
+
+  return activation;
 };
 
 // ===================
@@ -329,9 +390,10 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
     });
   }
 
-  // Điểm danh "có mặt" = buổi tập đã kết thúc góc nhìn PT (không giữ in_progress)
-  booking.status = "completed";
+  booking.status = "in_progress";
   await booking.save();
+
+  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus });
 
   try {
     await syncCommissionForAttendance({ trainer, booking, normalizedStatus });
@@ -355,6 +417,7 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   const trainer = await getTrainerByAuthId(userId);
   const booking = await Booking.findOne({ where: { id: bookingId } });
   if (!booking) throw Object.assign(new Error("Booking not found"), { statusCode: 404 });
+  const previousBookingStatus = String(booking.status || "").toLowerCase();
 
   // chặn sửa nếu đã chi trả
   await ensureAttendanceEditable(booking.id);
@@ -385,6 +448,16 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
 
   booking.status = "completed";
   await booking.save();
+
+  if (["present", "completed"].includes(normalizedStatus) && previousBookingStatus !== "completed") {
+    try {
+      await consumePackageSessionForBooking(booking);
+    } catch (e) {
+      console.error("[trainerAttendanceService] consume package session error:", e.message);
+    }
+  }
+
+  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus });
 
   try {
     const member = booking.memberId ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] }) : null;
@@ -418,6 +491,7 @@ const resetAttendance = async ({ userId, bookingId }) => {
   const trainer = await getTrainerByAuthId(userId);
   const booking = await Booking.findOne({ where: { id: bookingId } });
   if (!booking) throw Object.assign(new Error("Booking not found"), { statusCode: 404 });
+  const previousBookingStatus = String(booking.status || "").toLowerCase();
 
   const bookingTrainerId = Number(booking.trainerId || booking.ptId || 0);
   if (bookingTrainerId && bookingTrainerId !== Number(trainer.id)) {
@@ -432,6 +506,7 @@ const resetAttendance = async ({ userId, bookingId }) => {
     where: { bookingId: booking.id, attendanceType: "trainer", userId },
     attributes: SAFE_ATT_COLS,
   });
+  const previousAttendanceStatus = String(attendance?.status || "").toLowerCase();
 
   if (attendance) {
     await attendance.destroy();
@@ -439,6 +514,16 @@ const resetAttendance = async ({ userId, bookingId }) => {
 
   booking.status = "confirmed";
   await booking.save();
+
+  if (previousBookingStatus === "completed" && ["present", "completed"].includes(previousAttendanceStatus)) {
+    try {
+      await restorePackageSessionForBooking(booking);
+    } catch (e) {
+      console.error("[trainerAttendanceService] restore package session error:", e.message);
+    }
+  }
+
+  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: "reset" });
 
   try {
     await syncCommissionForAttendance({ trainer, booking, normalizedStatus: "reset" });

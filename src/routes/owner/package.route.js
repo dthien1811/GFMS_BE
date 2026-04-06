@@ -8,6 +8,8 @@ const router = express.Router();
 // ✅ req.user đã có từ jwtAction.checkUserJWT ở /api
 router.use(requireGroupName(["Gym Owners"]));
 
+router.get("/specializations", packageController.getSpecializations);
+router.get("/trainers", packageController.getTrainersBySpecialization);
 router.get("/", packageController.getMyPackages);
 router.post("/", packageController.createPackage);
 router.put("/:id", packageController.updatePackage);

@@ -54,6 +54,42 @@ const memberProfileController = {
       });
     }
   },
+
+  async createBecomeTrainerRequest(req, res) {
+    try {
+      const data = await memberProfileService.createBecomeTrainerRequest(req.user.id, req.body || {});
+      return res.status(201).json({
+        EM: "Gửi đơn trở thành huấn luyện viên thành công",
+        EC: 0,
+        DT: data,
+      });
+    } catch (e) {
+      console.error("createBecomeTrainerRequest controller error:", e);
+      return res.status(e.statusCode || 500).json({
+        EM: e.message || "Error from server",
+        EC: e.statusCode ? 1 : -1,
+        DT: "",
+      });
+    }
+  },
+
+  async getMyBecomeTrainerRequests(req, res) {
+    try {
+      const data = await memberProfileService.getMyBecomeTrainerRequests(req.user.id);
+      return res.status(200).json({
+        EM: "Get become trainer requests success",
+        EC: 0,
+        DT: data,
+      });
+    } catch (e) {
+      console.error("getMyBecomeTrainerRequests controller error:", e);
+      return res.status(e.statusCode || 500).json({
+        EM: e.message || "Error from server",
+        EC: e.statusCode ? 1 : -1,
+        DT: "",
+      });
+    }
+  },
 };
 
 export default memberProfileController;
