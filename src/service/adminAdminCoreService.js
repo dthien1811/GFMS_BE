@@ -16,6 +16,7 @@ const {
   Maintenance,
   Equipment,
   EquipmentStock,
+  EquipmentUnit,
 
   // Module 3
   FranchiseRequest,
@@ -41,6 +42,12 @@ const {
   Receipt,
   PurchaseOrder,
 } = require("../models");
+const realtimeServiceModule = require("./realtime.service");
+const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
+const notificationGymService = require("./notification-gym.service");
+const { attachGymIdsToNotifications } = notificationGymService;
+const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
+const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
 /** ========= Helpers ========= */
 
@@ -72,6 +79,90 @@ function toISODateEnd(d) {
   return x;
 }
 
+function emitMaintenanceChanged(userIds = [], payload = {}) {
+  [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
+    realtimeService.emitUser(userId, "maintenance:changed", payload);
+  });
+}
+
+async function logMaintenanceUnitEvent({
+  maintenance,
+  transaction,
+  eventType,
+  performedBy,
+  eventAt,
+  notes,
+  metadata,
+}) {
+  if (!maintenance?.equipmentUnitId || !maintenance?.equipmentId) return;
+
+  await logEquipmentUnitEvents(
+    [
+      {
+        equipmentUnitId: Number(maintenance.equipmentUnitId),
+        equipmentId: Number(maintenance.equipmentId),
+        gymId: Number(maintenance.gymId),
+        eventType,
+        referenceType: "maintenance",
+        referenceId: Number(maintenance.id),
+        performedBy: performedBy || null,
+        notes: notes ?? maintenance.issueDescription ?? null,
+        metadata: {
+          maintenanceStatus: maintenance.status,
+          assignedTo: maintenance.assignedTo || null,
+          requestedBy: maintenance.requestedBy || null,
+          ...metadata,
+        },
+        eventAt: eventAt || new Date(),
+      },
+    ],
+    { transaction }
+  );
+}
+
+async function restoreMaintenanceUnitAndStock(m, t) {
+  if (!m?.equipmentId || !m?.gymId) return;
+
+  let sourceUsageStatus = "in_stock";
+
+  if (m.equipmentUnitId) {
+    const unit = await EquipmentUnit.findByPk(m.equipmentUnitId, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    if (unit) {
+      sourceUsageStatus = unit.usageStatus || "in_stock";
+      await unit.update(
+        {
+          status: "active",
+          usageStatus: unit.usageStatus || "in_stock",
+          transferId: null,
+        },
+        { transaction: t }
+      );
+    }
+  }
+
+  const stock = await EquipmentStock.findOne({
+    where: { gymId: m.gymId, equipmentId: m.equipmentId },
+    transaction: t,
+    lock: t.LOCK.UPDATE,
+  });
+
+  if (stock) {
+    if (sourceUsageStatus === "in_stock") {
+      await stock.update(
+        {
+          availableQuantity: Number(stock.availableQuantity || 0) + 1,
+          reservedQuantity: Math.max(0, Number(stock.reservedQuantity || 0) - 1),
+        },
+        { transaction: t }
+      );
+    }
+  }
+}
+
 async function createAudit({ t, req, action, tableName, recordId, oldValues, newValues }) {
   const userId = getActorId(req);
   return AuditLog.create(
@@ -91,7 +182,7 @@ async function createAudit({ t, req, action, tableName, recordId, oldValues, new
 
 async function notifyUser({ t, userId, title, message, notificationType, relatedType, relatedId }) {
   if (!userId) return null;
-  return Notification.create(
+  const row = await Notification.create(
     {
       userId,
       title,
@@ -103,6 +194,29 @@ async function notifyUser({ t, userId, title, message, notificationType, related
     },
     { transaction: t }
   );
+
+  const payload = {
+    id: row.id,
+    title,
+    message,
+    notificationType: notificationType || null,
+    relatedType: relatedType || null,
+    relatedId: relatedId || null,
+    isRead: false,
+    createdAt: row.createdAt,
+  };
+
+  const [enrichedPayload] = await attachGymIdsToNotifications([payload]);
+
+  if (t?.afterCommit) {
+    t.afterCommit(() => {
+      realtimeService.emitUser(userId, "notification:new", enrichedPayload);
+    });
+  } else {
+    realtimeService.emitUser(userId, "notification:new", enrichedPayload);
+  }
+
+  return row;
 }
 
 async function sendMessage({ t, senderId, receiverId, content }) {
@@ -311,6 +425,19 @@ async getTechnicians(req) {
         relatedId: m.id,
       });
 
+      await logMaintenanceUnitEvent({
+        maintenance: m,
+        transaction: t,
+        eventType: "maintenance_approved",
+        performedBy: actorId,
+        eventAt: m.updatedAt || new Date(),
+        notes: notes ?? m.issueDescription ?? null,
+        metadata: {
+          scheduledDate: m.scheduledDate,
+          estimatedCost: m.estimatedCost,
+        },
+      });
+
       await sendMessage({
         t,
         senderId: actorId,
@@ -318,6 +445,15 @@ async getTechnicians(req) {
         content: `Yêu cầu bảo trì #${m.id} đã được duyệt. Lịch: ${new Date(
           scheduledDate
         ).toLocaleString()}.`,
+      });
+
+      emitMaintenanceChanged([m.requestedBy], {
+        maintenanceId: m.id,
+        equipmentId: m.equipmentId,
+        equipmentUnitId: m.equipmentUnitId || null,
+        gymId: m.gymId,
+        status: m.status,
+        action: "approved",
       });
 
       return m;
@@ -352,6 +488,8 @@ async getTechnicians(req) {
         { transaction: t }
       );
 
+      await restoreMaintenanceUnitAndStock(m, t);
+
       await createAudit({
         t,
         req,
@@ -360,6 +498,18 @@ async getTechnicians(req) {
         recordId: m.id,
         oldValues,
         newValues: safeJson(m),
+      });
+
+      await logMaintenanceUnitEvent({
+        maintenance: m,
+        transaction: t,
+        eventType: "maintenance_rejected",
+        performedBy: actorId,
+        eventAt: m.updatedAt || new Date(),
+        notes: reason,
+        metadata: {
+          reason,
+        },
       });
 
       await notifyUser({
@@ -377,6 +527,15 @@ async getTechnicians(req) {
         senderId: actorId,
         receiverId: m.requestedBy,
         content: `Yêu cầu bảo trì #${m.id} bị từ chối. Lý do: ${reason}`,
+      });
+
+      emitMaintenanceChanged([m.requestedBy], {
+        maintenanceId: m.id,
+        equipmentId: m.equipmentId,
+        equipmentUnitId: m.equipmentUnitId || null,
+        gymId: m.gymId,
+        status: m.status,
+        action: "rejected",
       });
 
       return m;
@@ -424,6 +583,19 @@ async getTechnicians(req) {
         newValues: safeJson(m),
       });
 
+      await logMaintenanceUnitEvent({
+        maintenance: m,
+        transaction: t,
+        eventType: "maintenance_assigned",
+        performedBy: actorId,
+        eventAt: m.updatedAt || new Date(),
+        notes: m.issueDescription || null,
+        metadata: {
+          assignedTo: m.assignedTo,
+          technicianName: tech.username || null,
+        },
+      });
+
       await notifyUser({
         t,
         userId: m.assignedTo,
@@ -449,6 +621,15 @@ async getTechnicians(req) {
         senderId: actorId,
         receiverId: m.assignedTo,
         content: `Bạn được phân công xử lý bảo trì #${m.id}. Vui lòng vào hệ thống để cập nhật tiến độ.`,
+      });
+
+      emitMaintenanceChanged([m.requestedBy], {
+        maintenanceId: m.id,
+        equipmentId: m.equipmentId,
+        equipmentUnitId: m.equipmentUnitId || null,
+        gymId: m.gymId,
+        status: m.status,
+        action: "assigned",
       });
 
       return m;
@@ -479,6 +660,17 @@ async getTechnicians(req) {
         newValues: safeJson(m),
       });
 
+      await logMaintenanceUnitEvent({
+        maintenance: m,
+        transaction: t,
+        eventType: "maintenance_started",
+        performedBy: actorId,
+        eventAt: m.updatedAt || new Date(),
+        metadata: {
+          assignedTo: m.assignedTo || null,
+        },
+      });
+
       await notifyUser({
         t,
         userId: m.requestedBy,
@@ -487,6 +679,15 @@ async getTechnicians(req) {
         notificationType: "MAINTENANCE",
         relatedType: "maintenance",
         relatedId: m.id,
+      });
+
+      emitMaintenanceChanged([m.requestedBy], {
+        maintenanceId: m.id,
+        equipmentId: m.equipmentId,
+        equipmentUnitId: m.equipmentUnitId || null,
+        gymId: m.gymId,
+        status: m.status,
+        action: "started",
       });
 
       return m;
@@ -521,6 +722,8 @@ async getTechnicians(req) {
         { transaction: t }
       );
 
+      await restoreMaintenanceUnitAndStock(m, t);
+
       const tx = await Transaction.create(
         {
           transactionCode: `MAINT-${m.id}-${Date.now()}`,
@@ -547,6 +750,19 @@ async getTechnicians(req) {
         newValues: { ...safeJson(m), transactionId: tx.id },
       });
 
+      await logMaintenanceUnitEvent({
+        maintenance: m,
+        transaction: t,
+        eventType: "maintenance_completed",
+        performedBy: actorId,
+        eventAt: m.completionDate || m.updatedAt || new Date(),
+        metadata: {
+          actualCost,
+          completionDate: m.completionDate,
+          transactionId: tx.id,
+        },
+      });
+
       await notifyUser({
         t,
         userId: m.requestedBy,
@@ -568,6 +784,15 @@ async getTechnicians(req) {
           relatedId: m.id,
         });
       }
+
+      emitMaintenanceChanged([m.requestedBy, m.assignedTo], {
+        maintenanceId: m.id,
+        equipmentId: m.equipmentId,
+        equipmentUnitId: m.equipmentUnitId || null,
+        gymId: m.gymId,
+        status: m.status,
+        action: "completed",
+      });
 
       return { maintenance: m, transaction: tx };
     });

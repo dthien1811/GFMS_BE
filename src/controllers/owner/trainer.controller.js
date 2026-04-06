@@ -108,6 +108,20 @@ const ownerTrainerController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+
+  async uploadTrainerCertificates(req, res) {
+    try {
+      const userId = req.user.id;
+      const trainerId = req.params.id;
+      const result = await ownerTrainerService.uploadTrainerCertificates(userId, trainerId, req.files || []);
+      return res.status(200).json({
+        message: "Upload chứng chỉ thành công",
+        data: result,
+      });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerTrainerController;

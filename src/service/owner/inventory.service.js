@@ -1,12 +1,58 @@
 import db from "../../models";
 
-const { EquipmentStock, Equipment, Gym } = db;
+const { EquipmentStock, Equipment, EquipmentUnit, Gym } = db;
 
 const parsePaging = (query) => {
   const page = Math.max(1, Number(query.page) || 1);
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 10));
   const offset = (page - 1) * limit;
   return { page, limit, offset };
+};
+
+const buildUnitSummaryMap = async (rows = []) => {
+  const pairs = rows
+    .map((row) => ({ equipmentId: Number(row.equipmentId), gymId: Number(row.gymId) }))
+    .filter((row) => row.equipmentId && row.gymId);
+
+  if (!pairs.length) return new Map();
+
+  const equipmentIds = [...new Set(pairs.map((row) => row.equipmentId))];
+  const gymIds = [...new Set(pairs.map((row) => row.gymId))];
+
+  const units = await EquipmentUnit.findAll({
+    attributes: ["equipmentId", "gymId", "status", "usageStatus", [db.Sequelize.fn("COUNT", db.Sequelize.col("id")), "count"]],
+    where: {
+      equipmentId: { [db.Sequelize.Op.in]: equipmentIds },
+      gymId: { [db.Sequelize.Op.in]: gymIds },
+    },
+    group: ["equipmentId", "gymId", "status", "usageStatus"],
+    raw: true,
+  });
+
+  const summary = new Map();
+  units.forEach((unit) => {
+    const key = `${unit.gymId}:${unit.equipmentId}`;
+    const current = summary.get(key) || {
+      activeQuantity: 0,
+      inStockQuantity: 0,
+      inUseQuantity: 0,
+      maintenanceQuantity: 0,
+      transferPendingQuantity: 0,
+      disposedQuantity: 0,
+    };
+    const count = Number(unit.count || 0);
+    if (unit.status === "active") {
+      current.activeQuantity += count;
+      if (unit.usageStatus === "in_use") current.inUseQuantity += count;
+      else current.inStockQuantity += count;
+    }
+    if (unit.status === "in_maintenance") current.maintenanceQuantity += count;
+    if (unit.status === "transfer_pending") current.transferPendingQuantity += count;
+    if (unit.status === "disposed") current.disposedQuantity += count;
+    summary.set(key, current);
+  });
+
+  return summary;
 };
 
 const ownerInventoryService = {
@@ -43,7 +89,7 @@ const ownerInventoryService = {
 
     const { rows, count } = await EquipmentStock.findAndCountAll({
       attributes: ["id", "equipmentId", "gymId", "quantity", "reservedQuantity", "availableQuantity", "location", "reorderPoint", "lastRestocked"],
-      where: { gymId: { [db.Sequelize.Op.in]: gymIds }, ...query_search },
+      where: { ...where, ...query_search },
       include: [
         { model: Gym, as: "gym", required: false, attributes: ["id", "name"] },
         { model: Equipment, as: "equipment", required: false, attributes: ["id", "name", "code", "minStockLevel"] },
@@ -53,8 +99,23 @@ const ownerInventoryService = {
       offset,
     });
 
+    const unitSummaryMap = await buildUnitSummaryMap(rows);
+
+    const data = rows.map((row) => ({
+      ...row.toJSON(),
+      unitSummary:
+        unitSummaryMap.get(`${row.gymId}:${row.equipmentId}`) || {
+          activeQuantity: Number(row.availableQuantity || 0),
+          inStockQuantity: Number(row.availableQuantity || 0),
+          inUseQuantity: 0,
+          maintenanceQuantity: 0,
+          transferPendingQuantity: 0,
+          disposedQuantity: 0,
+        },
+    }));
+
     return {
-      data: rows,
+      data,
       meta: {
         page,
         limit,

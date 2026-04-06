@@ -4,10 +4,14 @@ import memberProfileController from "../../controllers/member/profile.controller
 
 const router = express.Router();
 
-router.use(requireGroupName(["Members", "Member"]));
-
-router.get("/me", memberProfileController.getMyProfile);
-router.patch("/me", memberProfileController.updateMyProfile);
-router.patch("/change-password", memberProfileController.changeMyPassword);
+router.get("/me", requireGroupName(["Members", "Member", "Trainers", "Trainer"]), memberProfileController.getMyProfile);
+router.patch("/me", requireGroupName(["Members", "Member"]), memberProfileController.updateMyProfile);
+router.patch("/change-password", requireGroupName(["Members", "Member"]), memberProfileController.changeMyPassword);
+router.post("/become-trainer-request", requireGroupName(["Members", "Member"]), memberProfileController.createBecomeTrainerRequest);
+router.get(
+	"/become-trainer-requests",
+	requireGroupName(["Members", "Member", "Trainers", "Trainer"]),
+	memberProfileController.getMyBecomeTrainerRequests
+);
 
 export default router;

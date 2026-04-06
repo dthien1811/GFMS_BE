@@ -18,6 +18,8 @@ import ownerTrainerShareRoute from "./owner/trainershare.route";
 import ownerMemberRoute from "./owner/member.route";
 import ownerBookingRoute from "./owner/booking.route";
 import ownerTrainerRoute from "./owner/trainer.route";
+import ownerReviewRoute from "./owner/review.route";
+import ownerNotificationRoute from "./owner/notification.route";
 
 import memberBookingRoute from "./member/booking.route";
 import memberPackageRoute from "./member/package.route";
@@ -60,6 +62,8 @@ const useApi = (app) => {
   router.use("/owner/members", ownerMemberRoute);
   router.use("/owner/bookings", ownerBookingRoute);
   router.use("/owner/trainers", ownerTrainerRoute);
+  router.use("/owner/reviews", ownerReviewRoute);
+  router.use("/owner/notifications", ownerNotificationRoute);
 
   router.use("/member/bookings", memberBookingRoute);
   router.use("/member/packages", memberPackageRoute);

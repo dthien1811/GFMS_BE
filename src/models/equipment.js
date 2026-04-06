@@ -26,6 +26,13 @@ module.exports = (sequelize, DataTypes) => {
         });
       }
 
+      if (models.EquipmentUnit) {
+        Equipment.hasMany(models.EquipmentUnit, {
+          foreignKey: 'equipmentId',
+          as: 'units',
+        });
+      }
+
       // ReceiptItem / Inventory
       if (models.ReceiptItem) {
         Equipment.hasMany(models.ReceiptItem, {

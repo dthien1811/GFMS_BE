@@ -5,8 +5,11 @@ module.exports = {
   // Lấy danh sách yêu cầu
   async getRequests(req, res, next) {
     try {
-      const requests = await requestService.getRequests(); // Gọi service để lấy yêu cầu
-      res.status(200).json({ data: requests });  // Trả về dữ liệu yêu cầu
+      const page = Number(req.query.page) || 1;
+      const limit = Number(req.query.limit) || 10;
+      const gymId = Number(req.query.gymId) || undefined;
+      const result = await requestService.getRequests({ page, limit, gymId }); // Gọi service để lấy yêu cầu
+      res.status(200).json({ data: result.data, pagination: result.pagination });
     } catch (error) {
       console.error("Error fetching requests:", error);  // Log chi tiết lỗi
       next(error);  // Đảm bảo tiếp tục xử lý lỗi

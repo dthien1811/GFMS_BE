@@ -1,16 +1,31 @@
 
-const { Request, User } = require("../../models");
+const { Request, User, Trainer, Gym, sequelize } = require("../../models");
 const { Sequelize } = require('sequelize');
+const realtimeServiceModule = require("../realtime.service");
+const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
+
+const emitOwnerRequestChanged = (userIds = [], payload = {}) => {
+  [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
+    realtimeService.emitUser(userId, "request:changed", payload);
+  });
+};
 
 module.exports = {
-  async getRequests() {
+  async getRequests({ page = 1, limit = 10, gymId } = {}) {
     try {
+      const safePage = Number.isInteger(Number(page)) && Number(page) > 0 ? Number(page) : 1;
+      const safeLimit = Number.isInteger(Number(limit)) && Number(limit) > 0
+        ? Math.min(Number(limit), 50)
+        : 10;
+      const scopedGymId = Number.isInteger(Number(gymId)) && Number(gymId) > 0 ? Number(gymId) : null;
+
       const requests = await Request.findAll({
-          where: {
+        where: {
           status: {
             [Sequelize.Op.ne]: 'cancelled',  // Lọc bỏ những yêu cầu có trạng thái 'cancelled'
           }
         },
+        order: [['createdAt', 'DESC'], ['id', 'DESC']],
         include: [
           {
             model: User,
@@ -25,14 +40,103 @@ module.exports = {
         ]
       });
 
-      return requests.map(request => ({
-        id: request.id,
-        requestType: request.requestType,
-        status: request.status,
-        reason: request.reason,
-        requesterUsername: request.requester ? request.requester.username : null,  // Tên người gửi (username)
-        approverUsername: request.approver ? request.approver.username : null,  // Tên người duyệt (username)
-      }));
+      const gymIds = [...new Set(
+        requests
+          .map((r) => Number(r?.data?.application?.gymId))
+          .filter((id) => Number.isInteger(id) && id > 0)
+      )];
+
+      let gymMap = new Map();
+      if (gymIds.length > 0) {
+        const gyms = await Gym.findAll({
+          where: { id: { [Sequelize.Op.in]: gymIds } },
+          attributes: ["id", "name"],
+          raw: true,
+        });
+        gyms.forEach((g) => gymMap.set(Number(g.id), g.name));
+      }
+
+      const mapped = requests.map((request) => {
+        const application = request?.data?.application || {};
+        const gymId = Number(application.gymId);
+        const gymName = Number.isInteger(gymId) && gymId > 0
+          ? gymMap.get(gymId) || null
+          : null;
+        const spec = Array.isArray(application.specializations)
+          ? application.specializations.filter(Boolean).join(", ")
+          : "";
+        const cert = String(application.certification || "").trim();
+        const links = Array.isArray(application.certificationLinks)
+          ? application.certificationLinks.filter(Boolean)
+          : [];
+        const images = Array.isArray(application.certificateImageUrls)
+          ? application.certificateImageUrls.filter(Boolean)
+          : [];
+        const hr = Number(application.hourlyRate);
+
+        const applicationSummary = [
+          Number.isInteger(gymId) && gymId > 0 ? `Gym: #${gymId}` : "",
+          spec ? `Chuyên môn: ${spec}` : "",
+          cert ? `Chứng chỉ: ${cert}` : "",
+          links.length ? `Link chứng chỉ: ${links.join(", ")}` : "",
+          images.length ? `Ảnh chứng chỉ: ${images.length} ảnh` : "",
+          Number.isFinite(hr) && hr > 0 ? `Giá/giờ: ${hr}` : "",
+        ].filter(Boolean).join(" | ");
+
+        return {
+          id: request.id,
+          requestType: request.requestType,
+          status: request.status,
+          reason: request.reason,
+          requestData: request?.data || null,
+          requestContent: request?.data?.content || applicationSummary,
+          requestApplication: {
+            gymId: Number.isInteger(gymId) && gymId > 0 ? gymId : null,
+            gymName,
+            specializations: Array.isArray(application.specializations)
+              ? application.specializations.filter(Boolean)
+              : [],
+            certification: cert || null,
+            certificationLinks: links,
+            certificateImageUrls: images,
+            hourlyRate: Number.isFinite(hr) && hr > 0 ? hr : null,
+          },
+          requesterUsername: request.requester ? request.requester.username : null,
+          approverUsername: request.approver ? request.approver.username : null,
+        };
+      });
+
+      const filtered = scopedGymId
+        ? mapped.filter((request) => {
+            const candidateGymIds = [
+              request?.requestApplication?.gymId,
+              request?.requestData?.gymId,
+              request?.requestData?.application?.gymId,
+              request?.requestData?.fromGymId,
+              request?.requestData?.toGymId,
+              request?.requestData?.targetGymId,
+            ]
+              .map((value) => Number(value))
+              .filter((value) => Number.isInteger(value) && value > 0);
+
+            return candidateGymIds.includes(scopedGymId);
+          })
+        : mapped;
+
+      const total = filtered.length;
+      const offset = (safePage - 1) * safeLimit;
+      const pagedData = filtered.slice(offset, offset + safeLimit);
+
+      const totalPages = Math.max(1, Math.ceil(total / safeLimit));
+      return {
+        data: pagedData,
+        pagination: {
+          page: safePage,
+          limit: safeLimit,
+          total,
+          totalPages,
+        },
+      };
     } catch (error) {
       console.error("Error fetching requests:", error);
       throw new Error('Error fetching requests: ' + error.message);
@@ -40,16 +144,103 @@ module.exports = {
   },
 
   async approveRequest(requestId, approverId, approveNote) {
-    const request = await Request.findByPk(requestId);
-    if (!request) throw new Error('Request not found');
+    return sequelize.transaction(async (t) => {
+      const request = await Request.findByPk(requestId, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!request) throw new Error('Request not found');
 
-    request.status = 'approved';
-    request.approverId = approverId;
-    request.approveNote = approveNote || '';
-    request.processedAt = new Date();
+      request.status = 'approved';
+      request.approverId = approverId;
+      request.approveNote = approveNote || '';
+      request.processedAt = new Date();
+      await request.save({ transaction: t });
 
-    await request.save();
-    return request;
+      const normalizedType = String(request.requestType || '').trim().toUpperCase();
+      if (normalizedType === 'BECOME_TRAINER') {
+        const application = request?.data?.application || {};
+        const requester = await User.findByPk(request.requesterId, {
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+
+        const specialization = Array.isArray(application.specializations)
+          ? application.specializations.filter(Boolean).join(', ')
+          : String(application.specializations || '').trim();
+
+        const certification = String(application.certification || '').trim() || null;
+        const gymId = Number.isInteger(Number(application.gymId)) && Number(application.gymId) > 0
+          ? Number(application.gymId)
+          : null;
+        const hourlyRate = Number(application.hourlyRate) > 0 ? Number(application.hourlyRate) : null;
+        const socialLinks = {
+          certificateLinks: Array.isArray(application.certificationLinks)
+            ? application.certificationLinks.filter(Boolean)
+            : [],
+          certificateImageUrls: Array.isArray(application.certificateImageUrls)
+            ? application.certificateImageUrls.filter(Boolean)
+            : [],
+        };
+
+        const existingTrainer = await Trainer.findOne({
+          where: { userId: request.requesterId },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+
+        if (existingTrainer) {
+          if (gymId) existingTrainer.gymId = gymId;
+          if (specialization) existingTrainer.specialization = specialization;
+          if (certification) existingTrainer.certification = certification;
+          if (hourlyRate) existingTrainer.hourlyRate = hourlyRate;
+          existingTrainer.socialLinks = {
+            ...(existingTrainer.socialLinks || {}),
+            ...socialLinks,
+          };
+          if (existingTrainer.isActive === false) existingTrainer.isActive = true;
+          await existingTrainer.save({ transaction: t });
+        } else {
+          await Trainer.create(
+            {
+              userId: request.requesterId,
+              gymId,
+              specialization: specialization || null,
+              certification,
+              hourlyRate,
+              socialLinks,
+              status: 'active',
+              isActive: true,
+            },
+            { transaction: t }
+          );
+        }
+
+        if (requester && Number(requester.groupId) !== 3) {
+          requester.groupId = 3;
+          await requester.save({ transaction: t });
+        }
+      }
+
+      emitOwnerRequestChanged([approverId, request.requesterId], {
+        requestId: request.id,
+        status: request.status,
+        action: "approved",
+        requestType: request.requestType,
+      });
+
+      if (request.requesterId) {
+        await realtimeService.notifyUser(request.requesterId, {
+          title: "Đơn đăng ký huấn luyện viên đã được duyệt",
+          message: "Chủ gym đã duyệt đơn đăng ký trở thành huấn luyện viên của bạn.",
+          notificationType: "trainer_request",
+          relatedType: "request",
+          relatedId: request.id,
+        });
+      }
+
+      return request;
+    });
   },
 
   async rejectRequest(requestId, approverId, rejectNote) {
@@ -62,6 +253,24 @@ module.exports = {
     request.processedAt = new Date();
 
     await request.save();
+
+    emitOwnerRequestChanged([approverId, request.requesterId], {
+      requestId: request.id,
+      status: request.status,
+      action: "rejected",
+      requestType: request.requestType,
+    });
+
+    if (request.requesterId) {
+      await realtimeService.notifyUser(request.requesterId, {
+        title: "Đơn đăng ký huấn luyện viên bị từ chối",
+        message: rejectNote || "Chủ gym đã từ chối đơn đăng ký trở thành huấn luyện viên của bạn.",
+        notificationType: "trainer_request",
+        relatedType: "request",
+        relatedId: request.id,
+      });
+    }
+
     return request;
   },
 };

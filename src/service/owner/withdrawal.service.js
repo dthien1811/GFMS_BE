@@ -31,9 +31,11 @@ const mergeOwnerApprovalNote = (existingNotes, ownerNote) => {
 const ownerWithdrawalService = {
   async getWithdrawals(ownerUserId, query = {}) {
     const { page, limit, offset } = parsePaging(query);
-    const { status } = query;
+    const { status, gymId } = query;
 
-    const gymIds = await ensureOwnerGymIds(ownerUserId);
+    const ownerGymIds = await ensureOwnerGymIds(ownerUserId);
+    const scopedGymId = Number.isInteger(Number(gymId)) && Number(gymId) > 0 ? Number(gymId) : null;
+    const gymIds = scopedGymId && ownerGymIds.includes(scopedGymId) ? [scopedGymId] : ownerGymIds;
     if (gymIds.length === 0) {
       return { data: [], pagination: { total: 0, page, limit, totalPages: 0 } };
     }
@@ -70,8 +72,10 @@ const ownerWithdrawalService = {
   },
 
   async exportWithdrawals(ownerUserId, query = {}) {
-    const { status } = query;
-    const gymIds = await ensureOwnerGymIds(ownerUserId);
+    const { status, gymId } = query;
+    const ownerGymIds = await ensureOwnerGymIds(ownerUserId);
+    const scopedGymId = Number.isInteger(Number(gymId)) && Number(gymId) > 0 ? Number(gymId) : null;
+    const gymIds = scopedGymId && ownerGymIds.includes(scopedGymId) ? [scopedGymId] : ownerGymIds;
     if (gymIds.length === 0) {
       return { buffer: Buffer.from(""), contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename: "withdrawals.xlsx" };
     }

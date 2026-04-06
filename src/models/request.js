@@ -23,7 +23,7 @@ module.exports = (sequelize, DataTypes) => {
   Request.init(
     {
       requestType: {
-        type: DataTypes.ENUM('LEAVE', 'SHIFT_CHANGE', 'TRANSFER_BRANCH', 'OVERTIME'),
+        type: DataTypes.ENUM('LEAVE', 'SHIFT_CHANGE', 'TRANSFER_BRANCH', 'OVERTIME', 'BECOME_TRAINER'),
         allowNull: false,
       },
 
