@@ -286,6 +286,36 @@ const handleLogin = async (req, res) => {
   }
 };
 
+// 2.4) Login with Google (ID token từ @react-oauth/google)
+const handleGoogleLogin = async (req, res) => {
+  try {
+    const { credential } = req.body || {};
+    if (!credential) {
+      return res.status(400).json({ EM: "Missing Google credential", EC: 1, DT: "" });
+    }
+
+    const data = await authService.loginWithGoogle({ credential });
+
+    const token = data?.DT?.accessToken;
+    if (data.EC === 0 && token) {
+      res.cookie("jwt", token, { httpOnly: true, maxAge: 60 * 60 * 1000 });
+    }
+
+    if (data.EC === 0) {
+      return res.status(200).json({ EM: data.EM, EC: data.EC, DT: data.DT });
+    }
+
+    if (data.EC === 2) {
+      return res.status(403).json({ EM: data.EM, EC: data.EC, DT: data.DT });
+    }
+
+    return res.status(401).json({ EM: data.EM, EC: data.EC, DT: data.DT });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ EM: "error from server", EC: -1, DT: "" });
+  }
+};
+
 // 2.5) Logout
 const handleLogout = async (req, res) => {
   try {
@@ -543,6 +573,7 @@ const handleCheckRateLimit = async (req, res) => {
 module.exports = {
   handleRegister,
   handleLogin,
+  handleGoogleLogin,
   handleLogout,
   handleForgotPassword,
   handleVerifyOTP,
