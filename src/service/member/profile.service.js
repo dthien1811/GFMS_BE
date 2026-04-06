@@ -33,7 +33,7 @@ const toSafeUser = (user, member = null, gym = null, activation = null, latestMe
     lastLogin: user.lastLogin || null,
 
     memberId: member?.id || null,
-    memberCode: member?.membershipNumber || "",
+    memberCode: member?.membershipNumber || (member?.id ? `MEM${member.id}` : ""),
     joinDate: member?.joinDate || null,
     expiryDate: member?.expiryDate || null,
     fitnessGoal: member?.fitnessGoal || "",

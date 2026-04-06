@@ -109,7 +109,7 @@ const marketplaceService = {
 
   async listGymPackages(gymId) {
     return db.Package.findAll({
-      where: { gymId, isActive: true },
+      where: { gymId, isActive: true, packageType: "personal_training" },
     });
   },
 
@@ -130,13 +130,23 @@ const marketplaceService = {
   },
 
   async listTrainerPackages(trainerId) {
+    const trainer = await db.Trainer.findByPk(trainerId, {
+      attributes: ["id", "gymId", "isActive"],
+    });
+
+    if (!trainer || !trainer.isActive) return [];
+
     return db.Package.findAll({
-      where: { trainerId, isActive: true },
+      where: {
+        gymId: trainer.gymId,
+        isActive: true,
+        packageType: "personal_training",
+      },
     });
   },
 
   async listPackages({ gymId, q }) {
-    const where = { isActive: true };
+    const where = { isActive: true, packageType: "personal_training" };
 
     if (gymId) where.gymId = gymId;
     if (q) where.name = { [Op.like]: `%${q}%` };

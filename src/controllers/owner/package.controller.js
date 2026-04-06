@@ -4,6 +4,12 @@ const Package = db.Package;
 const Gym = db.Gym;
 const Trainer = db.Trainer;
 const User = db.User;
+const ALLOWED_TYPES = new Set(["basic", "premium"]);
+
+const normalizeType = (value) => {
+  const t = String(value || "").toLowerCase();
+  return ALLOWED_TYPES.has(t) ? t : "basic";
+};
 
 // Lấy tất cả gymId của owner (chuẩn cho multi-gym)
 const getOwnerGymIds = async (ownerId) => {
@@ -96,9 +102,9 @@ const packageController = {
         sessions,
         durationDays,
         gymId,
-        packageType: packageType || 'membership',
-        trainerId: trainerId || null,
-        type: type || 'basic',
+        packageType: 'personal_training',
+        trainerId: null,
+        type: normalizeType(type),
         commissionRate: commissionRate || 0.6,
         validityType: validityType || 'months',
         maxSessionsPerWeek: maxSessionsPerWeek || null,
@@ -126,7 +132,12 @@ const packageController = {
         });
       }
 
-      await pkg.update(req.body);
+      await pkg.update({
+        ...req.body,
+        type: normalizeType(req.body?.type),
+        packageType: 'personal_training',
+        trainerId: null,
+      });
 
       return res.json({ data: pkg });
 

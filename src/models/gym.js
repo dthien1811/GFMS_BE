@@ -42,8 +42,15 @@ module.exports = (sequelize, DataTypes) => {
       },
 
       status: {
-        type: DataTypes.ENUM('active', 'inactive'),
+        type: DataTypes.STRING,
         defaultValue: 'active',
+        get() {
+          const raw = this.getDataValue('status');
+          return typeof raw === 'string' ? raw.toLowerCase() : raw;
+        },
+        set(value) {
+          this.setDataValue('status', typeof value === 'string' ? value.toLowerCase() : value);
+        },
       },
 
       ownerId: {

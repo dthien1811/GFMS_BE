@@ -126,13 +126,13 @@ const ownerMemberController = {
     try {
       const userId = req.user.id;
       const memberId = req.params.id;
-      const { packageId } = req.body;
+      const { packageId, trainerId } = req.body;
 
       if (!packageId) {
         return res.status(400).json({ message: "Vui lòng chọn gói cần gia hạn" });
       }
 
-      const result = await ownerMemberService.renewMemberPackage(userId, memberId, packageId);
+      const result = await ownerMemberService.renewMemberPackage(userId, memberId, packageId, trainerId);
 
       return res.status(200).json({
         success: true,
