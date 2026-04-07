@@ -89,6 +89,7 @@ const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus 
   if (existing) return;
 
   const activationId = booking.packageActivationId || booking.activationId || null;
+  const bookingPackageId = booking.packageId || null;
   let sessionValue = 0;
 
   if (activationId) {
@@ -100,6 +101,21 @@ const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus 
         activation.totalSessions ?? activation.Package.sessions ?? 0
       );
       const price = Number(activation.Package.price || 0);
+      if (totalSessions > 0 && price > 0) {
+        sessionValue = price / totalSessions;
+      }
+    }
+  }
+
+  // Fallback cho booking cũ/ngoại lệ chưa gắn packageActivationId:
+  // lấy trực tiếp từ packageId của booking để vẫn sinh commission realtime.
+  if ((!sessionValue || sessionValue <= 0) && bookingPackageId) {
+    const pkg = await Package.findByPk(bookingPackageId, {
+      attributes: ["id", "price", "sessions"],
+    });
+    if (pkg) {
+      const totalSessions = Number(pkg.sessions || 0);
+      const price = Number(pkg.price || 0);
       if (totalSessions > 0 && price > 0) {
         sessionValue = price / totalSessions;
       }
