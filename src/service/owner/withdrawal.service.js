@@ -193,6 +193,99 @@ const ownerWithdrawalService = {
     return withdrawal;
   },
 
+  async autoApprovePendingWithdrawals(ownerUserId, payload = {}) {
+    const { gymId, notes = "" } = payload || {};
+    const ownerGymIds = await ensureOwnerGymIds(ownerUserId);
+    const scopedGymId = Number.isInteger(Number(gymId)) && Number(gymId) > 0 ? Number(gymId) : null;
+    const gymIds = scopedGymId && ownerGymIds.includes(scopedGymId) ? [scopedGymId] : ownerGymIds;
+    if (gymIds.length === 0) {
+      return { approvedCount: 0, skippedCount: 0, processed: [] };
+    }
+
+    const pendingRows = await Withdrawal.findAll({
+      where: { status: "pending" },
+      include: [
+        {
+          model: Trainer,
+          required: true,
+          attributes: ["id", "gymId"],
+          where: { gymId: { [Op.in]: gymIds } },
+        },
+      ],
+      order: [["createdAt", "ASC"]],
+      attributes: ["id"],
+    });
+
+    const processed = [];
+    let skippedCount = 0;
+
+    for (const row of pendingRows) {
+      try {
+        const updated = await sequelize.transaction(async (t) => {
+          const withdrawal = await Withdrawal.findByPk(row.id, {
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+            include: [{ model: Trainer, attributes: ["id", "gymId", "pendingCommission"] }],
+          });
+          if (!withdrawal || !withdrawal.Trainer || !gymIds.includes(withdrawal.Trainer.gymId)) return null;
+          if (withdrawal.status !== "pending") return null;
+
+          const amount = Number(withdrawal.amount || 0);
+          const held = Boolean(withdrawal.balanceHeld);
+          if (!held) {
+            const pending = Number(withdrawal.Trainer.pendingCommission || 0);
+            if (amount > pending) return null;
+          }
+
+          const updatePayload = {
+            status: "completed",
+            processedBy: ownerUserId,
+            processedDate: new Date(),
+          };
+          const mergedNotes = mergeOwnerApprovalNote(withdrawal.notes, notes);
+          if (mergedNotes != null) {
+            updatePayload.notes = mergedNotes;
+          }
+          await withdrawal.update(updatePayload, { transaction: t });
+
+          if (!held) {
+            const pending = Number(withdrawal.Trainer.pendingCommission || 0);
+            await withdrawal.Trainer.update(
+              {
+                pendingCommission: Math.max(0, pending - amount),
+                lastPayoutDate: new Date(),
+              },
+              { transaction: t }
+            );
+          } else {
+            await withdrawal.Trainer.update(
+              {
+                lastPayoutDate: new Date(),
+              },
+              { transaction: t }
+            );
+          }
+
+          return { id: withdrawal.id, status: withdrawal.status, trainerId: withdrawal.Trainer.id };
+        });
+
+        if (updated) {
+          processed.push(updated);
+        } else {
+          skippedCount += 1;
+        }
+      } catch {
+        skippedCount += 1;
+      }
+    }
+
+    return {
+      approvedCount: processed.length,
+      skippedCount,
+      processed,
+    };
+  },
+
   async rejectWithdrawal(ownerUserId, id, reason = "") {
     const gymIds = await ensureOwnerGymIds(ownerUserId);
     return sequelize.transaction(async (t) => {
