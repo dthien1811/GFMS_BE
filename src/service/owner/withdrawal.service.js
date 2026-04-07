@@ -1,6 +1,7 @@
 import db from "../../models";
 import { Op } from "sequelize";
 import ExcelJS from "exceljs";
+import realtimeService from "../realtime.service";
 
 const { Withdrawal, Trainer, User, Gym, sequelize } = db;
 
@@ -137,7 +138,7 @@ const ownerWithdrawalService = {
   async approveWithdrawal(ownerUserId, id, ownerNote = "") {
     const gymIds = await ensureOwnerGymIds(ownerUserId);
     const withdrawal = await Withdrawal.findByPk(id, {
-      include: [{ model: Trainer, attributes: ["id", "gymId", "pendingCommission"] }],
+      include: [{ model: Trainer, attributes: ["id", "gymId", "pendingCommission", "userId"] }],
     });
     if (!withdrawal || !withdrawal.Trainer || !gymIds.includes(withdrawal.Trainer.gymId)) {
       const err = new Error("Không tìm thấy yêu cầu hoặc bạn không có quyền.");
@@ -188,6 +189,21 @@ const ownerWithdrawalService = {
       await withdrawal.Trainer.update({
         lastPayoutDate: new Date(),
       });
+    }
+
+    try {
+      const uid = withdrawal.Trainer?.userId;
+      if (uid) {
+        await realtimeService.notifyUser(uid, {
+          title: "Yêu cầu rút tiền đã được duyệt",
+          message: `Chủ gym đã duyệt yêu cầu rút ${amount.toLocaleString("vi-VN")}đ (mã #${withdrawal.id}).`,
+          notificationType: "withdrawal",
+          relatedType: "withdrawal",
+          relatedId: withdrawal.id,
+        });
+      }
+    } catch (e) {
+      console.error("[approveWithdrawal] notify:", e?.message || e);
     }
 
     return withdrawal;

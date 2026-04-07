@@ -270,6 +270,15 @@ const findInternalReplacementForBusyBooking = async ({ booking, transaction = nu
   };
 };
 
+const prettyType = (t) => {
+  const key = String(t || "").toLowerCase();
+  if (key === "leave") return "nghỉ phép";
+  if (key === "overtime") return "tăng ca";
+  if (key === "shift_change") return "đổi ca";
+  if (key === "transfer_branch") return "chuyển cơ sở";
+  return key || "yêu cầu";
+};
+
 module.exports = {
   async getRequests({ page = 1, limit = 10, gymId } = {}) {
     try {
@@ -464,7 +473,6 @@ module.exports = {
       if (!request) throw new Error('Request not found');
 
       const assignmentMode = String(options?.assignmentMode || "internal_first").toLowerCase();
-
       const normalizedType = String(request.requestType || '').trim().toUpperCase();
       if (normalizedType === 'BECOME_TRAINER') {
         const application = request?.data?.application || {};
@@ -603,7 +611,7 @@ module.exports = {
         await realtimeService.notifyUser(request.requesterId, {
           title: templates.approved.title,
           message: templates.approved.message,
-          notificationType: "trainer_request",
+          notificationType: "request_update",
           relatedType: "request",
           relatedId: request.id,
         });
@@ -633,15 +641,21 @@ module.exports = {
 
     const templates = getRequestNotificationTemplates(request.requestType, rejectNote);
     if (request.requesterId) {
+      const reasonText = String(rejectNote || "").trim();
+      const baseMessage = String(templates.rejected.message || `Yêu cầu ${prettyType(request.requestType)} của bạn đã bị từ chối.`);
+      const shouldAppendDetail =
+        reasonText &&
+        !baseMessage.toLowerCase().includes(reasonText.toLowerCase()) &&
+        !/lý do\s*:/i.test(baseMessage);
+      const finalMessage = shouldAppendDetail ? `${baseMessage} Lý do: ${reasonText}` : baseMessage;
       await realtimeService.notifyUser(request.requesterId, {
         title: templates.rejected.title,
-        message: templates.rejected.message,
-        notificationType: "trainer_request",
+        message: finalMessage,
+        notificationType: "request_update",
         relatedType: "request",
         relatedId: request.id,
       });
     }
-
     return request;
   },
 };

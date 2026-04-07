@@ -3,6 +3,8 @@ const db = require('../models');
 // Sử dụng dòng này thay cho { Trainer, ... } cũ để tránh lệch tên model
 const Trainer = db.trainer || db.Trainer; 
 const { TrainerShare, SessionProgress, Booking, Member, Gym, User } = db;
+const Package = db.Package || db.package;
+const PackageActivation = db.PackageActivation || db.packageactivation;
 const Attendance = db.Attendance || db.attendance;
 
 const TRAINER_ATT_SAFE = [
@@ -93,6 +95,73 @@ const normalizeAvailableHours = (input) => {
   }
 
   return availableHours;
+};
+
+const parseGymOperatingHours = (raw) => {
+  if (!raw) return null;
+  let obj = raw;
+  if (typeof raw === "string") {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!obj || typeof obj !== "object") return null;
+  const mf = obj.monFri || obj.mon_fri;
+  const we = obj.weekend;
+  if (!mf?.open || !mf?.close || !we?.open || !we?.close) return null;
+  const oOpen = extractHHmm(mf.open);
+  const oClose = extractHHmm(mf.close);
+  const wOpen = extractHHmm(we.open);
+  const wClose = extractHHmm(we.close);
+  if (!oOpen || !oClose || !wOpen || !wClose) return null;
+  const mo = parseHHmmToMinutes(oOpen);
+  const mc = parseHHmmToMinutes(oClose);
+  const wo = parseHHmmToMinutes(wOpen);
+  const wc = parseHHmmToMinutes(wClose);
+  if (mo === null || mc === null || wo === null || wc === null) return null;
+  if (mc <= mo || wc <= wo) return null;
+  return {
+    monFri: { open: oOpen, close: oClose, openMin: mo, closeMin: mc },
+    weekend: { open: wOpen, close: wClose, openMin: wo, closeMin: wc },
+  };
+};
+
+const getGymWindowForDayKey = (dayKey, parsed) => {
+  if (!parsed) return null;
+  const monFriDays = ["monday", "tuesday", "wednesday", "thursday", "friday"];
+  return monFriDays.includes(dayKey) ? parsed.monFri : parsed.weekend;
+};
+
+const validateAvailableHoursAgainstGym = (normalized, gym) => {
+  if (!gym || gym.operatingHours == null || gym.operatingHours === "") return;
+  const parsed = parseGymOperatingHours(gym.operatingHours);
+  if (!parsed) return;
+  const dayLabels = {
+    monday: "Thứ 2",
+    tuesday: "Thứ 3",
+    wednesday: "Thứ 4",
+    thursday: "Thứ 5",
+    friday: "Thứ 6",
+    saturday: "Thứ 7",
+    sunday: "Chủ nhật",
+  };
+  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  for (const d of days) {
+    const win = getGymWindowForDayKey(d, parsed);
+    if (!win) continue;
+    for (const slot of normalized[d] || []) {
+      const s = parseHHmmToMinutes(slot.start);
+      const e = parseHHmmToMinutes(slot.end);
+      if (s === null || e === null) continue;
+      if (s < win.openMin || e > win.closeMin) {
+        throw new Error(
+          `${dayLabels[d]}: khung ${slot.start}–${slot.end} ngoài giờ mở cửa phòng gym (${win.open}–${win.close}).`
+        );
+      }
+    }
+  }
 };
 
 const serializeAvailableHoursToDb = (obj) => {
@@ -223,8 +292,13 @@ const updateTrainerSchedule = async (id, scheduleData) => {
     if (!pt) throw new Error('Trainer not found');
 
     const normalized = normalizeAvailableHours(scheduleData);
-    
-    // Lưu vào DB (Đảm bảo cột availableHours là kiểu JSON hoặc TEXT)
+    if (normalized === null) throw new Error('availableHours format is invalid');
+
+    if (pt.gymId && Gym) {
+      const gym = await Gym.findByPk(pt.gymId, { attributes: ['id', 'operatingHours'] });
+      validateAvailableHoursAgainstGym(normalized, gym);
+    }
+
     pt.availableHours = normalized;
     await pt.save();
 
@@ -261,14 +335,38 @@ const getTrainerBookings = async (trainerId) => {
             {
               model: User,
               as: "User",
-              attributes: ["username", "email", "phone"],
+              attributes: ["username", "email", "phone", "avatar"],
             },
           ],
         },
         {
           model: Gym,
-          attributes: ["name"],
+          attributes: ["id", "name"],
         },
+        ...(Package
+          ? [
+              {
+                model: Package,
+                attributes: ["id", "name", "sessions", "type"],
+                required: false,
+              },
+            ]
+          : []),
+        ...(PackageActivation
+          ? [
+              {
+                model: PackageActivation,
+                attributes: [
+                  "id",
+                  "sessionsRemaining",
+                  "totalSessions",
+                  "sessionsUsed",
+                  "status",
+                ],
+                required: false,
+              },
+            ]
+          : []),
       ],
       order: [["createdAt", "DESC"]],
     });

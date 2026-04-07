@@ -21,6 +21,37 @@ async function getMemberByUserId(userId) {
   return db.Member.findOne({ where: { userId }, attributes: ["id", "gymId"] });
 }
 
+function parseSocialLinks(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "object") return raw;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+function isAbsoluteHttpUrl(v) {
+  return typeof v === "string" && /^https?:\/\//i.test(v.trim());
+}
+
+function pickTrainerAvatarUrl(trainer) {
+  const sl = parseSocialLinks(trainer?.socialLinks);
+  const profileUrl = sl?.profileImages?.avatarUrl ? String(sl.profileImages.avatarUrl).trim() : "";
+
+  const rawUser = trainer?.User?.avatar ? String(trainer.User.avatar).trim() : "";
+  const userIsPlaceholder = !rawUser || /default-avatar/i.test(rawUser);
+  const userIsAbsolute = isAbsoluteHttpUrl(rawUser);
+
+  if (profileUrl && isAbsoluteHttpUrl(profileUrl)) return profileUrl;
+  if (!userIsPlaceholder && userIsAbsolute) return rawUser;
+  if (profileUrl) return profileUrl;
+  return null;
+}
+
 const messageService = {
   buildConversationKey,
 
@@ -33,7 +64,7 @@ const messageService = {
 
     const trainers = await db.Trainer.findAll({
       where: { id: trainerIds },
-      attributes: ["id", "userId", "gymId", "status"],
+      attributes: ["id", "userId", "gymId", "status", "socialLinks"],
       include: [{ model: db.User, attributes: ["id", "username", "avatar"] }],
       order: [[db.User, "username", "ASC"]],
     });
@@ -56,7 +87,7 @@ const messageService = {
         trainerId: trainer.id,
         trainerUserId: trainer.userId,
         trainerName: trainer.User?.username || `PT #${trainer.id}`,
-        trainerAvatar: trainer.User?.avatar || null,
+        trainerAvatar: pickTrainerAvatarUrl(trainer),
         lastMessage: chatPreviewService.previewTextFromContent(lastMessage?.content || "") || null,
         lastMessageAt: lastMessage?.createdAt || null,
         unreadCount,
