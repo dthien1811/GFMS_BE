@@ -15,7 +15,9 @@ const ACTIVE_PT_PACKAGE_INCLUDE = [{
 const applyPackageActivationCompletion = async (booking) => {
   if (!booking?.packageActivationId) return null;
 
-  const activation = await db.PackageActivation.findByPk(booking.packageActivationId);
+  const activation = await db.PackageActivation.findByPk(booking.packageActivationId, {
+    include: [{ model: db.Package, attributes: ["id", "name"] }],
+  });
   if (!activation || activation.sessionsRemaining <= 0) return activation;
 
   await activation.update({
@@ -38,6 +40,60 @@ const getDateOnlyString = (value) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   return date.toISOString().split('T')[0];
+};
+
+
+const formatDateVN = (value) => {
+  const raw = getDateOnlyString(value);
+  if (raw) {
+    const [y, m, d] = raw.split("-");
+    return `${d}/${m}/${y}`;
+  }
+  return "ngày đã chọn";
+};
+
+const toHHMM = (value) => String(value || "").slice(0, 5);
+
+const formatBookingSlotLabel = (booking) => {
+  const dateLabel = formatDateVN(booking?.bookingDate);
+  const start = toHHMM(booking?.startTime);
+  const end = toHHMM(booking?.endTime);
+  return `${dateLabel}${start && end ? ` (${start}-${end})` : ""}`;
+};
+
+const notifyMemberPackageMilestones = async (booking, activation) => {
+  if (!booking?.memberId || !activation) return;
+
+  const member = await db.Member.findByPk(booking.memberId, { attributes: ["userId"] });
+  if (!member?.userId) return;
+
+  const fullActivation = activation?.Package
+    ? activation
+    : await db.PackageActivation.findByPk(activation.id, {
+        include: [{ model: db.Package, attributes: ["id", "name"] }],
+      });
+
+  if (!fullActivation) return;
+
+  if (Number(fullActivation.sessionsRemaining || 0) === 1 && String(fullActivation.status || "").toLowerCase() !== "completed") {
+    await realtimeService.notifyUser(member.userId, {
+      title: "Gói tập sắp hoàn thành",
+      message: `Gói ${fullActivation.Package?.name || "tập"} của bạn còn 1 buổi sau khi hoàn thành buổi ${formatBookingSlotLabel(booking)}.`,
+      notificationType: "package_purchase",
+      relatedType: "packageActivation",
+      relatedId: fullActivation.id,
+    });
+  }
+
+  if (String(fullActivation.status || "").toLowerCase() === "completed") {
+    await realtimeService.notifyUser(member.userId, {
+      title: "Gói tập đã hoàn thành",
+      message: `Gói ${fullActivation.Package?.name || "tập"} đã hoàn thành sau buổi ${formatBookingSlotLabel(booking)}. Bạn có thể vào mục đánh giá để gửi nhận xét.`,
+      notificationType: "package_purchase",
+      relatedType: "packageActivation",
+      relatedId: fullActivation.id,
+    });
+  }
 };
 
 const parseSpecificSchedules = (value) => {
@@ -225,7 +281,7 @@ const notifyBookingReassignment = async ({ booking, previousTrainerId, dateChang
       const trainerName = currentTrainer?.User?.username || `PT #${booking.trainerId}`;
       await realtimeService.notifyUser(member.userId, {
         title: 'Lịch tập được cập nhật',
-        message: `Booking #${booking.id} đã được sắp xếp với ${trainerName} vào ${dateLabel} ${timeLabel}.`,
+        message: `Buổi tập ngày ${dateLabel} ${timeLabel} đã được sắp xếp với ${trainerName}.`,
         notificationType: 'booking_update',
         relatedType: 'booking',
         relatedId: booking.id,
@@ -235,7 +291,7 @@ const notifyBookingReassignment = async ({ booking, previousTrainerId, dateChang
     if (trainerChanged && oldTrainer?.userId && Number(oldTrainer.id) !== Number(currentTrainer?.id)) {
       await realtimeService.notifyUser(oldTrainer.userId, {
         title: 'Lịch PT được điều phối lại',
-        message: `Booking #${booking.id} không còn được phân cho bạn nữa.`,
+        message: `Buổi tập ngày ${dateLabel} ${timeLabel} không còn được phân cho bạn nữa.`,
         notificationType: 'booking_update',
         relatedType: 'booking',
         relatedId: booking.id,
@@ -245,7 +301,7 @@ const notifyBookingReassignment = async ({ booking, previousTrainerId, dateChang
     if (currentTrainer?.userId && (trainerChanged || dateChanged || timeChanged)) {
       await realtimeService.notifyUser(currentTrainer.userId, {
         title: 'Bạn có lịch PT mới',
-        message: `Booking #${booking.id} được sắp cho bạn vào ${dateLabel} ${timeLabel}.`,
+        message: `Bạn được phân công buổi tập ngày ${dateLabel} ${timeLabel}.`,
         notificationType: 'booking_update',
         relatedType: 'booking',
         relatedId: booking.id,
@@ -953,13 +1009,14 @@ const updateBookingStatus = async (userId, bookingId, newStatus) => {
 
   // Cập nhật status
   const updateData = { status: newStatus };
+  let completedActivation = null;
   
   // Thêm timestamp tùy theo status
   if (newStatus === 'in_progress') {
     updateData.checkinTime = new Date();
   } else if (newStatus === 'completed') {
     updateData.checkoutTime = new Date();
-    await applyPackageActivationCompletion(booking);
+    completedActivation = await applyPackageActivationCompletion(booking);
   } else if (newStatus === 'cancelled') {
     updateData.cancellationDate = new Date();
     updateData.cancellationBy = userId;
@@ -980,15 +1037,18 @@ const updateBookingStatus = async (userId, bookingId, newStatus) => {
     const label = statusLabels[newStatus] || `đã cập nhật sang ${newStatus}`;
     await realtimeService.notifyUser(member?.userId, {
       title: "Lịch tập được cập nhật",
-      message: `Booking #${booking.id} ${label}.`,
+      message: `Buổi tập ngày ${formatBookingSlotLabel(booking)} ${label}.`,
       notificationType: "booking_update",
       relatedType: "booking",
       relatedId: booking.id,
     });
+    if (newStatus === "completed") {
+      await notifyMemberPackageMilestones(booking, completedActivation);
+    }
     if (trainer?.userId && ["cancelled", "confirmed"].includes(newStatus)) {
       await realtimeService.notifyUser(trainer.userId, {
         title: "Lịch PT thay đổi",
-        message: `Booking #${booking.id} ${label}.`,
+        message: `Buổi tập ngày ${formatBookingSlotLabel(booking)} ${label}.`,
         notificationType: "booking_update",
         relatedType: "booking",
         relatedId: booking.id,
