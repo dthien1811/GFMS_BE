@@ -139,7 +139,7 @@ const reviewService = {
       bookingId: b.id,
       trainerId: b.trainerId,
       label: b.Trainer?.User?.username || `PT #${b.trainerId}`,
-      subtitle: `Buổi tập #${b.id}`,
+      subtitle: `${b.bookingDate ? new Date(b.bookingDate).toLocaleDateString("vi-VN") : "Buổi tập"}${b.startTime && b.endTime ? ` • ${String(b.startTime).slice(0, 5)}-${String(b.endTime).slice(0, 5)}` : ""}`,
     }));
 
     const packages = activations.map((a) => ({
