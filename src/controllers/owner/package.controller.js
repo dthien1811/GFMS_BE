@@ -131,10 +131,10 @@ const packageController = {
       });
 
       const selectedSpecs = normalizeSpecializationSelection(specialization).map((s) => s.toLowerCase());
-      const selectedSpecSet = new Set(selectedSpecs);
       const filtered = trainers.filter((trainer) => {
         const specs = parseSpecializations(trainer.specialization).map((s) => s.toLowerCase());
-        return specs.some((spec) => selectedSpecSet.has(spec));
+        const trainerSpecSet = new Set(specs);
+        return selectedSpecs.every((spec) => trainerSpecSet.has(spec));
       });
 
       return res.status(200).json({ data: filtered });
@@ -269,7 +269,7 @@ const packageController = {
         }
 
         const trainerSpecs = parseSpecializations(trainer.specialization).map((s) => s.toLowerCase());
-        const hasMatchingSpec = selectedTypes.some((spec) => trainerSpecs.includes(spec.toLowerCase()));
+        const hasMatchingSpec = selectedTypes.every((spec) => trainerSpecs.includes(spec.toLowerCase()));
         if (!hasMatchingSpec) {
           return res.status(400).json({
             message: "Huấn luyện viên không có chuyên môn phù hợp đã chọn"
@@ -409,7 +409,7 @@ const packageController = {
         }
 
         const trainerSpecs = parseSpecializations(trainer.specialization).map((s) => s.toLowerCase());
-        const hasMatchingSpec = selectedNextTypes.some((spec) => trainerSpecs.includes(spec.toLowerCase()));
+        const hasMatchingSpec = selectedNextTypes.every((spec) => trainerSpecs.includes(spec.toLowerCase()));
         if (!hasMatchingSpec) {
           return res.status(400).json({ message: "Huấn luyện viên không có chuyên môn phù hợp đã chọn" });
         }

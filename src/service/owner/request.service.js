@@ -1,13 +1,41 @@
 
-const { Request, User, Trainer, Gym, sequelize } = require("../../models");
+const { Request, User, Trainer, Gym, Member, Booking, sequelize } = require("../../models");
 const { Sequelize } = require('sequelize');
 const realtimeServiceModule = require("../realtime.service");
 const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
+const BUSY_REQUEST_NOTE_MARKER = "[PT_BUSY_REQUEST]";
 
 const emitOwnerRequestChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
     realtimeService.emitUser(userId, "request:changed", payload);
   });
+};
+
+const getRequestNotificationTemplates = (requestType, rejectNote) => {
+  const type = String(requestType || "").trim().toUpperCase();
+  if (type === "BUSY_SLOT") {
+    return {
+      approved: {
+        title: "Yêu cầu báo bận đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu báo bận khung giờ dạy của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu báo bận bị từ chối",
+        message: rejectNote || "Chủ phòng tập đã từ chối yêu cầu báo bận khung giờ dạy của bạn.",
+      },
+    };
+  }
+
+  return {
+    approved: {
+      title: "Đơn đăng ký huấn luyện viên đã được duyệt",
+      message: "Chủ gym đã duyệt đơn đăng ký trở thành huấn luyện viên của bạn.",
+    },
+    rejected: {
+      title: "Đơn đăng ký huấn luyện viên bị từ chối",
+      message: rejectNote || "Chủ gym đã từ chối đơn đăng ký trở thành huấn luyện viên của bạn.",
+    },
+  };
 };
 
 module.exports = {
@@ -56,8 +84,30 @@ module.exports = {
         gyms.forEach((g) => gymMap.set(Number(g.id), g.name));
       }
 
+      const busySlotMemberIds = [...new Set(
+        requests
+          .filter((request) => String(request?.requestType || "").trim().toUpperCase() === "BUSY_SLOT")
+          .map((request) => Number(request?.data?.memberId))
+          .filter((id) => Number.isInteger(id) && id > 0)
+      )];
+
+      let memberNameMap = new Map();
+      if (busySlotMemberIds.length > 0 && Member) {
+        const members = await Member.findAll({
+          where: { id: { [Sequelize.Op.in]: busySlotMemberIds } },
+          attributes: ["id"],
+          include: [{ model: User, as: "User", attributes: ["username"], required: false }],
+        });
+        members.forEach((member) => {
+          memberNameMap.set(Number(member.id), member?.User?.username || null);
+        });
+      }
+
       const mapped = requests.map((request) => {
         const application = request?.data?.application || {};
+        const requestData = request?.data || null;
+        const requestMemberId = Number(requestData?.memberId || 0);
+        const requestGymId = Number(requestData?.gymId || 0);
         const gymId = Number(application.gymId);
         const gymName = Number.isInteger(gymId) && gymId > 0
           ? gymMap.get(gymId) || null
@@ -88,7 +138,15 @@ module.exports = {
           requestType: request.requestType,
           status: request.status,
           reason: request.reason,
-          requestData: request?.data || null,
+          requestData: requestData
+            ? {
+                ...requestData,
+                memberName: requestData.memberName || (requestMemberId ? memberNameMap.get(requestMemberId) || null : null),
+                gymName:
+                  requestData.gymName
+                  || (requestGymId ? gymMap.get(requestGymId) || null : null),
+              }
+            : null,
           requestContent: request?.data?.content || applicationSummary,
           requestApplication: {
             gymId: Number.isInteger(gymId) && gymId > 0 ? gymId : null,
@@ -220,6 +278,22 @@ module.exports = {
           requester.groupId = 3;
           await requester.save({ transaction: t });
         }
+      } else if (normalizedType === 'BUSY_SLOT') {
+        const bookingId = Number(request?.data?.bookingId || 0);
+        if (bookingId > 0) {
+          const booking = await Booking.findByPk(bookingId, {
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+          });
+          if (booking) {
+            const currentNotes = String(booking.notes || "");
+            if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
+              const note = `${BUSY_REQUEST_NOTE_MARKER} Owner đã duyệt yêu cầu báo bận #${request.id}`;
+              booking.notes = currentNotes ? `${currentNotes}\n${note}` : note;
+              await booking.save({ transaction: t });
+            }
+          }
+        }
       }
 
       emitOwnerRequestChanged([approverId, request.requesterId], {
@@ -229,10 +303,11 @@ module.exports = {
         requestType: request.requestType,
       });
 
+      const templates = getRequestNotificationTemplates(request.requestType);
       if (request.requesterId) {
         await realtimeService.notifyUser(request.requesterId, {
-          title: "Đơn đăng ký huấn luyện viên đã được duyệt",
-          message: "Chủ gym đã duyệt đơn đăng ký trở thành huấn luyện viên của bạn.",
+          title: templates.approved.title,
+          message: templates.approved.message,
           notificationType: "trainer_request",
           relatedType: "request",
           relatedId: request.id,
@@ -261,10 +336,11 @@ module.exports = {
       requestType: request.requestType,
     });
 
+    const templates = getRequestNotificationTemplates(request.requestType, rejectNote);
     if (request.requesterId) {
       await realtimeService.notifyUser(request.requesterId, {
-        title: "Đơn đăng ký huấn luyện viên bị từ chối",
-        message: rejectNote || "Chủ gym đã từ chối đơn đăng ký trở thành huấn luyện viên của bạn.",
+        title: templates.rejected.title,
+        message: templates.rejected.message,
         notificationType: "trainer_request",
         relatedType: "request",
         relatedId: request.id,

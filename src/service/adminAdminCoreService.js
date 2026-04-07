@@ -1454,59 +1454,6 @@ async rejectFranchiseRequest(req) {
         });
       }
 
-      // === TỰ ĐỘNG TẠO BOOKING NẾU CÓ MEMBER ===
-      if (ts.memberId) {
-        try {
-          const Booking = sequelize.models.Booking;
-          const bookingsToCreate = [];
-          
-          // scheduleMode trong DB: 'specific_days' hoặc 'all_days'
-          if (ts.scheduleMode === 'specific_days' && ts.specificSchedules) {
-            // Xử lý specific_days (từ single hoặc multiple_dates)
-            const schedules = typeof ts.specificSchedules === 'string' 
-              ? JSON.parse(ts.specificSchedules) 
-              : ts.specificSchedules;
-              
-            schedules.forEach(schedule => {
-              bookingsToCreate.push({
-                memberId: ts.memberId,
-                trainerId: ts.trainerId,
-                gymId: ts.toGymId,
-                bookingDate: schedule.date,
-                startTime: schedule.startTime,
-                endTime: schedule.endTime,
-                status: 'pending',
-                notes: `Tự động tạo từ trainer share #${ts.id}`
-              });
-            });
-          } else if (ts.scheduleMode === 'all_days' && ts.startDate && ts.endDate) {
-            // Xử lý all_days (từ date_range)
-            const currentDate = new Date(ts.startDate);
-            const endDateObj = new Date(ts.endDate);
-            
-            while (currentDate <= endDateObj) {
-              bookingsToCreate.push({
-                memberId: ts.memberId,
-                trainerId: ts.trainerId,
-                gymId: ts.toGymId,
-                bookingDate: new Date(currentDate),
-                startTime: ts.startTime,
-                endTime: ts.endTime,
-                status: 'pending',
-                notes: `Tự động tạo từ trainer share #${ts.id}`
-              });
-              currentDate.setDate(currentDate.getDate() + 1);
-            }
-          }
-          
-          if (bookingsToCreate.length > 0) {
-            await Booking.bulkCreate(bookingsToCreate, { transaction: t });
-          }
-        } catch (bookingErr) {
-          // Không throw error - chỉ log để không làm rollback approve
-        }
-      }
-
       return ts;
     });
   }

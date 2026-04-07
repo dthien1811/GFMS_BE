@@ -85,5 +85,6 @@ router.get("/attendance/today", trainerAttendanceController.getToday);
 router.post("/attendance/check-in", trainerAttendanceController.checkIn);
 router.post("/attendance/check-out", trainerAttendanceController.checkOut);
 router.post("/attendance/reset", trainerAttendanceController.reset);
+router.post("/attendance/request-busy-slot", trainerAttendanceController.requestBusySlot);
 
 module.exports = router;

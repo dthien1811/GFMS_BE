@@ -32,6 +32,7 @@ import memberNotificationRoute from "./member/notification.route";
 import memberReviewRoute from "./member/review.route";
 import trainerMessageRoute from "./trainer/message.route";
 import trainerNotificationRoute from "./trainer/notification.route";
+import trainerShareRequestRoute from "./trainer/shareRequest.route";
 
 import trainerRoute from "./trainer";
 
@@ -76,6 +77,7 @@ const useApi = (app) => {
   router.use("/member/notifications", memberNotificationRoute);
   router.use("/trainer/messages", trainerMessageRoute);
   router.use("/trainer/notifications", trainerNotificationRoute);
+  router.use("/trainer/share-requests", trainerShareRequestRoute);
   // trainer route
   router.use("/trainer", trainerRoute);
 

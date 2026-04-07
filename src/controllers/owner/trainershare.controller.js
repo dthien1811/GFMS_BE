@@ -110,8 +110,9 @@ const ownerTrainerShareController = {
     try {
       const userId = req.user.id;
       const gymId = req.params.gymId;
+      const options = { includeBorrowed: req.query.includeBorrowed };
 
-      const result = await ownerTrainerShareService.getAvailableTrainers(userId, gymId);
+      const result = await ownerTrainerShareService.getAvailableTrainers(userId, gymId, options);
 
       return res.status(200).json(result);
     } catch (e) {
