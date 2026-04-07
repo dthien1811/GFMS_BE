@@ -31,6 +31,9 @@ const marketplaceController = {
   getPackageDetail: async (req, res) =>
     res.json({ EC: 0, EM: "OK", DT: await marketplaceService.getPackageDetail(req.params.id) }),
 
+  listPublicReviews: async (req, res) =>
+    res.json({ EC: 0, EM: "OK", DT: await marketplaceService.listPublicReviews(req.query) }),
+
   // ✅ public slots for wizard
   async getAvailableSlotsPublic(req, res) {
     try {

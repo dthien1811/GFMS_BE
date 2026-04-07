@@ -18,6 +18,7 @@ router.get("/trainers/:id/packages", marketplaceController.listTrainerPackages);
 router.get("/highlights", marketplaceController.listLandingHighlights);
 router.get("/packages", marketplaceController.listPackages);
 router.get("/packages/:id", marketplaceController.getPackageDetail);
+router.get("/reviews", marketplaceController.listPublicReviews);
 
 /* ✅ NEW: public slots for wizard */
 router.get("/slots", marketplaceController.getAvailableSlotsPublic);
