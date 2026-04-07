@@ -19,6 +19,72 @@ const normalizeDateOnly = (dateStr) => {
 const now = () => new Date();
 const BUSY_REQUEST_NOTE_MARKER = "[PT_BUSY_REQUEST]";
 
+
+const formatDateVN = (value) => {
+  if (!value) return "ngày đã chọn";
+  const s = String(value);
+  const exact = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (exact) return `${exact[3]}/${exact[2]}/${exact[1]}`;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "ngày đã chọn";
+  return d.toLocaleDateString("vi-VN");
+};
+
+const toHHMM = (value) => String(value || "").slice(0, 5);
+
+const formatBookingSlotLabel = (booking) => {
+  const dateLabel = formatDateVN(booking?.bookingDate);
+  const start = toHHMM(booking?.startTime);
+  const end = toHHMM(booking?.endTime);
+  return `${dateLabel}${start && end ? ` (${start}-${end})` : ""}`;
+};
+
+const notifyMemberSessionCompletion = async (booking, activation) => {
+  const member = booking?.memberId
+    ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] })
+    : null;
+
+  if (member?.userId) {
+    await realtimeService.notifyUser(member.userId, {
+      title: "Buổi tập đã hoàn thành",
+      message: `Buổi tập ngày ${formatBookingSlotLabel(booking)} đã được PT xác nhận hoàn thành.`,
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId: booking.id,
+    });
+  }
+
+  if (!booking?.packageActivationId) return;
+
+  const packageActivation =
+    activation ||
+    await db.PackageActivation.findByPk(booking.packageActivationId, {
+      include: [{ model: db.Package, attributes: ["id", "name"] }],
+    });
+
+  if (!packageActivation || !member?.userId) return;
+
+  if (Number(packageActivation.sessionsRemaining || 0) === 1 && String(packageActivation.status || "").toLowerCase() !== "completed") {
+    await realtimeService.notifyUser(member.userId, {
+      title: "Gói tập sắp hoàn thành",
+      message: `Gói ${packageActivation.Package?.name || "tập"} của bạn còn 1 buổi sau khi hoàn thành buổi ${formatBookingSlotLabel(booking)}.`,
+      notificationType: "package_purchase",
+      relatedType: "packageActivation",
+      relatedId: packageActivation.id,
+    });
+  }
+
+  if (String(packageActivation.status || "").toLowerCase() === "completed") {
+    await realtimeService.notifyUser(member.userId, {
+      title: "Gói tập đã hoàn thành",
+      message: `Gói ${packageActivation.Package?.name || "tập"} đã hoàn thành sau buổi ${formatBookingSlotLabel(booking)}. Bạn có thể vào mục đánh giá để gửi nhận xét.`,
+      notificationType: "package_purchase",
+      relatedType: "packageActivation",
+      relatedId: packageActivation.id,
+    });
+  }
+};
+
 const SAFE_ATT_COLS = [
   'id', 'userId', 'gymId', 'bookingId', 
   'checkInTime', 'checkOutTime', 
@@ -548,9 +614,10 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   booking.status = "completed";
   await booking.save();
 
+  let consumedActivation = null;
   if (["present", "completed"].includes(normalizedStatus) && previousBookingStatus !== "completed") {
     try {
-      await consumePackageSessionForBooking(booking);
+      consumedActivation = await consumePackageSessionForBooking(booking);
     } catch (e) {
       console.error("[trainerAttendanceService] consume package session error:", e.message);
     }
@@ -559,14 +626,7 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus });
 
   try {
-    const member = booking.memberId ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] }) : null;
-    await realtimeService.notifyUser(member?.userId, {
-      title: "Buổi tập đã hoàn thành",
-      message: `Buổi tập #${booking.id} của bạn đã được PT xác nhận hoàn thành.`,
-      notificationType: "booking_update",
-      relatedType: "booking",
-      relatedId: booking.id,
-    });
+    await notifyMemberSessionCompletion(booking, consumedActivation);
   } catch (e) {
     console.error("[trainerAttendanceService] notify member error:", e.message);
   }

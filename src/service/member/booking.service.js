@@ -4,6 +4,21 @@ import payosService from "../payment/payos.service";
 import realtimeService from "../realtime.service";
 
 const SLOT_MINUTES = 60;
+
+const formatDateVN = (value) => {
+  if (!value) return "ngày đã chọn";
+  const s = String(value);
+  const exact = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (exact) return `${exact[3]}/${exact[2]}/${exact[1]}`;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "ngày đã chọn";
+  return d.toLocaleDateString("vi-VN");
+};
+
+const toHHMMLabel = (value) => String(value || "").slice(0, 5);
+
+const formatBookingNotificationSlot = ({ bookingDate, startTime, endTime }) =>
+  `${formatDateVN(bookingDate)}${startTime && endTime ? ` (${toHHMMLabel(startTime)}-${toHHMMLabel(endTime)})` : ""}`;
 const ALLOWED_PAYMENT = new Set(["payos"]);
 
 const DAY_KEYS = [
@@ -1121,6 +1136,19 @@ const bookingService = {
       );
 
       await t.commit();
+
+      try {
+        await realtimeService.notifyUser(userId, {
+          title: "Đặt lịch thành công",
+          message: `Bạn đã đặt buổi tập ngày ${formatBookingNotificationSlot(booking)} thành công.`,
+          notificationType: "booking_update",
+          relatedType: "booking",
+          relatedId: booking.id,
+        });
+      } catch (notifyError) {
+        console.error("[member.booking] create booking notify error:", notifyError.message);
+      }
+
       return booking;
     } catch (e) {
       await t.rollback();
@@ -1270,6 +1298,20 @@ const bookingService = {
       }
 
       await t.commit();
+
+      try {
+        await realtimeService.notifyUser(userId, {
+          title: "Đã tạo lịch tập",
+          message: created.length === 1
+            ? `Bạn đã tạo 1 buổi tập vào ${formatBookingNotificationSlot(created[0])}.`
+            : `Bạn đã tạo ${created.length} buổi tập mới cho gói của mình.`,
+          notificationType: "booking_update",
+          relatedType: "packageActivation",
+          relatedId: activation.id,
+        });
+      } catch (notifyError) {
+        console.error("[member.booking] create week bookings notify error:", notifyError.message);
+      }
 
       return {
         createdCount: created.length,

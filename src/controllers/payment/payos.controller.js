@@ -133,7 +133,8 @@ const payosController = {
 
       const activation = await activatePackageFromTransaction(tx, amount, "payosWebhook", data);
       const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
-      await realtimeService.notifyUser(tx.processedBy || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId, {
+      const memberUserId = tx.processedBy || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId;
+      await realtimeService.notifyUser(memberUserId, {
         title: "Thanh toán gói thành công",
         message: `Gói ${pkg?.name || "tập"} đã được kích hoạt cho tài khoản của bạn.`,
         notificationType: "package_purchase",
