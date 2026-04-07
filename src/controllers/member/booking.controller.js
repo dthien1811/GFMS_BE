@@ -58,6 +58,34 @@ const bookingController = {
     }
   },
 
+
+async getMyRescheduleOptions(req, res) {
+  try {
+    const data = await bookingService.getMyRescheduleOptions(req.user.id, Number(req.params.id), req.query || {});
+    return res.status(200).json({ data });
+  } catch (e) {
+    return res.status(e.statusCode || 500).json({ message: e.message });
+  }
+},
+
+async createRescheduleRequest(req, res) {
+  try {
+    const data = await bookingService.createRescheduleRequest(req.user.id, Number(req.params.id), req.body || {});
+    return res.status(201).json({ data, message: 'Đã gửi yêu cầu đổi lịch' });
+  } catch (e) {
+    return res.status(e.statusCode || 500).json({ message: e.message });
+  }
+},
+
+async getMyRescheduleRequests(req, res) {
+  try {
+    const data = await bookingService.getMyRescheduleRequests(req.user.id);
+    return res.status(200).json({ data });
+  } catch (e) {
+    return res.status(e.statusCode || 500).json({ message: e.message });
+  }
+},
+
   async getMyBookings(req, res) {
     try {
       const bookings = await bookingService.getMyBookings(req.user.id);

@@ -1,5 +1,5 @@
 import db from "../../models/index";
-const { Booking, Member, EquipmentStock, Equipment, Gym, User, Package, Transaction } = db;
+const { Booking, Member, EquipmentStock, Equipment, Gym, User, Package, Transaction, Commission } = db;
 const { Sequelize } = db;
 
 const ownerDashboardController = {
@@ -13,6 +13,24 @@ const ownerDashboardController = {
    */
   async getSummary(req, res) {
     try {
+      const localDateKey = (d = new Date()) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      };
+      const localMonthKey = (d = new Date()) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        return `${y}-${m}`;
+      };
+      const nowLocal = new Date();
+      const todayKey = localDateKey(nowLocal);
+      const monthKey = localMonthKey(nowLocal);
+      const revenueDateExpr = Sequelize.literal(
+        "COALESCE(DATE(`Commission`.`sessionDate`), DATE(`Commission`.`createdAt`))"
+      );
+
       const userId = req.user.id;
 
       // Lấy danh sách gym của owner
@@ -38,7 +56,10 @@ const ownerDashboardController = {
           upcomingBookings: [],
           expiringMembers: [],
           lowStock: [],
+          bestSellingPackages: [],
           totalRevenue: 0,
+          todayRevenue: 0,
+          monthRevenue: 0,
         });
       }
 
@@ -208,18 +229,126 @@ const ownerDashboardController = {
         joinTime: m.createdAt,
       }));
 
-      // ── 7. Tổng doanh thu (paymentStatus = 'completed') ─────────
-      const revenueResult = await Transaction.findOne({
+      // ── 7. Tổng doanh thu owner (chia sẻ từ PT = sessionValue - commissionAmount) ─────────
+      const revenueResult = await Commission.findOne({
         attributes: [
-          [Sequelize.fn("COALESCE", Sequelize.fn("SUM", Sequelize.col("amount")), 0), "total"],
+          [
+            Sequelize.fn(
+              "COALESCE",
+              Sequelize.fn(
+                "SUM",
+                Sequelize.literal("COALESCE(`Commission`.`sessionValue`, 0) - COALESCE(`Commission`.`commissionAmount`, 0)")
+              ),
+              0
+            ),
+            "total",
+          ],
         ],
         where: {
           gymId: { [Sequelize.Op.in]: activeGymIds },
-          paymentStatus: "completed",
         },
         raw: true,
       });
       const totalRevenue = parseFloat(revenueResult?.total || 0);
+
+      const todayRevenueResult = await Commission.findOne({
+        attributes: [
+          [
+            Sequelize.fn(
+              "COALESCE",
+              Sequelize.fn(
+                "SUM",
+                Sequelize.literal("COALESCE(`Commission`.`sessionValue`, 0) - COALESCE(`Commission`.`commissionAmount`, 0)")
+              ),
+              0
+            ),
+            "total",
+          ],
+        ],
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          [Sequelize.Op.and]: [
+            Sequelize.where(
+              Sequelize.fn(
+                "DATE_FORMAT",
+                revenueDateExpr,
+                "%Y-%m-%d"
+              ),
+              todayKey
+            ),
+          ],
+        },
+        raw: true,
+      });
+      const todayRevenue = parseFloat(todayRevenueResult?.total || 0);
+
+      const monthRevenueResult = await Commission.findOne({
+        attributes: [
+          [
+            Sequelize.fn(
+              "COALESCE",
+              Sequelize.fn(
+                "SUM",
+                Sequelize.literal("COALESCE(`Commission`.`sessionValue`, 0) - COALESCE(`Commission`.`commissionAmount`, 0)")
+              ),
+              0
+            ),
+            "total",
+          ],
+        ],
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          [Sequelize.Op.and]: [
+            Sequelize.where(
+              Sequelize.fn(
+                "DATE_FORMAT",
+                revenueDateExpr,
+                "%Y-%m"
+              ),
+              monthKey
+            ),
+          ],
+        },
+        raw: true,
+      });
+      const monthRevenue = parseFloat(monthRevenueResult?.total || 0);
+
+      // ── 8. Gói bán chạy nhất (mua/gia hạn, giảm dần theo lượt bán) ─────────
+      const bestSellingRows = await Transaction.findAll({
+        attributes: [
+          "packageId",
+          [Sequelize.fn("COUNT", Sequelize.col("Transaction.id")), "soldCount"],
+          [
+            Sequelize.fn("COALESCE", Sequelize.fn("SUM", Sequelize.col("amount")), 0),
+            "revenue",
+          ],
+        ],
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          paymentStatus: "completed",
+          packageId: { [Sequelize.Op.ne]: null },
+          transactionType: { [Sequelize.Op.in]: ["package_purchase", "package_renewal"] },
+        },
+        include: [
+          {
+            model: Package,
+            attributes: ["id", "name"],
+          },
+        ],
+        group: ["Transaction.packageId", "Package.id", "Package.name"],
+        order: [
+          [Sequelize.literal("soldCount"), "DESC"],
+          [Sequelize.literal("revenue"), "DESC"],
+        ],
+        limit: 10,
+      });
+
+      const bestSellingPackages = bestSellingRows.map((row) => ({
+        packageId: row.packageId,
+        packageName: row.Package?.name || "—",
+        soldCount: Number(row.get("soldCount") || 0),
+        revenue: Number(row.get("revenue") || 0),
+      }));
 
       return res.status(200).json({
         gyms: myGyms,
@@ -230,7 +359,10 @@ const ownerDashboardController = {
         upcomingBookings,
         expiringMembers,
         lowStock,
+        bestSellingPackages,
         totalRevenue,
+        todayRevenue,
+        monthRevenue,
       });
     } catch (e) {
       console.error("[ownerDashboard] getSummary error:", e);
@@ -273,60 +405,116 @@ const ownerDashboardController = {
 
       const now = new Date();
       const startDate = new Date(now);
-      const dateSourceSql = "COALESCE(`transactionDate`, `createdAt`)";
+      const dateSourceSql = "COALESCE(DATE(`Commission`.`sessionDate`), DATE(`Commission`.`createdAt`))";
 
       let bucketSql = `DATE_FORMAT(${dateSourceSql}, '%Y-%m-%d')`;
-      let labelSql = `DATE_FORMAT(${dateSourceSql}, '%d/%m')`;
 
       if (period === "month") {
         startDate.setMonth(startDate.getMonth() - 11);
         startDate.setDate(1);
         startDate.setHours(0, 0, 0, 0);
         bucketSql = `DATE_FORMAT(${dateSourceSql}, '%Y-%m')`;
-        labelSql = `DATE_FORMAT(${dateSourceSql}, '%m/%Y')`;
       } else if (period === "year") {
         startDate.setFullYear(startDate.getFullYear() - 4, 0, 1);
         startDate.setHours(0, 0, 0, 0);
         bucketSql = `DATE_FORMAT(${dateSourceSql}, '%Y')`;
-        labelSql = `DATE_FORMAT(${dateSourceSql}, '%Y')`;
       } else {
         startDate.setDate(startDate.getDate() - 29);
         startDate.setHours(0, 0, 0, 0);
       }
 
-      const rows = await Transaction.findAll({
+      const rows = await Commission.findAll({
         attributes: [
           [Sequelize.literal(bucketSql), "bucket"],
-          [Sequelize.literal(labelSql), "label"],
           [
-            Sequelize.fn("COALESCE", Sequelize.fn("SUM", Sequelize.col("amount")), 0),
+            Sequelize.fn(
+              "COALESCE",
+              Sequelize.fn(
+                "SUM",
+                Sequelize.literal("COALESCE(`Commission`.`sessionValue`, 0) - COALESCE(`Commission`.`commissionAmount`, 0)")
+              ),
+              0
+            ),
             "total",
           ],
         ],
         where: {
           gymId: { [Op.in]: activeGymIds },
-          paymentStatus: "completed",
           [Op.and]: [
             Sequelize.where(
               Sequelize.fn(
                 "COALESCE",
-                Sequelize.col("transactionDate"),
-                Sequelize.col("createdAt")
+                Sequelize.col("Commission.sessionDate"),
+                Sequelize.col("Commission.createdAt")
               ),
               { [Op.gte]: startDate }
             ),
           ],
         },
-        group: [Sequelize.literal(bucketSql), Sequelize.literal(labelSql)],
+        group: [Sequelize.literal(bucketSql)],
         order: [[Sequelize.literal(bucketSql), "ASC"]],
         raw: true,
       });
 
-      const series = rows.map((r) => ({
-        bucket: r.bucket,
-        label: r.label,
-        total: parseFloat(r.total || 0),
-      }));
+      const toYMD = (d) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const day = String(d.getDate()).padStart(2, "0");
+        return `${y}-${m}-${day}`;
+      };
+      const toYM = (d) => {
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        return `${y}-${m}`;
+      };
+      const toLabelDay = (d) => {
+        const day = String(d.getDate()).padStart(2, "0");
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        return `${day}/${m}`;
+      };
+      const toLabelMonth = (d) => {
+        const m = String(d.getMonth() + 1).padStart(2, "0");
+        const y = d.getFullYear();
+        return `${m}/${y}`;
+      };
+
+      const mapTotalByBucket = new Map(
+        rows.map((r) => [String(r.bucket), parseFloat(r.total || 0)])
+      );
+
+      const series = [];
+      if (period === "day") {
+        for (let i = 29; i >= 0; i -= 1) {
+          const d = new Date(now);
+          d.setDate(now.getDate() - i);
+          const bucket = toYMD(d);
+          series.push({
+            bucket,
+            label: toLabelDay(d),
+            total: Number(mapTotalByBucket.get(bucket) || 0),
+          });
+        }
+      } else if (period === "month") {
+        for (let i = 11; i >= 0; i -= 1) {
+          const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+          const bucket = toYM(d);
+          series.push({
+            bucket,
+            label: toLabelMonth(d),
+            total: Number(mapTotalByBucket.get(bucket) || 0),
+          });
+        }
+      } else {
+        for (let i = 4; i >= 0; i -= 1) {
+          const d = new Date(now.getFullYear() - i, 0, 1);
+          const bucket = String(d.getFullYear());
+          series.push({
+            bucket,
+            label: bucket,
+            total: Number(mapTotalByBucket.get(bucket) || 0),
+          });
+        }
+      }
 
       return res.status(200).json({
         period,

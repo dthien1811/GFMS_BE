@@ -18,7 +18,4 @@ router.delete("/:id", ownerMemberController.deleteMember);
 // Toggle member status
 router.patch("/:id/toggle-status", ownerMemberController.toggleMemberStatus);
 
-// Gia hạn gói cho member
-router.post("/:id/renew-package", ownerMemberController.renewMemberPackage);
-
 export default router;

@@ -19,9 +19,34 @@ const {
   Notification,
   Message,
   PurchaseRequest,
+  EquipmentUnit,
 } = require("../models");
+const realtimeServiceModule = require("./realtime.service");
+const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
+const notificationGymService = require("./notification-gym.service");
+const { attachGymIdsToNotifications } = notificationGymService;
+const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
+const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
 const EPS = 0.01;
+
+async function createEquipmentUnits({ gymId, equipmentId, quantity, notes }, transaction) {
+  const qty = Math.max(0, Number(quantity || 0));
+  if (!qty) return [];
+
+  const now = Date.now();
+  return EquipmentUnit.bulkCreate(
+    Array.from({ length: qty }, (_, index) => ({
+      gymId: Number(gymId),
+      equipmentId: Number(equipmentId),
+      assetCode: `EQ-${equipmentId}-GYM-${gymId}-${now}-${index + 1}`,
+      status: "active",
+      usageStatus: "in_stock",
+      notes: notes || null,
+    })),
+    { transaction }
+  );
+}
 
 async function findEquipmentPurchaseTxsForPO(poId, transaction) {
   const poIdN = Number(poId);
@@ -111,7 +136,7 @@ async function createAudit({ userId, action, tableName, recordId, oldValues, new
 
 async function createNotification({ userId, title, message, notificationType, relatedType, relatedId }, t) {
   if (!userId) return null;
-  return Notification.create(
+  const row = await Notification.create(
     {
       userId,
       title,
@@ -123,6 +148,29 @@ async function createNotification({ userId, title, message, notificationType, re
     },
     { transaction: t }
   );
+
+  const payload = {
+    id: row.id,
+    title,
+    message,
+    notificationType: notificationType || null,
+    relatedType: relatedType || null,
+    relatedId: relatedId || null,
+    isRead: false,
+    createdAt: row.createdAt,
+  };
+
+  const [enrichedPayload] = await attachGymIdsToNotifications([payload]);
+
+  if (t?.afterCommit) {
+    t.afterCommit(() => {
+      realtimeService.emitUser(userId, "notification:new", enrichedPayload);
+    });
+  } else {
+    realtimeService.emitUser(userId, "notification:new", enrichedPayload);
+  }
+
+  return row;
 }
 
 async function createMessage({ senderId, receiverId, content }, t) {
@@ -926,6 +974,36 @@ class AdminPurchaseWorkflowService {
               recordedBy: adminId || null,
               recordedAt: new Date(),
             },
+            { transaction: t }
+          );
+
+          const createdUnits = await createEquipmentUnits(
+            {
+              gymId: receipt.gymId,
+              equipmentId,
+              quantity: addQty,
+              notes: `Inbound receipt ${receipt.code}`,
+            },
+            t
+          );
+
+          await logEquipmentUnitEvents(
+            createdUnits.map((unit) => ({
+              equipmentUnitId: unit.id,
+              equipmentId,
+              gymId: receipt.gymId,
+              eventType: "created",
+              referenceType: "receipt",
+              referenceId: receipt.id,
+              performedBy: adminId || null,
+              notes: `Nhập kho qua phiếu ${receipt.code}`,
+              metadata: {
+                receiptCode: receipt.code,
+                purchaseOrderId: receipt.purchaseOrderId || null,
+                source: "purchase_workflow_receipt",
+              },
+              eventAt: receipt.receiptDate || new Date(),
+            })),
             { transaction: t }
           );
 

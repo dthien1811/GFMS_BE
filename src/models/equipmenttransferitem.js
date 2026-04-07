@@ -37,6 +37,11 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: 1,
       },
 
+      selectedUnitIds: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
+
       notes: {
         type: DataTypes.TEXT,
         allowNull: true,

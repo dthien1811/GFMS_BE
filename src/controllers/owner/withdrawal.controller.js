@@ -45,6 +45,32 @@ const ownerWithdrawalController = {
     }
   },
 
+  async autoApprovePendingWithdrawals(req, res) {
+    try {
+      const userId = req.user.id;
+      const { gymId, notes } = req.body || {};
+      const result = await ownerWithdrawalService.autoApprovePendingWithdrawals(userId, { gymId, notes });
+      if (Array.isArray(result?.processed)) {
+        result.processed.forEach((item) => {
+          if (item?.trainerId) {
+            emitToTrainer(item.trainerId, "withdrawal:approved", { id: item.id, status: item.status });
+          }
+        });
+      }
+      emitToUser(userId, "withdrawal:approved", {
+        bulk: true,
+        approvedCount: Number(result?.approvedCount || 0),
+      });
+      return res.status(200).json({
+        data: result,
+        message: `Đã tự động duyệt ${Number(result?.approvedCount || 0)} yêu cầu`,
+      });
+    } catch (e) {
+      console.error("Error in autoApprovePendingWithdrawals controller:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
   async rejectWithdrawal(req, res) {
     try {
       const userId = req.user.id;

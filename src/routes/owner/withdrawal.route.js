@@ -10,6 +10,7 @@ router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owner
 
 router.get("/", ownerWithdrawalController.getWithdrawals);
 router.get("/export", ownerWithdrawalController.exportWithdrawals);
+router.post("/auto-approve", ownerWithdrawalController.autoApprovePendingWithdrawals);
 router.post("/:id/approve", ownerWithdrawalController.approveWithdrawal);
 router.post("/:id/reject", ownerWithdrawalController.rejectWithdrawal);
 

@@ -4,11 +4,15 @@ const trainerController = require('../controllers/trainerController');
 const activationMaterialController = require('../controllers/activationMaterial.controller');
 const trainerRequestController = require("../controllers/trainerRequestController");
 const trainerAttendanceController = require("../controllers/trainerAttendanceController");
+const trainerRescheduleController = require('../controllers/trainerRescheduleController');
 const { checkUserJWT } = require('../middleware/JWTAction');
 
 
 router.use(checkUserJWT);
 router.get('/me', trainerController.getMyTrainerProfile);
+router.get('/me/reschedule-requests', trainerRescheduleController.listMine);
+router.patch('/reschedule-requests/:id/approve', trainerRescheduleController.approve);
+router.patch('/reschedule-requests/:id/reject', trainerRescheduleController.reject);
 router.get('/me/commissions', trainerController.getMyCommissions);
 router.get('/me/payroll-periods', trainerController.getMyPayrollPeriods);
 router.get('/me/payroll-periods/:periodId/commissions', trainerController.getMyPayrollPeriodCommissions);
@@ -81,5 +85,6 @@ router.get("/attendance/today", trainerAttendanceController.getToday);
 router.post("/attendance/check-in", trainerAttendanceController.checkIn);
 router.post("/attendance/check-out", trainerAttendanceController.checkOut);
 router.post("/attendance/reset", trainerAttendanceController.reset);
+router.post("/attendance/request-busy-slot", trainerAttendanceController.requestBusySlot);
 
 module.exports = router;

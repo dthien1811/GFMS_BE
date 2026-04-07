@@ -4,6 +4,21 @@ import payosService from "../payment/payos.service";
 import realtimeService from "../realtime.service";
 
 const SLOT_MINUTES = 60;
+
+const formatDateVN = (value) => {
+  if (!value) return "ngày đã chọn";
+  const s = String(value);
+  const exact = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (exact) return `${exact[3]}/${exact[2]}/${exact[1]}`;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "ngày đã chọn";
+  return d.toLocaleDateString("vi-VN");
+};
+
+const toHHMMLabel = (value) => String(value || "").slice(0, 5);
+
+const formatBookingNotificationSlot = ({ bookingDate, startTime, endTime }) =>
+  `${formatDateVN(bookingDate)}${startTime && endTime ? ` (${toHHMMLabel(startTime)}-${toHHMMLabel(endTime)})` : ""}`;
 const ALLOWED_PAYMENT = new Set(["payos"]);
 
 const DAY_KEYS = [
@@ -187,6 +202,203 @@ function hasConflictInMap(dateMap, bookingDate, startTime, endTime) {
   const s = timeToMinutes(startTime);
   const e = timeToMinutes(endTime);
   return list.some((it) => overlap(s, e, it.start, it.end));
+}
+
+
+const RESCHEDULE_DAY_LABELS = {
+  sunday: 'Chủ nhật',
+  monday: 'Thứ 2',
+  tuesday: 'Thứ 3',
+  wednesday: 'Thứ 4',
+  thursday: 'Thứ 5',
+  friday: 'Thứ 6',
+  saturday: 'Thứ 7',
+};
+
+const addMinutesToTime = (startTime, minutes) => minutesToTime(timeToMinutes(startTime) + minutes);
+
+const normalizeWeekday = (value) => {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number' || /^\d+$/.test(String(value))) {
+    const idx = Number(value);
+    if (idx >= 0 && idx <= 6) return DAY_KEYS[idx];
+  }
+  const raw = String(value).trim().toLowerCase();
+  const alias = {
+    '2': 'monday', '3': 'tuesday', '4': 'wednesday', '5': 'thursday', '6': 'friday', '7': 'saturday',
+    'cn': 'sunday', 'chunhat': 'sunday', 'chủ nhật': 'sunday', 'chu nhat': 'sunday',
+    'thứ 2': 'monday', 'thu 2': 'monday', 'monday': 'monday',
+    'thứ 3': 'tuesday', 'thu 3': 'tuesday', 'tuesday': 'tuesday',
+    'thứ 4': 'wednesday', 'thu 4': 'wednesday', 'wednesday': 'wednesday',
+    'thứ 5': 'thursday', 'thu 5': 'thursday', 'thursday': 'thursday',
+    'thứ 6': 'friday', 'thu 6': 'friday', 'friday': 'friday',
+    'thứ 7': 'saturday', 'thu 7': 'saturday', 'saturday': 'saturday',
+    'sunday': 'sunday',
+  };
+  return alias[raw] || null;
+};
+
+const formatYMDLabel = (isoDate) => {
+  const [y, m, d] = String(isoDate || '').split('-');
+  if (!y || !m || !d) return isoDate;
+  const date = new Date(`${isoDate}T00:00:00`);
+  const key = DAY_KEYS[date.getDay()];
+  return `${RESCHEDULE_DAY_LABELS[key] || ''}, ${d}/${m}/${y}`;
+};
+
+async function getOwnedBookingOrThrow(userId, bookingId, transaction) {
+  const booking = await db.Booking.findByPk(bookingId, {
+    include: [
+      {
+        model: db.Trainer,
+        include: [{ model: db.User, attributes: ['id', 'username', 'email'] }],
+      },
+      {
+        model: db.Member,
+        include: [{ model: db.User, attributes: ['id', 'username', 'email'] }],
+      },
+      { model: db.Package, attributes: ['id', 'name', 'type'] },
+      { model: db.Gym, attributes: ['id', 'name'] },
+    ],
+    transaction,
+    lock: transaction ? transaction.LOCK.UPDATE : undefined,
+  });
+
+  if (!booking) {
+    const e = new Error('Không tìm thấy booking');
+    e.statusCode = 404;
+    throw e;
+  }
+
+  if (Number(booking.createdBy) !== Number(userId)) {
+    const e = new Error('Bạn không có quyền thao tác booking này');
+    e.statusCode = 403;
+    throw e;
+  }
+
+  const status = String(booking.status || '').toLowerCase();
+  if (['cancelled', 'completed', 'no_show'].includes(status)) {
+    const e = new Error('Booking hiện không thể đổi lịch');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  const startMs = new Date(`${booking.bookingDate}T${toHHMM(booking.startTime)}:00`).getTime();
+  if (Number.isFinite(startMs) && startMs <= Date.now()) {
+    const e = new Error('Chỉ có thể đổi lịch cho buổi tập trong tương lai');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  return booking;
+}
+
+async function buildRescheduleOptionsForBooking(booking, { selectedDate = null, weekday = null, daysAhead = 21 } = {}, transaction) {
+  const trainer = booking.Trainer;
+  if (!trainer) {
+    const e = new Error('Booking chưa có PT để đổi lịch');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  const pending = await db.BookingRescheduleRequest.findOne({
+    where: { bookingId: booking.id, status: 'pending' },
+    transaction,
+  });
+  if (pending) {
+    const e = new Error('Booking này đang có yêu cầu đổi lịch chờ xử lý');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  const normalizedWeekday = normalizeWeekday(weekday);
+  if (weekday && !normalizedWeekday) {
+    const e = new Error('Thứ trong tuần không hợp lệ');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  const noticeHours = Math.max(Number(trainer.minBookingNotice || 0), 12);
+  const minAllowedMs = Date.now() + noticeHours * 60 * 60 * 1000;
+
+  const candidateDates = [];
+  for (let i = 0; i <= daysAhead; i += 1) {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    d.setDate(d.getDate() + i);
+    const isoDate = toISODate(d);
+    const dayKey = DAY_KEYS[d.getDay()];
+    if (normalizedWeekday && normalizedWeekday !== dayKey) continue;
+    const hours = getTrainerHoursForDate(trainer, isoDate);
+    if (!Array.isArray(hours) || !hours.length) continue;
+    const dateStartMs = new Date(`${isoDate}T00:00:00`).getTime();
+    if (dateStartMs + 24 * 60 * 60 * 1000 <= minAllowedMs) continue;
+    candidateDates.push({ date: isoDate, weekday: dayKey, label: formatYMDLabel(isoDate) });
+  }
+
+  let effectiveDate = selectedDate || candidateDates?.[0]?.date || null;
+  if (selectedDate && !candidateDates.some((it) => it.date === selectedDate)) {
+    const e = new Error('Ngày yêu cầu đổi lịch không nằm trong danh sách khả dụng');
+    e.statusCode = 400;
+    throw e;
+  }
+
+  let slots = [];
+  if (effectiveDate) {
+    const hours = getTrainerHoursForDate(trainer, effectiveDate);
+    const slotKeys = [...buildDaySlotSet(hours)];
+    const trainerBookings = await db.Booking.findAll({
+      where: {
+        trainerId: booking.trainerId,
+        bookingDate: effectiveDate,
+        status: { [Op.ne]: 'cancelled' },
+        id: { [Op.ne]: booking.id },
+      },
+      attributes: ['startTime', 'endTime'],
+      transaction,
+    });
+    const memberBookings = await db.Booking.findAll({
+      where: {
+        createdBy: booking.createdBy,
+        bookingDate: effectiveDate,
+        status: { [Op.ne]: 'cancelled' },
+        id: { [Op.ne]: booking.id },
+      },
+      attributes: ['startTime', 'endTime'],
+      transaction,
+    });
+
+    slots = slotKeys.map((slotKey) => {
+      const [start, end] = slotKey.split('-');
+      const startTime = `${start}:00`;
+      const endTime = `${end}:00`;
+      const startMs = new Date(`${effectiveDate}T${start}:00`).getTime();
+      const trainerBusy = trainerBookings.some((b) => overlap(timeToMinutes(startTime), timeToMinutes(endTime), timeToMinutes(b.startTime), timeToMinutes(b.endTime)));
+      const memberBusy = memberBookings.some((b) => overlap(timeToMinutes(startTime), timeToMinutes(endTime), timeToMinutes(b.startTime), timeToMinutes(b.endTime)));
+      const tooSoon = startMs < minAllowedMs;
+      return {
+        startTime,
+        endTime,
+        label: `${start} - ${end}`,
+        available: !trainerBusy && !memberBusy && !tooSoon,
+        disabledReason: tooSoon ? 'Quá gần giờ tập' : trainerBusy ? 'PT đã có lịch khác' : memberBusy ? 'Bạn đã có lịch khác' : null,
+      };
+    }).filter((it) => it.available);
+  }
+
+  return {
+    bookingId: booking.id,
+    currentBooking: {
+      bookingDate: booking.bookingDate,
+      startTime: booking.startTime,
+      endTime: booking.endTime,
+    },
+    weekday: normalizedWeekday,
+    selectedDate: effectiveDate,
+    availableDates: candidateDates,
+    availableSlots: slots,
+    minNoticeHours: noticeHours,
+  };
 }
 
 /* ================= DB HELPERS ================= */
@@ -964,6 +1176,17 @@ const bookingService = {
         message: `Học viên vừa đặt lịch ngày ${date} (${toHHMM(startTimeFixed)}-${toHHMM(endTime)}).`,
         relatedId: booking?.id || null,
       });
+      try {
+        await realtimeService.notifyUser(userId, {
+          title: "Đặt lịch thành công",
+          message: `Bạn đã đặt buổi tập ngày ${formatBookingNotificationSlot(booking)} thành công.`,
+          notificationType: "booking_update",
+          relatedType: "booking",
+          relatedId: booking.id,
+        });
+      } catch (notifyError) {
+        console.error("[member.booking] create booking notify error:", notifyError.message);
+      }
       return booking;
     } catch (e) {
       await t.rollback();
@@ -1120,6 +1343,19 @@ const bookingService = {
         message: `Học viên vừa đặt ${created.length} buổi theo lịch lặp (${toHHMM(startTimeFixed)}-${toHHMM(endTime)}).`,
         relatedId: created[0]?.id || null,
       });
+      try {
+        await realtimeService.notifyUser(userId, {
+          title: "Đã tạo lịch tập",
+          message: created.length === 1
+            ? `Bạn đã tạo 1 buổi tập vào ${formatBookingNotificationSlot(created[0])}.`
+            : `Bạn đã tạo ${created.length} buổi tập mới cho gói của mình.`,
+          notificationType: "booking_update",
+          relatedType: "packageActivation",
+          relatedId: activation.id,
+        });
+      } catch (notifyError) {
+        console.error("[member.booking] create week bookings notify error:", notifyError.message);
+      }
 
       return {
         createdCount: created.length,
@@ -1133,13 +1369,108 @@ const bookingService = {
     }
   },
 
+
+async getMyRescheduleOptions(userId, bookingId, query = {}) {
+  const booking = await getOwnedBookingOrThrow(userId, bookingId);
+  return buildRescheduleOptionsForBooking(booking, {
+    selectedDate: query.selectedDate || null,
+    weekday: query.weekday || null,
+    daysAhead: Number(query.daysAhead || 21),
+  });
+},
+
+async createRescheduleRequest(userId, bookingId, payload = {}) {
+  const t = await db.sequelize.transaction();
+  try {
+    const booking = await getOwnedBookingOrThrow(userId, bookingId, t);
+    const requestedDate = String(payload.requestedDate || '').slice(0, 10);
+    const requestedStartTime = normalizeTimeInput(payload.requestedStartTime || payload.startTime || '');
+    const reason = String(payload.reason || '').trim();
+
+    assertDateOnly(requestedDate);
+    if (!/^\d{2}:\d{2}(:\d{2})?$/.test(requestedStartTime)) {
+      const e = new Error('Giờ bắt đầu không hợp lệ');
+      e.statusCode = 400;
+      throw e;
+    }
+
+    const options = await buildRescheduleOptionsForBooking(booking, {
+      selectedDate: requestedDate,
+      weekday: payload.weekday || null,
+    }, t);
+    const slot = (options.availableSlots || []).find((it) => it.startTime === requestedStartTime);
+    if (!slot) {
+      const e = new Error('Khung giờ yêu cầu hiện không còn khả dụng');
+      e.statusCode = 400;
+      throw e;
+    }
+
+    const row = await db.BookingRescheduleRequest.create({
+      bookingId: booking.id,
+      memberId: booking.memberId,
+      trainerId: booking.trainerId,
+      requestedByUserId: userId,
+      oldBookingDate: booking.bookingDate,
+      oldStartTime: booking.startTime,
+      oldEndTime: booking.endTime,
+      requestedDate,
+      requestedStartTime,
+      requestedEndTime: slot.endTime,
+      reason: reason || null,
+      status: 'pending',
+    }, { transaction: t });
+
+    await t.commit();
+
+    if (booking?.Trainer?.User?.id) {
+      await realtimeService.notifyUser(Number(booking.Trainer.User.id), {
+        title: 'Yêu cầu đổi lịch mới',
+        message: `${booking.Member?.User?.username || 'Hội viên'} muốn đổi buổi ${formatYMDLabel(booking.bookingDate)} ${toHHMM(booking.startTime)} sang ${formatYMDLabel(requestedDate)} ${toHHMM(requestedStartTime)}.`,
+        notificationType: 'booking_reschedule',
+        relatedType: 'booking_reschedule_request',
+        relatedId: row.id,
+      });
+    }
+
+    return row;
+  } catch (e) {
+    await t.rollback();
+    throw e;
+  }
+},
+
+async getMyRescheduleRequests(userId) {
+  const rows = await db.BookingRescheduleRequest.findAll({
+    where: { requestedByUserId: userId },
+    include: [
+      {
+        model: db.Booking,
+        include: [
+          { model: db.Package, attributes: ['id', 'name', 'type'] },
+          { model: db.Gym, attributes: ['id', 'name'] },
+        ],
+      },
+      {
+        model: db.Trainer,
+        include: [{ model: db.User, attributes: ['id', 'username', 'email'] }],
+      },
+    ],
+    order: [['createdAt', 'DESC']],
+  });
+  return rows;
+},
+
   async getMyBookings(userId) {
     const rows = await db.Booking.findAll({
       where: { createdBy: userId },
       include: [
         {
           model: db.Trainer,
-          include: [{ model: db.User, attributes: ["username"] }],
+          include: [{ model: db.User, attributes: ["id", "username", "email"] }],
+        },
+        {
+          model: db.Member,
+          include: [{ model: db.User, attributes: ["id", "username", "email"] }],
         },
         { model: db.Package, attributes: ["name", "type"] },
         { model: db.Gym, attributes: ["name"] },
@@ -1173,11 +1504,28 @@ const bookingService = {
       attByBookingId.set(plain.bookingId, plain);
     }
 
+    const requests = bookingIds.length
+      ? await db.BookingRescheduleRequest.findAll({
+          where: { bookingId: { [Op.in]: bookingIds } },
+          order: [['createdAt', 'DESC']],
+        })
+      : [];
+    const reqMap = new Map();
+    for (const r of requests) {
+      const plain = r.toJSON ? r.toJSON() : r;
+      if (!reqMap.has(plain.bookingId)) reqMap.set(plain.bookingId, []);
+      reqMap.get(plain.bookingId).push(plain);
+    }
+
     return rows.map((b) => {
       const plain = b.toJSON ? b.toJSON() : b;
+      const reqs = reqMap.get(b.id) || [];
       return {
         ...plain,
         trainerAttendance: attByBookingId.get(b.id) || null,
+        latestRescheduleRequest: reqs[0] || null,
+        pendingRescheduleRequest: reqs.find((x) => x.status === 'pending') || null,
+        rescheduleRequests: reqs,
       };
     });
   },

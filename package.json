@@ -29,6 +29,7 @@
     "ejs": "3.1.6",
     "exceljs": "^4.4.0",
     "express": "4.17.2",
+    "google-auth-library": "^9.15.1",
     "jsonwebtoken": "8.5.1",
     "multer": "^2.0.2",
     "mysql2": "^2.3.3",

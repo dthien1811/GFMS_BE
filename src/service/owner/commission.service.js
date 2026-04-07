@@ -1,6 +1,7 @@
 import db from "../../models";
 import { Op } from "sequelize";
 import ExcelJS from "exceljs";
+import realtimeService from "../realtime.service";
 
 const {
   Commission,
@@ -15,6 +16,12 @@ const {
   Withdrawal,
   Policy,
 } = db;
+
+const emitCommissionChanged = (userIds = [], payload = {}) => {
+  [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
+    realtimeService.emitUser(userId, "commission:changed", payload);
+  });
+};
 
 const parsePaging = (query) => {
   const page = Math.max(1, Number(query.page) || 1);
@@ -176,10 +183,14 @@ const ownerCommissionService = {
 
     if (existing) {
       await existing.update({ value });
+      emitCommissionChanged([ownerUserId], {
+        gymId: Number(gymId),
+        action: "rate_updated",
+      });
       return existing;
     }
 
-    return Policy.create({
+    const policy = await Policy.create({
       policyType: "commission",
       name: "Gym commission rate",
       description: "Tỷ lệ hoa hồng của owner theo gym",
@@ -189,6 +200,14 @@ const ownerCommissionService = {
       gymId: Number(gymId),
       effectiveFrom: new Date(),
     });
+
+    emitCommissionChanged([ownerUserId], {
+      gymId: Number(gymId),
+      policyId: Number(policy.id),
+      action: "rate_created",
+    });
+
+    return policy;
   },
 
   async getPayrollPeriods(ownerUserId, query = {}) {
@@ -288,6 +307,12 @@ const ownerCommissionService = {
         lastPayoutDate: new Date(),
       });
     }
+
+    emitCommissionChanged([ownerUserId], {
+      gymId: Number(gymId),
+      trainerId: Number(trainerId),
+      action: "paid_by_trainer",
+    });
 
     return { totalAmount, totalSessions: commissions.length };
   },
@@ -437,6 +462,12 @@ const ownerCommissionService = {
     }
     await period.update({ walletCreditedAt: new Date() });
 
+    emitCommissionChanged([ownerUserId], {
+      gymId: Number(gymId),
+      periodId: Number(period.id),
+      action: "period_closed",
+    });
+
     return PayrollPeriod.findByPk(period.id, {
       include: [
         { model: Gym, attributes: ["id", "name"], required: false },
@@ -565,6 +596,12 @@ const ownerCommissionService = {
       status: "paid",
       paidAt: new Date(),
       ...(period.walletCreditedAt ? {} : { walletCreditedAt: new Date() }),
+    });
+
+    emitCommissionChanged([ownerUserId], {
+      gymId: Number(period.gymId),
+      periodId: Number(period.id),
+      action: "period_paid",
     });
 
     return PayrollPeriod.findByPk(period.id, {

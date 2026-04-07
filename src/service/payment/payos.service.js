@@ -69,13 +69,13 @@ async function createPackagePaymentLink({ orderCode, amount, description, return
     returnUrl:
       returnUrl ||
       process.env.PAYOS_RETURN_URL ||
-      `${process.env.FRONTEND_URL || "http://localhost:3000"}/member/my-packages?payos=success&orderCode=${encodeURIComponent(
+      `${process.env.FRONTEND_URL || "http://localhost:3000"}/member/payment-success?payos=success&orderCode=${encodeURIComponent(
         orderCode
       )}`,
     cancelUrl:
       cancelUrl ||
       process.env.PAYOS_CANCEL_URL ||
-      `${process.env.FRONTEND_URL || "http://localhost:3000"}/member/packages?payos=cancel`,
+      `${process.env.FRONTEND_URL || "http://localhost:3000"}/member/payment-success?payos=cancel`,
   };
 
   console.log("\n💳 Creating payment link with data:", paymentData);

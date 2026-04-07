@@ -1,5 +1,161 @@
 import db from "../../models";
 const { User, Trainer, Gym, Group, Booking, Member, Package, Review } = db;
+const cloudinaryService = require("../cloudinaryService");
+
+const MAX_SPECIALIZATIONS = 6;
+const MAX_CERT_LINKS = 10;
+
+const SPECIALIZATION_ALIASES = new Map([
+  ["yoga", "Yoga"],
+  ["pilates", "Pilates"],
+  ["hiit", "HIIT"],
+  ["crossfit", "CrossFit"],
+  ["bodybuilding", "Thể hình"],
+  ["body building", "Thể hình"],
+  ["strength training", "Tăng sức mạnh"],
+  ["functional training", "Tập chức năng"],
+  ["weight loss", "Giảm mỡ"],
+  ["fat loss", "Giảm mỡ"],
+  ["nutrition coaching", "Huấn luyện dinh dưỡng"],
+  ["rehabilitation", "Phục hồi chức năng"],
+  ["boxing", "Quyền anh"],
+  ["cardio", "Tập cardio"],
+  ["swimming", "Bơi lội"],
+  ["running", "Chạy bộ"],
+  ["cycling", "Đạp xe"],
+  ["tăng sức mạnh", "Tăng sức mạnh"],
+  ["tập chức năng", "Tập chức năng"],
+  ["giảm mỡ", "Giảm mỡ"],
+  ["huấn luyện dinh dưỡng", "Huấn luyện dinh dưỡng"],
+  ["phục hồi chức năng", "Phục hồi chức năng"],
+  ["quyền anh", "Quyền anh"],
+  ["tập cardio", "Tập cardio"],
+  ["bơi lội", "Bơi lội"],
+  ["chạy bộ", "Chạy bộ"],
+  ["đạp xe", "Đạp xe"],
+  ["thể hình", "Thể hình"],
+]);
+
+const cleanText = (value) => String(value || "").trim();
+
+const toTitleCase = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+
+const toVietnameseCanonical = (value) => {
+  const key = String(value || "").trim().toLowerCase();
+  if (!key) return "";
+  return SPECIALIZATION_ALIASES.get(key) || toTitleCase(value);
+};
+
+const parseSpecializationList = (raw) =>
+  String(raw || "")
+    .split(/[\n,;|]+/)
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+const normalizeSpecializationList = (raw) => {
+  const tokens = parseSpecializationList(raw);
+  if (tokens.length === 0) {
+    const error = new Error("Vui lòng nhập ít nhất 1 chuyên môn cho PT");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (tokens.length > MAX_SPECIALIZATIONS) {
+    const error = new Error(`Tối đa ${MAX_SPECIALIZATIONS} chuyên môn cho mỗi PT`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const invalid = tokens.find((token) =>
+    token.length < 2 || token.length > 60 || /[^A-Za-z0-9\u00C0-\u1EF9\s+&/()\-]/.test(token)
+  );
+  if (invalid) {
+    const error = new Error(`Chuyên môn không hợp lệ: ${invalid}`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const dedup = new Map();
+  tokens.forEach((token) => {
+    const key = token.toLowerCase();
+    if (!dedup.has(key)) {
+      dedup.set(key, toVietnameseCanonical(token));
+    }
+  });
+
+  return Array.from(dedup.values());
+};
+
+const parseLinksInput = (raw) => {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    const maybeJson = raw.trim();
+    if (!maybeJson) return [];
+    try {
+      const parsed = JSON.parse(maybeJson);
+      if (Array.isArray(parsed)) return parsed;
+    } catch (_e) {
+      // fallback split
+    }
+    return maybeJson.split(/[\n,;]+/);
+  }
+  return [];
+};
+
+const normalizeCertificateLinks = (raw) => {
+  const links = parseLinksInput(raw)
+    .map((v) => cleanText(v))
+    .filter(Boolean);
+
+  if (links.length > MAX_CERT_LINKS) {
+    const error = new Error(`Tối đa ${MAX_CERT_LINKS} link chứng chỉ`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const dedup = new Set();
+  const valid = [];
+  for (const link of links) {
+    let url;
+    try {
+      url = new URL(link);
+    } catch (_e) {
+      const error = new Error(`Link chứng chỉ không hợp lệ: ${link}`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    if (!["http:", "https:"].includes(url.protocol)) {
+      const error = new Error(`Link chứng chỉ phải bắt đầu bằng http/https: ${link}`);
+      error.statusCode = 400;
+      throw error;
+    }
+
+    const normalized = url.toString();
+    if (!dedup.has(normalized)) {
+      dedup.add(normalized);
+      valid.push(normalized);
+    }
+  }
+
+  return valid;
+};
+
+const buildCertificateEntries = (entries = [], type = "link") => {
+  return entries.map((value) => ({
+    id: `cert_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    name: type === "image" ? "Certificate Image" : new URL(value).hostname,
+    url: value,
+    type,
+    uploadedAt: new Date().toISOString(),
+  }));
+};
 
 // Get all trainers (users with PT role) in owner's gyms
 const getMyTrainers = async (userId, query = {}) => {
@@ -44,6 +200,7 @@ const getMyTrainers = async (userId, query = {}) => {
           attributes: ["id", "name", "address"],
         },
       ],
+      order: [["createdAt", "DESC"], ["id", "DESC"]],
       limit: parseInt(limit),
       offset: offset,
       distinct: true,
@@ -489,6 +646,57 @@ const toggleTrainerStatus = async (userId, trainerId) => {
   return { message, isActive: trainer.isActive };
 };
 
+const uploadTrainerCertificates = async (userId, trainerId, files = []) => {
+  if (!Array.isArray(files) || files.length === 0) {
+    const error = new Error("Vui lòng chọn ít nhất 1 ảnh chứng chỉ");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const trainer = await Trainer.findByPk(trainerId, {
+    include: [{ model: Gym, attributes: ["id", "ownerId"] }],
+  });
+
+  if (!trainer || !trainer.Gym || trainer.Gym.ownerId !== userId) {
+    const error = new Error("Không tìm thấy PT hoặc bạn không có quyền cập nhật");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const uploadedUrls = [];
+  for (const file of files) {
+    const uploaded = await cloudinaryService.uploadImageBuffer(file.buffer, {
+      folder: "gfms/trainers/certificates",
+      filename: file.originalname,
+    });
+    if (uploaded?.secure_url) {
+      uploadedUrls.push(uploaded.secure_url);
+    }
+  }
+
+  const currentLinks = Array.isArray(trainer?.socialLinks?.certificateLinks)
+    ? trainer.socialLinks.certificateLinks
+    : [];
+  const currentCerts = Array.isArray(trainer?.socialLinks?.certificates)
+    ? trainer.socialLinks.certificates
+    : [];
+
+  const nextCerts = [...buildCertificateEntries(uploadedUrls, "image"), ...currentCerts];
+
+  await trainer.update({
+    socialLinks: {
+      ...(trainer.socialLinks || {}),
+      certificateLinks: currentLinks,
+      certificates: nextCerts,
+    },
+  });
+
+  return {
+    uploaded: uploadedUrls,
+    certificates: nextCerts,
+  };
+};
+
 export default {
   getMyTrainers,
   getUsersWithoutPTRole,
@@ -498,4 +706,5 @@ export default {
   getTrainerSchedule,
   getTrainerDetail,
   toggleTrainerStatus,
+  uploadTrainerCertificates,
 };

@@ -1,4 +1,5 @@
 import db from "../models";
+import { attachGymIdsToNotifications } from "./notification-gym.service";
 import { emitToConversation, emitToGroup, emitToGym, emitToMember, emitToTrainer, emitToUser } from "../socket";
 
 const normalizePayload = (payload = {}) => ({ ...payload, ts: new Date().toISOString() });
@@ -15,7 +16,10 @@ const realtimeService = {
       relatedId: payload.relatedId || null,
       isRead: false,
     });
-    emitToUser(userId, "notification:new", normalizePayload({ id: row.id, ...payload, isRead: false, createdAt: row.createdAt }));
+    const [enrichedPayload] = await attachGymIdsToNotifications([
+      { id: row.id, ...payload, isRead: false, createdAt: row.createdAt },
+    ]);
+    emitToUser(userId, "notification:new", normalizePayload(enrichedPayload));
     return row;
   },
 
@@ -34,6 +38,7 @@ const realtimeService = {
     emitToConversation(conversationKey, "message:read", normalizePayload(payload));
   },
 
+  emitUser(userId, event, payload) { emitToUser(userId, event, normalizePayload(payload)); },
   emitGym(gymId, event, payload) { emitToGym(gymId, event, normalizePayload(payload)); },
   emitTrainer(trainerId, event, payload) { emitToTrainer(trainerId, event, normalizePayload(payload)); },
   emitMember(memberId, event, payload) { emitToMember(memberId, event, normalizePayload(payload)); },

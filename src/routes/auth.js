@@ -11,6 +11,7 @@ let authRoute = (app) => {
   //----------------------
   router.post("/register", authController.handleRegister);
   router.post("/login", authController.handleLogin);
+  router.post("/google", authController.handleGoogleLogin);
 
   // ✅ logout: clear cookie jwt
   router.post("/logout", authController.handleLogout);

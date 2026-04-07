@@ -25,6 +25,7 @@ const path = require("path");
 const ExcelJS = require("exceljs");
 const socketModule = require("../socket");
 const { emitToUser, emitToTrainer } = socketModule.default || socketModule;
+const realtimeService = require("../service/realtime.service").default;
 const uploadVideo = multer({
   storage: multer.memoryStorage(),
   // memoryStorage => tăng max fileSize sẽ tốn RAM hơn.
@@ -35,6 +36,7 @@ const uploadVideo = multer({
     cb(ok ? null : new Error("Chỉ chấp nhận file video"), ok);
   },
 });
+const MIN_WITHDRAWAL_AMOUNT = 100000;
 const uploadImage = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 12 * 1024 * 1024 },
@@ -655,6 +657,11 @@ exports.requestWithdrawal = async (req, res) => {
     if (!amount || Number.isNaN(amount) || amount <= 0) {
       return res.status(400).json({ message: "Số tiền không hợp lệ" });
     }
+    if (Number(amount) < MIN_WITHDRAWAL_AMOUNT) {
+      return res.status(400).json({
+        message: `Số tiền rút tối thiểu là ${MIN_WITHDRAWAL_AMOUNT.toLocaleString("vi-VN")}đ`,
+      });
+    }
 
     if (trainer.pendingCommission != null && Number(amount) > Number(trainer.pendingCommission || 0)) {
       return res.status(400).json({ message: "Số tiền vượt quá phần hoa hồng đang chờ" });
@@ -699,6 +706,13 @@ exports.requestWithdrawal = async (req, res) => {
       const gym = await GymModel.findByPk(trainer.gymId, { attributes: ["ownerId"] });
       if (gym?.ownerId) {
         emitToUser(gym.ownerId, "withdrawal:created", { id: row.id, status: row.status });
+        await realtimeService.notifyUser(gym.ownerId, {
+          title: "Có yêu cầu rút tiền mới từ PT",
+          message: `PT #${trainer.id} vừa gửi yêu cầu rút ${Number(amount || 0).toLocaleString("vi-VN")}đ.`,
+          notificationType: "withdrawal",
+          relatedType: "withdrawal",
+          relatedId: row.id,
+        });
       }
       emitToTrainer(trainer.id, "withdrawal:created", { id: row.id, status: row.status });
     } catch (e) {

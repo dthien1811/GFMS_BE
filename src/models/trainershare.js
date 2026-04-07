@@ -35,9 +35,9 @@ module.exports = (sequelize, DataTypes) => {
     specificSchedules: DataTypes.JSON,
     weekdaySchedules: DataTypes.JSON,
     commissionSplit: DataTypes.FLOAT,
-    status: DataTypes.STRING, // waiting_acceptance, pending, approved, rejected, rejected_by_partner
+    status: DataTypes.STRING, // owner flow uses waiting_acceptance -> approved / rejected_by_partner; pending is legacy
     requestedBy: DataTypes.INTEGER,
-    memberId: DataTypes.INTEGER, // Optional: member để tạo booking khi approve
+    memberId: DataTypes.INTEGER, // Optional: hội viên gắn kèm để tham chiếu cho yêu cầu mượn PT
     approvedBy: DataTypes.INTEGER,
     acceptedBy: DataTypes.INTEGER,
     acceptedAt: DataTypes.DATE,
