@@ -22,7 +22,8 @@ module.exports = {
       const request = await requestService.approveRequest(
         req.params.id,
         req.user.id,  // Lấy id từ req.user đã được xác thực
-        req.body.approveNote
+        req.body.approveNote,
+        { assignmentMode: req.body?.assignmentMode }
       );
       res.status(200).json({ message: "Request approved successfully", request });
     } catch (e) {

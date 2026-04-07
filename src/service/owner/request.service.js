@@ -1,9 +1,18 @@
 
-const { Request, User, Trainer, Gym, Member, Booking, sequelize } = require("../../models");
+const { Request, User, Trainer, Gym, Member, Booking, TrainerShare, sequelize } = require("../../models");
 const { Sequelize } = require('sequelize');
 const realtimeServiceModule = require("../realtime.service");
 const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
 const BUSY_REQUEST_NOTE_MARKER = "[PT_BUSY_REQUEST]";
+const ACTIVE_TRAINER_SHARE_STATUSES = ["approved", "shared", "active"];
+const ACTIVE_TRAINER_SHARE_STATUSES_ANY_CASE = Array.from(
+  new Set(
+    ACTIVE_TRAINER_SHARE_STATUSES.flatMap((status) => [
+      status,
+      String(status).toUpperCase(),
+    ])
+  )
+);
 
 const emitOwnerRequestChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
@@ -35,6 +44,229 @@ const getRequestNotificationTemplates = (requestType, rejectNote) => {
       title: "Đơn đăng ký huấn luyện viên bị từ chối",
       message: rejectNote || "Chủ gym đã từ chối đơn đăng ký trở thành huấn luyện viên của bạn.",
     },
+  };
+};
+
+const toMinutes = (timeValue) => {
+  const raw = String(timeValue || "").trim();
+  const m = raw.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  const hh = Number(m[1]);
+  const mm = Number(m[2]);
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  return hh * 60 + mm;
+};
+
+const overlaps = (aStart, aEnd, bStart, bEnd) => {
+  if (![aStart, aEnd, bStart, bEnd].every((v) => Number.isFinite(v))) return false;
+  return aStart < bEnd && aEnd > bStart;
+};
+
+const parseSpecs = (raw) =>
+  String(raw || "")
+    .split(/[\n,;|]+/)
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+
+const hasSpecializationOverlap = (trainerSpecsRaw, targetSpecsRaw) => {
+  const a = parseSpecs(trainerSpecsRaw);
+  const b = parseSpecs(targetSpecsRaw);
+  if (!a.length || !b.length) return false;
+  const bSet = new Set(b);
+  return a.some((s) => bSet.has(s));
+};
+
+const getDayKeyFromDate = (dateValue) => {
+  const d = new Date(dateValue);
+  if (Number.isNaN(d.getTime())) return null;
+  const keys = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+  return keys[d.getDay()] || null;
+};
+
+const parseAvailableHours = (raw) => {
+  if (!raw) return {};
+  if (typeof raw === "object") return raw;
+  try {
+    return JSON.parse(raw);
+  } catch (_e) {
+    return {};
+  }
+};
+
+const normalizeYmd = (value) => {
+  if (!value) return "";
+  const raw = String(value).trim();
+  const direct = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (direct) return `${direct[1]}-${direct[2]}-${direct[3]}`;
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return "";
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const isTrainerWorkingForSlot = (availableHoursRaw, bookingDate, startTime, endTime) => {
+  const dayKey = getDayKeyFromDate(bookingDate);
+  if (!dayKey) return false;
+  const startMin = toMinutes(startTime);
+  const endMin = toMinutes(endTime);
+  if (!Number.isFinite(startMin) || !Number.isFinite(endMin) || endMin <= startMin) return false;
+
+  const availableHours = parseAvailableHours(availableHoursRaw);
+  const slots = Array.isArray(availableHours?.[dayKey]) ? availableHours[dayKey] : [];
+  if (!slots.length) return false;
+
+  return slots.some((slot) => {
+    const slotStart = toMinutes(slot?.start || slot?.startTime);
+    const slotEnd = toMinutes(slot?.end || slot?.endTime);
+    return Number.isFinite(slotStart) && Number.isFinite(slotEnd) && slotStart <= startMin && slotEnd >= endMin;
+  });
+};
+
+const findInternalReplacementForBusyBooking = async ({ booking, transaction = null }) => {
+  const gymId = Number(booking?.gymId || 0);
+  const currentTrainerId = Number(booking?.trainerId || 0);
+  if (!gymId || !currentTrainerId) {
+    return { replacement: null, reason: "Thiếu dữ liệu gym hoặc huấn luyện viên hiện tại." };
+  }
+
+  const currentTrainer = await Trainer.findByPk(currentTrainerId, {
+    attributes: ["id", "specialization"],
+    transaction,
+    lock: transaction ? transaction.LOCK.UPDATE : undefined,
+  });
+  if (!currentTrainer) {
+    return { replacement: null, reason: "Không tìm thấy huấn luyện viên hiện tại của lịch." };
+  }
+
+  const candidates = await Trainer.findAll({
+    where: {
+      gymId,
+      id: { [Sequelize.Op.ne]: currentTrainerId },
+      isActive: { [Sequelize.Op.ne]: false },
+    },
+    attributes: ["id", "userId", "specialization", "availableHours"],
+    include: [{ model: User, attributes: ["id", "username"], required: false }],
+    order: [["id", "ASC"]],
+    transaction,
+    lock: transaction ? transaction.LOCK.UPDATE : undefined,
+  });
+
+  const bookingDate = booking.bookingDate;
+  const bookingDateYmd = normalizeYmd(bookingDate);
+  const bookingStartMin = toMinutes(booking.startTime);
+  const bookingEndMin = toMinutes(booking.endTime);
+  if (!Number.isFinite(bookingStartMin) || !Number.isFinite(bookingEndMin)) {
+    return { replacement: null, reason: "Khung giờ của lịch không hợp lệ." };
+  }
+
+  const diagnostics = {
+    total: candidates.length,
+    specializationMismatch: 0,
+    unavailableHours: 0,
+    bookingConflict: 0,
+    shareConflict: 0,
+  };
+
+  for (const candidate of candidates) {
+    if (!hasSpecializationOverlap(candidate.specialization, currentTrainer.specialization)) {
+      diagnostics.specializationMismatch += 1;
+      continue;
+    }
+    if (!isTrainerWorkingForSlot(candidate.availableHours, bookingDate, booking.startTime, booking.endTime)) {
+      diagnostics.unavailableHours += 1;
+      continue;
+    }
+
+    const conflictBookings = await Booking.findAll({
+      where: {
+        trainerId: candidate.id,
+        [Sequelize.Op.and]: [
+          Sequelize.where(
+            Sequelize.fn("DATE", Sequelize.col("bookingDate")),
+            bookingDateYmd
+          ),
+        ],
+      },
+      attributes: ["id", "startTime", "endTime", "status"],
+      transaction,
+    });
+
+    if (Array.isArray(conflictBookings) && conflictBookings.length > 0) {
+      const hasOverlap = conflictBookings.some((item) => {
+        const itemStatus = String(item?.status || "").toLowerCase();
+        if (["cancelled", "no_show", "completed", "rejected"].includes(itemStatus)) return false;
+        const s = toMinutes(item.startTime);
+        const e = toMinutes(item.endTime);
+        return overlaps(bookingStartMin, bookingEndMin, s, e);
+      });
+      if (hasOverlap) {
+        diagnostics.bookingConflict += 1;
+        continue;
+      }
+    }
+
+    const shareConflicts = await TrainerShare.findAll({
+      where: {
+        trainerId: candidate.id,
+        status: { [Sequelize.Op.in]: ACTIVE_TRAINER_SHARE_STATUSES_ANY_CASE },
+      },
+      attributes: ["id", "scheduleMode", "startDate", "endDate", "startTime", "endTime", "specificSchedules"],
+      transaction,
+    });
+
+    if (Array.isArray(shareConflicts) && shareConflicts.length > 0) {
+      const hasShareOverlap = shareConflicts.some((share) => {
+        const mode = String(share?.scheduleMode || "").toLowerCase();
+        if (mode === "all_days") {
+          const startDate = normalizeYmd(share?.startDate);
+          const endDate = normalizeYmd(share?.endDate);
+          const inRange = startDate && startDate <= bookingDateYmd && (!endDate || endDate >= bookingDateYmd);
+          if (!inRange) return false;
+          const s = toMinutes(share.startTime);
+          const e = toMinutes(share.endTime);
+          return overlaps(bookingStartMin, bookingEndMin, s, e);
+        }
+
+        if (mode === "specific_days") {
+          let schedules = [];
+          try {
+            schedules = Array.isArray(share?.specificSchedules)
+              ? share.specificSchedules
+              : JSON.parse(share?.specificSchedules || "[]");
+          } catch (_e) {
+            schedules = [];
+          }
+          const matched = schedules.find((s) => normalizeYmd(s?.date) === bookingDateYmd);
+          if (!matched) return false;
+          const s = toMinutes(matched.startTime);
+          const e = toMinutes(matched.endTime);
+          return overlaps(bookingStartMin, bookingEndMin, s, e);
+        }
+
+        return false;
+      });
+      if (hasShareOverlap) {
+        diagnostics.shareConflict += 1;
+        continue;
+      }
+    }
+
+    return { replacement: candidate, reason: "" };
+  }
+
+  if (!diagnostics.total) {
+    return { replacement: null, reason: "Không có huấn luyện viên nội bộ nào khác trong chi nhánh này." };
+  }
+  return {
+    replacement: null,
+    reason:
+      `Không có huấn luyện viên nội bộ phù hợp (` +
+      `khác chuyên môn: ${diagnostics.specializationMismatch}, ` +
+      `ngoài ca làm: ${diagnostics.unavailableHours}, ` +
+      `trùng lịch dạy: ${diagnostics.bookingConflict}, ` +
+      `trùng lịch chia sẻ: ${diagnostics.shareConflict}).`,
   };
 };
 
@@ -164,8 +396,30 @@ module.exports = {
         };
       });
 
+      const enriched = await Promise.all(
+        mapped.map(async (item) => {
+          if (String(item?.requestType || "").toUpperCase() !== "BUSY_SLOT") return item;
+          const bookingId = Number(item?.requestData?.bookingId || 0);
+          if (!bookingId) return item;
+          const booking = await Booking.findByPk(bookingId, {
+            attributes: ["id", "trainerId", "gymId", "bookingDate", "startTime", "endTime"],
+          });
+          if (!booking) return item;
+          const replacement = await findInternalReplacementForBusyBooking({ booking });
+          return {
+            ...item,
+            requestData: {
+              ...(item.requestData || {}),
+              internalReplacementAvailable: Boolean(replacement),
+              internalReplacementTrainerId: replacement?.id || null,
+              internalReplacementTrainerName: replacement?.User?.username || null,
+            },
+          };
+        })
+      );
+
       const filtered = scopedGymId
-        ? mapped.filter((request) => {
+        ? enriched.filter((request) => {
             const candidateGymIds = [
               request?.requestApplication?.gymId,
               request?.requestData?.gymId,
@@ -179,7 +433,7 @@ module.exports = {
 
             return candidateGymIds.includes(scopedGymId);
           })
-        : mapped;
+        : enriched;
 
       const total = filtered.length;
       const offset = (safePage - 1) * safeLimit;
@@ -201,7 +455,7 @@ module.exports = {
     }
   },
 
-  async approveRequest(requestId, approverId, approveNote) {
+  async approveRequest(requestId, approverId, approveNote, options = {}) {
     return sequelize.transaction(async (t) => {
       const request = await Request.findByPk(requestId, {
         transaction: t,
@@ -209,11 +463,7 @@ module.exports = {
       });
       if (!request) throw new Error('Request not found');
 
-      request.status = 'approved';
-      request.approverId = approverId;
-      request.approveNote = approveNote || '';
-      request.processedAt = new Date();
-      await request.save({ transaction: t });
+      const assignmentMode = String(options?.assignmentMode || "internal_first").toLowerCase();
 
       const normalizedType = String(request.requestType || '').trim().toUpperCase();
       if (normalizedType === 'BECOME_TRAINER') {
@@ -280,21 +530,66 @@ module.exports = {
         }
       } else if (normalizedType === 'BUSY_SLOT') {
         const bookingId = Number(request?.data?.bookingId || 0);
-        if (bookingId > 0) {
-          const booking = await Booking.findByPk(bookingId, {
-            transaction: t,
-            lock: t.LOCK.UPDATE,
-          });
-          if (booking) {
-            const currentNotes = String(booking.notes || "");
-            if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
-              const note = `${BUSY_REQUEST_NOTE_MARKER} Owner đã duyệt yêu cầu báo bận #${request.id}`;
-              booking.notes = currentNotes ? `${currentNotes}\n${note}` : note;
-              await booking.save({ transaction: t });
-            }
-          }
+        if (bookingId <= 0) {
+          const err = new Error("Yêu cầu báo bận không hợp lệ: thiếu thông tin booking");
+          err.statusCode = 400;
+          throw err;
         }
+
+        const booking = await Booking.findByPk(bookingId, {
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+        if (!booking) {
+          const err = new Error("Không tìm thấy lịch tập cần xử lý");
+          err.statusCode = 404;
+          throw err;
+        }
+
+        const shouldAutoAssignInternal = assignmentMode !== "borrow_only";
+        const replacementResult = shouldAutoAssignInternal
+          ? await findInternalReplacementForBusyBooking({ booking, transaction: t })
+          : { replacement: null, reason: "" };
+        const replacement = replacementResult?.replacement || null;
+
+        if (shouldAutoAssignInternal && !replacement) {
+          const err = new Error(
+            replacementResult?.reason || "Không có huấn luyện viên nội bộ phù hợp trong khung giờ này"
+          );
+          err.statusCode = 409;
+          throw err;
+        }
+
+        if (replacement) {
+          booking.trainerId = replacement.id;
+        }
+        const currentNotes = String(booking.notes || "");
+        if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
+          const assignmentNote = replacement
+            ? ` | Đã điều phối nội bộ cho huấn luyện viên ${replacement?.User?.username || `#${replacement.id}`}`
+            : shouldAutoAssignInternal
+            ? " | Không tìm thấy huấn luyện viên nội bộ phù hợp"
+            : " | Owner chọn chuyển sang luồng mượn huấn luyện viên";
+          const note = `${BUSY_REQUEST_NOTE_MARKER} Owner đã duyệt yêu cầu báo bận #${request.id}${assignmentNote}`;
+          booking.notes = currentNotes ? `${currentNotes}\n${note}` : note;
+        }
+        await booking.save({ transaction: t });
+
+        request.data = {
+          ...(request.data || {}),
+          internalReplacementAvailable: Boolean(replacement),
+          internalReplacementTrainerId: replacement?.id || null,
+          internalReplacementTrainerName: replacement?.User?.username || null,
+          assignmentMode,
+          needsBorrowFlow: !replacement,
+        };
       }
+
+      request.status = 'approved';
+      request.approverId = approverId;
+      request.approveNote = approveNote || '';
+      request.processedAt = new Date();
+      await request.save({ transaction: t });
 
       emitOwnerRequestChanged([approverId, request.requesterId], {
         requestId: request.id,
