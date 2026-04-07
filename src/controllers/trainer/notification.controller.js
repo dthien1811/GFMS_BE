@@ -4,7 +4,7 @@ import notificationService from "../../service/notification.service";
 const trainerNotificationController = {
   async listMine(req, res) {
     try {
-      const data = await notificationService.listMine(req.user.id, req.query);
+      const data = await notificationService.listMineForTrainer(req.user.id, req.query);
       return res.status(200).json(data);
     } catch (e) {
       return res.status(e.statusCode || 500).json({ message: e.message });
@@ -21,7 +21,7 @@ const trainerNotificationController = {
   },
   async markAllRead(req, res) {
     try {
-      await notificationService.markAllRead(req.user.id);
+      await notificationService.markAllReadForTrainer(req.user.id);
       emitToUser(req.user.id, "notification:read-all", { ok: true });
       return res.status(200).json({ ok: true, message: "Đã đọc tất cả" });
     } catch (e) {

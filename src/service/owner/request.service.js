@@ -1,6 +1,16 @@
 
 const { Request, User } = require("../../models");
+const realtimeService = require("../realtime.service").default;
 const { Sequelize } = require('sequelize');
+
+const prettyType = (t) => {
+  const key = String(t || "").toLowerCase();
+  if (key === "leave") return "nghỉ phép";
+  if (key === "overtime") return "tăng ca";
+  if (key === "shift_change") return "đổi ca";
+  if (key === "transfer_branch") return "chuyển cơ sở";
+  return key || "yêu cầu";
+};
 
 module.exports = {
   async getRequests() {
@@ -49,6 +59,17 @@ module.exports = {
     request.processedAt = new Date();
 
     await request.save();
+    try {
+      await realtimeService.notifyUser(request.requesterId, {
+        title: "Yêu cầu đã được duyệt",
+        message: `Yêu cầu ${prettyType(request.requestType)} của bạn đã được duyệt.`,
+        notificationType: "request_update",
+        relatedType: "request",
+        relatedId: request.id,
+      });
+    } catch (e) {
+      console.error("[owner/request.service] notify approve error:", e?.message || e);
+    }
     return request;
   },
 
@@ -62,6 +83,19 @@ module.exports = {
     request.processedAt = new Date();
 
     await request.save();
+    try {
+      const reasonText = String(rejectNote || "").trim();
+      const detail = reasonText ? ` Lý do: ${reasonText}` : "";
+      await realtimeService.notifyUser(request.requesterId, {
+        title: "Yêu cầu bị từ chối",
+        message: `Yêu cầu ${prettyType(request.requestType)} của bạn đã bị từ chối.${detail}`,
+        notificationType: "request_update",
+        relatedType: "request",
+        relatedId: request.id,
+      });
+    } catch (e) {
+      console.error("[owner/request.service] notify reject error:", e?.message || e);
+    }
     return request;
   },
 };

@@ -1,5 +1,6 @@
 const db = require("../models");
 const realtimeService = require("./realtime.service").default;
+const { syncPackageActivationCountersByActivationId } = require("./member/booking.service");
 
 const mustHaveModel = (Model, name) => {
   if (!Model) {
@@ -17,6 +18,24 @@ const normalizeDateOnly = (dateStr) => {
 };
 
 const now = () => new Date();
+
+const toDateOnly = (raw) => {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (!m) return null;
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
+};
+
+const addDays = (d, days) => {
+  const x = new Date(d);
+  x.setDate(x.getDate() + days);
+  return x;
+};
 
 const SAFE_ATT_COLS = [
   'id', 'userId', 'gymId', 'bookingId', 
@@ -40,20 +59,23 @@ const ensureAttendanceEditable = async (bookingId) => {
   }
 };
 
-const assertSessionAllowsUndoAttendance = (booking) => {
-  const raw = booking?.bookingDate;
-  if (!raw) return;
-  const dateStr =
-    typeof raw === "string"
-      ? raw.slice(0, 10)
-      : new Date(raw).toISOString().slice(0, 10);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return;
-  let endPart = String(booking.endTime || "23:59:59");
-  if (/^\d{2}:\d{2}$/.test(endPart)) endPart = `${endPart}:00`;
-  const end = new Date(`${dateStr}T${endPart}`);
-  if (Number.isNaN(end.getTime())) return;
-  if (Date.now() > end.getTime()) {
-    const err = new Error("Buổi tập đã kết thúc, không thể hoàn tác điểm danh.");
+const assertAttendanceDateWindow = (booking) => {
+  const bookingDay = toDateOnly(booking?.bookingDate);
+  if (!bookingDay) return;
+  const today = toDateOnly(now());
+  if (!today) return;
+
+  // Chưa tới ngày buổi học thì không được điểm danh/chỉnh sửa.
+  if (today.getTime() < bookingDay.getTime()) {
+    const err = new Error("Chưa tới ngày buổi học, chưa thể điểm danh.");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // Quá 2 ngày kể từ ngày buổi học thì không cho chỉnh sửa lại điểm danh.
+  const editableUntil = addDays(bookingDay, 2); // bookingDay + 2 days
+  if (today.getTime() > editableUntil.getTime()) {
+    const err = new Error("Đã quá 2 ngày kể từ ngày buổi học, không thể chỉnh sửa điểm danh.");
     err.statusCode = 400;
     throw err;
   }
@@ -298,11 +320,20 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
   const booking = await Booking.findOne({ where: { id: bookingId } });
   if (!booking) throw Object.assign(new Error("Booking not found"), { statusCode: 404 });
 
+  const bookingTrainerId = Number(booking.trainerId || booking.ptId || 0);
+  if (bookingTrainerId && bookingTrainerId !== Number(trainer.id)) {
+    throw Object.assign(new Error("Không có quyền cập nhật điểm danh buổi này"), { statusCode: 403 });
+  }
+
   // chặn sửa nếu đã chi trả
   await ensureAttendanceEditable(booking.id);
+  assertAttendanceDateWindow(booking);
 
   const t = now();
   const normalizedStatus = String(status || "present").toLowerCase();
+  if (normalizedStatus !== "present" && normalizedStatus !== "absent" && normalizedStatus !== "completed") {
+    throw Object.assign(new Error("Trạng thái điểm danh không hợp lệ"), { statusCode: 400 });
+  }
 
   let attendance = await Attendance.findOne({
     where: { bookingId: booking.id, attendanceType: "trainer", userId },
@@ -334,6 +365,12 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
   await booking.save();
 
   try {
+    await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
+  } catch (e) {
+    console.error("[trainerAttendanceService] activation counters (checkIn):", e.message);
+  }
+
+  try {
     await syncCommissionForAttendance({ trainer, booking, normalizedStatus });
   } catch (e) {
     console.error("[trainerAttendanceService] commission sync error (checkIn):", e.message);
@@ -356,11 +393,20 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   const booking = await Booking.findOne({ where: { id: bookingId } });
   if (!booking) throw Object.assign(new Error("Booking not found"), { statusCode: 404 });
 
+  const bookingTrainerIdOut = Number(booking.trainerId || booking.ptId || 0);
+  if (bookingTrainerIdOut && bookingTrainerIdOut !== Number(trainer.id)) {
+    throw Object.assign(new Error("Không có quyền cập nhật điểm danh buổi này"), { statusCode: 403 });
+  }
+
   // chặn sửa nếu đã chi trả
   await ensureAttendanceEditable(booking.id);
+  assertAttendanceDateWindow(booking);
 
   const t = now();
   const normalizedStatus = String(status || "absent").toLowerCase();
+  if (normalizedStatus !== "present" && normalizedStatus !== "absent" && normalizedStatus !== "completed") {
+    throw Object.assign(new Error("Trạng thái điểm danh không hợp lệ"), { statusCode: 400 });
+  }
 
   let attendance = await Attendance.findOne({
     where: { bookingId: booking.id, attendanceType: "trainer", userId },
@@ -385,6 +431,12 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
 
   booking.status = "completed";
   await booking.save();
+
+  try {
+    await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
+  } catch (e) {
+    console.error("[trainerAttendanceService] activation counters (checkOut):", e.message);
+  }
 
   try {
     const member = booking.memberId ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] }) : null;
@@ -424,9 +476,8 @@ const resetAttendance = async ({ userId, bookingId }) => {
     throw Object.assign(new Error("Không có quyền cập nhật điểm danh buổi này"), { statusCode: 403 });
   }
 
-  assertSessionAllowsUndoAttendance(booking);
-
   await ensureAttendanceEditable(booking.id);
+  assertAttendanceDateWindow(booking);
 
   const attendance = await Attendance.findOne({
     where: { bookingId: booking.id, attendanceType: "trainer", userId },
@@ -439,6 +490,12 @@ const resetAttendance = async ({ userId, bookingId }) => {
 
   booking.status = "confirmed";
   await booking.save();
+
+  try {
+    await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
+  } catch (e) {
+    console.error("[trainerAttendanceService] activation counters (resetAttendance):", e.message);
+  }
 
   try {
     await syncCommissionForAttendance({ trainer, booking, normalizedStatus: "reset" });

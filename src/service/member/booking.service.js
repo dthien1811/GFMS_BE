@@ -1,6 +1,7 @@
 import db from "../../models";
 import { Op } from "sequelize";
 import payosService from "../payment/payos.service";
+import realtimeService from "../realtime.service";
 
 const SLOT_MINUTES = 60;
 const ALLOWED_PAYMENT = new Set(["payos"]);
@@ -27,6 +28,22 @@ const minutesToTime = (m) =>
   `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}:00`;
 
 const toHHMM = (t) => String(t || "").slice(0, 5);
+
+const safeNotifyTrainerBooking = async ({ trainerId, title, message, relatedId = null }) => {
+  try {
+    const trainer = await db.Trainer.findByPk(trainerId, { attributes: ["id", "userId"] });
+    if (!trainer?.userId) return;
+    await realtimeService.notifyUser(trainer.userId, {
+      title: title || "Lịch tập mới",
+      message: message || "Bạn có lịch tập mới từ học viên.",
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId,
+    });
+  } catch (e) {
+    console.error("[member/booking.service] notify trainer booking error:", e?.message || e);
+  }
+};
 
 const assertDateOnly = (d) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) {
@@ -244,6 +261,16 @@ async function syncActivationCounters(activation, transaction) {
   } catch {}
 
   return { total, done, remaining };
+}
+
+export async function syncPackageActivationCountersByActivationId(activationId, transaction = null) {
+  if (!activationId) return null;
+  const activation = await db.PackageActivation.findByPk(activationId, {
+    include: [{ model: db.Package, attributes: ["id", "sessions"] }],
+    transaction,
+  });
+  if (!activation) return null;
+  return syncActivationCounters(activation, transaction);
 }
 
 async function ensureMemberForGym({ userId, gymId, transaction }) {
@@ -830,6 +857,13 @@ const bookingService = {
 
       await t.commit();
 
+      await safeNotifyTrainerBooking({
+        trainerId: plan.trainer.id,
+        title: "Bạn có lịch tập mới",
+        message: `Học viên vừa đặt ${created.length} buổi (${selectedSlot.start}-${selectedSlot.end}).`,
+        relatedId: created[0]?.id || null,
+      });
+
       return {
         activation,
         createdCount: created.length,
@@ -923,6 +957,13 @@ const bookingService = {
       );
 
       await t.commit();
+
+      await safeNotifyTrainerBooking({
+        trainerId,
+        title: "Bạn có lịch tập mới",
+        message: `Học viên vừa đặt lịch ngày ${date} (${toHHMM(startTimeFixed)}-${toHHMM(endTime)}).`,
+        relatedId: booking?.id || null,
+      });
       return booking;
     } catch (e) {
       await t.rollback();
@@ -1072,6 +1113,13 @@ const bookingService = {
       }
 
       await t.commit();
+
+      await safeNotifyTrainerBooking({
+        trainerId,
+        title: "Bạn có lịch tập mới",
+        message: `Học viên vừa đặt ${created.length} buổi theo lịch lặp (${toHHMM(startTimeFixed)}-${toHHMM(endTime)}).`,
+        relatedId: created[0]?.id || null,
+      });
 
       return {
         createdCount: created.length,
