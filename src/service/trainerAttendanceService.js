@@ -17,6 +17,7 @@ const normalizeDateOnly = (dateStr) => {
 };
 
 const now = () => new Date();
+const BUSY_REQUEST_NOTE_MARKER = "[PT_BUSY_REQUEST]";
 
 const SAFE_ATT_COLS = [
   'id', 'userId', 'gymId', 'bookingId', 
@@ -59,6 +60,30 @@ const assertSessionAllowsUndoAttendance = (booking) => {
   }
 };
 
+const assertBusyRequestBeforeSixHours = (booking) => {
+  const bookingDate = String(booking?.bookingDate || "").slice(0, 10);
+  const startTime = String(booking?.startTime || "").slice(0, 5);
+  if (!bookingDate || !startTime) {
+    const err = new Error("Không xác định được thời gian bắt đầu buổi tập");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const slotStart = new Date(`${bookingDate}T${startTime}:00`);
+  if (Number.isNaN(slotStart.getTime())) {
+    const err = new Error("Thời gian buổi tập không hợp lệ");
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const minLeadTime = 6 * 60 * 60 * 1000;
+  if (slotStart.getTime() - Date.now() < minLeadTime) {
+    const err = new Error("Yêu cầu báo bận phải gửi trước ít nhất 6 tiếng so với giờ bắt đầu");
+    err.statusCode = 400;
+    throw err;
+  }
+};
+
 // Đồng bộ hoa hồng theo trạng thái điểm danh của 1 booking
 // - Nếu status = present/completed  → đảm bảo có 1 dòng commission (pending)
 // - Nếu status khác (absent, ...)   → xóa commission pending của booking đó
@@ -71,6 +96,17 @@ const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus 
   mustHaveModel(Commission, "Commission");
   mustHaveModel(PackageActivation, "PackageActivation");
   mustHaveModel(Package, "Package");
+
+  // Trainer share sessions are settled outside the system.
+  // Do not create internal commissions for these bookings.
+  const sessionType = String(booking?.sessionType || "").toLowerCase();
+  if (sessionType === "trainer_share") {
+    const existing = await Commission.findOne({ where: { bookingId: booking.id } });
+    if (existing && existing.status === "pending") {
+      await existing.destroy();
+    }
+    return;
+  }
 
   const gymId = booking.gymId || trainer.gymId;
   if (!gymId) return;
@@ -216,7 +252,44 @@ const pickField = (Model, candidates) => {
   return candidates.find((c) => !!attrs[c]) || null;
 };
 
+const resolveBookingActivationIfMissing = async (booking) => {
+  if (!booking || booking.packageActivationId || !booking.memberId) return booking;
+
+  const PackageActivation = db.PackageActivation || db.packageactivation;
+  const Package = db.Package || db.package;
+  if (!PackageActivation || !Package) return booking;
+
+  const activation = await PackageActivation.findOne({
+    where: {
+      memberId: booking.memberId,
+      status: "active",
+      sessionsRemaining: { [db.Sequelize.Op.gt]: 0 },
+    },
+    include: [
+      {
+        model: Package,
+        required: true,
+        where: {
+          packageType: "personal_training",
+          ...(booking.gymId ? { gymId: booking.gymId } : {}),
+        },
+      },
+    ],
+    order: [["createdAt", "DESC"]],
+  });
+
+  if (!activation) return booking;
+
+  booking.packageActivationId = activation.id;
+  if (!booking.packageId) {
+    booking.packageId = activation.packageId || activation.Package?.id || null;
+  }
+  await booking.save({ fields: ["packageActivationId", "packageId", "updatedAt"] });
+  return booking;
+};
+
 const consumePackageSessionForBooking = async (booking) => {
+  await resolveBookingActivationIfMissing(booking);
   if (!booking?.packageActivationId) return null;
   const PackageActivation = db.PackageActivation || db.packageactivation;
   mustHaveModel(PackageActivation, "PackageActivation");
@@ -316,6 +389,7 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
   }
 
   const Commission = db.Commission || db.commission;
+  const Request = db.Request || db.request;
   let commissionByBookingId = new Map();
   try {
     if (Commission && bookingIds.length) {
@@ -336,10 +410,35 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
     attByBookingId.set(a.bookingId, a.toJSON ? a.toJSON() : a);
   }
 
+  let busyRequestedByBookingId = new Set();
+  try {
+    if (Request && bookingIds.length > 0) {
+      const busyRequests = await Request.findAll({
+        where: {
+          requestType: "BUSY_SLOT",
+          status: { [db.Sequelize.Op.in]: ["PENDING", "APPROVED", "pending", "approved"] },
+        },
+        attributes: ["data"],
+        order: [["createdAt", "DESC"]],
+        limit: 500,
+      });
+      busyRequestedByBookingId = new Set(
+        busyRequests
+          .map((item) => Number(item?.data?.bookingId || 0))
+          .filter((bookingId) => bookingId > 0 && bookingIds.includes(bookingId))
+      );
+    }
+  } catch (_e) {
+    busyRequestedByBookingId = new Set();
+  }
+
   const rows = bookings.map((b) => {
     const plainBooking = b.toJSON ? b.toJSON() : b;
     return {
       ...plainBooking,
+      busyRequested:
+        busyRequestedByBookingId.has(Number(b.id)) ||
+        String(plainBooking?.notes || "").includes(BUSY_REQUEST_NOTE_MARKER),
       trainerAttendance: attByBookingId.get(b.id) || null,
       commissionStatus: commissionByBookingId.get(b.id) || null,
     };
@@ -534,4 +633,146 @@ const resetAttendance = async ({ userId, bookingId }) => {
   return { booking, attendance: null };
 };
 
-module.exports = { getMyScheduleForDate, checkIn, checkOut, resetAttendance };
+const requestBusySlot = async ({ userId, bookingId, reason }) => {
+  const Booking = db.Booking || db.booking;
+  const Gym = db.Gym || db.gym;
+  const Member = db.Member || db.member;
+  const User = db.User || db.user;
+  const Request = db.Request || db.request;
+
+  mustHaveModel(Booking, "Booking");
+  mustHaveModel(Request, "Request");
+
+  const trainer = await getTrainerByAuthId(userId);
+  const booking = await Booking.findOne({
+    where: { id: bookingId },
+    include: [
+      Gym ? { model: Gym, attributes: ["id", "ownerId", "name"], required: false } : null,
+      db.Package ? { model: db.Package, attributes: ["id", "name"], required: false } : null,
+      Member
+        ? {
+            model: Member,
+            as: "Member",
+            attributes: ["id", "userId"],
+            include: User ? [{ model: User, as: "User", attributes: ["id", "username"] }] : [],
+            required: false,
+          }
+        : null,
+    ].filter(Boolean),
+  });
+  if (!booking) throw Object.assign(new Error("Không tìm thấy lịch dạy"), { statusCode: 404 });
+
+  const bookingTrainerId = Number(booking.trainerId || booking.ptId || 0);
+  if (!bookingTrainerId || bookingTrainerId !== Number(trainer.id)) {
+    throw Object.assign(new Error("Bạn không có quyền gửi yêu cầu cho lịch dạy này"), { statusCode: 403 });
+  }
+
+  const bookingStatus = String(booking.status || "").toLowerCase();
+  if (["completed", "cancelled", "no_show"].includes(bookingStatus)) {
+    throw Object.assign(new Error("Lịch dạy này không còn khả dụng để gửi yêu cầu báo bận"), { statusCode: 400 });
+  }
+
+  const sessionType = String(booking.sessionType || "").toLowerCase();
+  if (sessionType === "trainer_share") {
+    throw Object.assign(
+      new Error("Khung giờ nhận từ chia sẻ không được phép gửi yêu cầu báo bận"),
+      { statusCode: 400 }
+    );
+  }
+
+  assertBusyRequestBeforeSixHours(booking);
+
+  const ownerId = booking?.Gym?.ownerId || null;
+  if (!ownerId) {
+    throw Object.assign(new Error("Không tìm thấy chủ phòng tập để gửi yêu cầu"), { statusCode: 400 });
+  }
+
+  const dateLabel = String(booking.bookingDate || "").slice(0, 10);
+  const timeLabel = `${String(booking.startTime || "").slice(0, 5)}-${String(booking.endTime || "").slice(0, 5)}`;
+  const trainerLabel = `Huấn luyện viên #${trainer.id}`;
+  const memberLabel =
+    booking?.Member?.User?.username ||
+    (booking?.memberId ? `Hội viên #${booking.memberId}` : "Chưa gắn hội viên");
+  const gymLabel = booking?.Gym?.gymName || booking?.Gym?.name || (booking?.gymId ? `Phòng tập #${booking.gymId}` : "phòng tập");
+  const reasonText = String(reason || "").trim();
+
+  const existingRequests = await Request.findAll({
+    where: {
+      requesterId: userId,
+      requestType: "BUSY_SLOT",
+      status: { [db.Sequelize.Op.in]: ["PENDING", "APPROVED"] },
+    },
+    attributes: ["id", "status", "data", "createdAt"],
+    order: [["createdAt", "DESC"]],
+    limit: 100,
+  });
+  const duplicatedRequest = existingRequests.find((requestItem) => {
+    const existedBookingId = Number(requestItem?.data?.bookingId || 0);
+    return existedBookingId === Number(booking.id);
+  });
+  if (duplicatedRequest) {
+    const duplicatedStatus = String(duplicatedRequest.status || "").toUpperCase();
+    const err = new Error(
+      duplicatedStatus === "APPROVED"
+        ? "Khung giờ này đã được duyệt báo bận, không thể gửi lại"
+        : "Bạn đã gửi yêu cầu báo bận cho khung giờ này và đang chờ duyệt"
+    );
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const requestContent = `Huấn luyện viên báo bận buổi ${dateLabel} (${timeLabel}) tại ${gymLabel}.`;
+  const createdRequest = await Request.create({
+    requesterId: userId,
+    requestType: "BUSY_SLOT",
+    status: "PENDING",
+    reason: reasonText || null,
+    data: {
+      bookingId: booking.id,
+      gymId: booking.gymId,
+      trainerId: trainer.id,
+      memberId: booking.memberId || null,
+      packageActivationId: booking.packageActivationId || null,
+      packageId: booking.packageId || booking?.Package?.id || null,
+      packageName: booking?.Package?.name || null,
+      bookingDate: booking.bookingDate,
+      startTime: booking.startTime,
+      endTime: booking.endTime,
+      content: requestContent,
+    },
+  });
+
+  const currentNotes = String(booking.notes || "");
+  if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
+    const busyNote = `${BUSY_REQUEST_NOTE_MARKER} Huấn luyện viên báo bận lúc ${new Date().toISOString()}`;
+    booking.notes = currentNotes ? `${currentNotes}\n${busyNote}` : busyNote;
+    await booking.save();
+  }
+
+  await realtimeService.notifyUser(ownerId, {
+    title: "Có yêu cầu báo bận khung giờ dạy",
+    message: `${trainerLabel} báo bận buổi ${dateLabel} (${timeLabel}) tại ${gymLabel} - ${memberLabel}.${reasonText ? ` Lý do: ${reasonText}` : ""}`,
+    notificationType: "trainer_request",
+    relatedType: "request",
+    relatedId: createdRequest.id,
+  });
+
+  realtimeService.emitGym(booking.gymId, "trainer:busy-slot-requested", {
+    bookingId: booking.id,
+    trainerId: trainer.id,
+    memberId: booking.memberId || null,
+    gymId: booking.gymId,
+    bookingDate: booking.bookingDate,
+    startTime: booking.startTime,
+    endTime: booking.endTime,
+    reason: reasonText || null,
+  });
+
+  return {
+    success: true,
+    message: "Đã gửi yêu cầu báo bận cho chủ phòng tập",
+    requestId: createdRequest.id,
+  };
+};
+
+module.exports = { getMyScheduleForDate, checkIn, checkOut, resetAttendance, requestBusySlot };
