@@ -1,5 +1,6 @@
 // services/trainerService.js
 const db = require('../models');
+const { Op } = require("sequelize");
 // Sử dụng dòng này thay cho { Trainer, ... } cũ để tránh lệch tên model
 const Trainer = db.trainer || db.Trainer; 
 const { TrainerShare, SessionProgress, Booking, Member, Gym, User } = db;
@@ -164,6 +165,79 @@ const validateAvailableHoursAgainstGym = (normalized, gym) => {
   }
 };
 
+const getDayKeyFromDate = (dateValue) => {
+  const d = new Date(dateValue);
+  if (Number.isNaN(d.getTime())) return null;
+  const dayIndex = d.getDay(); // 0..6
+  return DAY_KEYS[dayIndex] || null;
+};
+
+const isRangeCoveredBySchedule = (dayRanges = [], startTime, endTime) => {
+  const startMin = parseHHmmToMinutes(startTime);
+  const endMin = parseHHmmToMinutes(endTime);
+  if (startMin === null || endMin === null || endMin <= startMin) return false;
+
+  for (const range of dayRanges) {
+    const rs = parseHHmmToMinutes(range?.start);
+    const re = parseHHmmToMinutes(range?.end);
+    if (rs === null || re === null || re <= rs) continue;
+    if (startMin >= rs && endMin <= re) return true;
+  }
+  return false;
+};
+
+const assertBookedSlotsStillCovered = async (trainerId, normalized) => {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const bookings = await Booking.findAll({
+    where: {
+      trainerId,
+      status: { [Op.notIn]: ["cancelled"] },
+      bookingDate: { [Op.gte]: today },
+    },
+    attributes: ["id", "bookingDate", "startTime", "endTime", "status"],
+    include: [
+      {
+        model: Member,
+        required: false,
+        include: [
+          {
+            model: User,
+            as: "User",
+            attributes: ["username"],
+            required: false,
+          },
+        ],
+      },
+    ],
+    order: [["bookingDate", "ASC"], ["startTime", "ASC"]],
+  });
+
+  const invalid = [];
+  for (const b of bookings) {
+    const dayKey = getDayKeyFromDate(b.bookingDate);
+    if (!dayKey) continue;
+    const dayRanges = normalized?.[dayKey] || [];
+    const covered = isRangeCoveredBySchedule(dayRanges, b.startTime, b.endTime);
+    if (!covered) {
+      const dateLabel = new Date(b.bookingDate).toLocaleDateString("vi-VN");
+      const studentName =
+        b?.Member?.User?.username || b?.Member?.fullName || (b?.memberId ? `Học viên #${b.memberId}` : "Học viên");
+      invalid.push({
+        studentName,
+        dateLabel,
+        start: extractHHmm(b.startTime) || String(b.startTime || ""),
+        end: extractHHmm(b.endTime) || String(b.endTime || ""),
+      });
+    }
+  }
+
+  if (invalid.length > 0) {
+    throw new Error("Không thể cập nhật lịch rảnh vì trùng lịch có học viên.");
+  }
+};
+
 const serializeAvailableHoursToDb = (obj) => {
   // Nếu DB bạn là JSON column thì có thể return obj luôn,
   // nhưng để đồng bộ mọi môi trường: stringify là an toàn nhất nếu column TEXT.
@@ -298,6 +372,8 @@ const updateTrainerSchedule = async (id, scheduleData) => {
       const gym = await Gym.findByPk(pt.gymId, { attributes: ['id', 'operatingHours'] });
       validateAvailableHoursAgainstGym(normalized, gym);
     }
+
+    await assertBookedSlotsStillCovered(id, normalized);
 
     pt.availableHours = normalized;
     await pt.save();
