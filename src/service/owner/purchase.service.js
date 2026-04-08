@@ -1,6 +1,7 @@
 import db from "../../models";
-import { Op } from "sequelize";
+import { Op, QueryTypes } from "sequelize";
 import procurementStockHelper from "../procurementStockHelper";
+import payosService from "../payment/payos.service";
 
 const { buildStockContext, validateRequestReason } = procurementStockHelper;
 
@@ -17,6 +18,8 @@ const {
   Gym,
   PurchaseRequest,
   Transaction,
+  EquipmentUnit,
+  Inventory,
   sequelize,
 } = db;
 
@@ -27,8 +30,40 @@ const parsePaging = (query) => {
   return { page, limit, offset };
 };
 
+const parseMeta = (value) => {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+};
+
 const ensure = (condition, message, statusCode = 400) => {
   if (!condition) throw { message, statusCode };
+};
+
+let hasPreferredSupplierColumnCache = null;
+const hasPreferredSupplierColumn = async () => {
+  if (hasPreferredSupplierColumnCache !== null) return hasPreferredSupplierColumnCache;
+  try {
+    const rows = await sequelize.query(
+      `
+      SELECT 1
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = 'equipment'
+        AND COLUMN_NAME = 'preferredSupplierId'
+      LIMIT 1
+      `,
+      { type: QueryTypes.SELECT }
+    );
+    hasPreferredSupplierColumnCache = Array.isArray(rows) && rows.length > 0;
+  } catch {
+    hasPreferredSupplierColumnCache = false;
+  }
+  return hasPreferredSupplierColumnCache;
 };
 
 const ownerPurchaseService = {
@@ -51,6 +86,49 @@ const ownerPurchaseService = {
 
     const { rows, count } = await Supplier.findAndCountAll({
       where,
+      order: [["createdAt", "DESC"]],
+      limit,
+      offset,
+    });
+
+    return {
+      data: rows,
+      meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
+    };
+  },
+
+  // ===== EQUIPMENTS FOR PURCHASE (admin stock catalog) =====
+  async getEquipmentsForPurchase(ownerUserId, query) {
+    const { page, limit, offset } = parsePaging(query);
+    const { q } = query;
+
+    const where = { status: "active" };
+    if (q) {
+      where[Op.or] = [
+        { name: { [Op.like]: `%${q}%` } },
+        { code: { [Op.like]: `%${q}%` } },
+      ];
+    }
+
+    const includePreferredSupplier = await hasPreferredSupplierColumn();
+    const { rows, count } = await Equipment.findAndCountAll({
+      where,
+      attributes: [
+        "id",
+        "name",
+        "code",
+        "description",
+        "price",
+        "categoryId",
+        ...(includePreferredSupplier ? ["preferredSupplierId"] : []),
+        "status",
+      ],
+      include: [
+        { model: db.EquipmentCategory, as: "category", required: false, attributes: ["id", "name", "code"] },
+        ...(includePreferredSupplier
+          ? [{ model: Supplier, as: "preferredSupplier", required: false, attributes: ["id", "name", "code"] }]
+          : []),
+      ],
       order: [["createdAt", "DESC"]],
       limit,
       offset,
@@ -348,7 +426,9 @@ const ownerPurchaseService = {
     const gym = await Gym.findByPk(Number(gymId));
     ensure(gym && gym.ownerId === ownerUserId, "Gym not found or not authorized", 403);
 
-    const equipment = await Equipment.findByPk(Number(equipmentId));
+    const equipment = await Equipment.findByPk(Number(equipmentId), {
+      attributes: ["id", "name", "status", "price"],
+    });
     ensure(equipment, "Equipment not found", 404);
     ensure(equipment.status === "active", "Equipment is discontinued", 400);
 
@@ -365,6 +445,7 @@ const ownerPurchaseService = {
       const count = await PurchaseRequest.count({ transaction: t });
       const code = `PR-${Date.now()}-${count + 1}`;
 
+      const finalUnitPrice = Number(equipment.price || 0);
       const pr = await PurchaseRequest.create(
         {
           code,
@@ -373,7 +454,7 @@ const ownerPurchaseService = {
           expectedSupplierId: expectedSupplierId ? Number(expectedSupplierId) : null,
           requestedBy: ownerUserId,
           quantity: qty,
-          expectedUnitPrice: Number(expectedUnitPrice || 0),
+          expectedUnitPrice: finalUnitPrice,
           reason: String(reason || "").trim(),
           priority: String(priority || "normal").trim() || "normal",
           note: note ? String(note) : null,
@@ -427,8 +508,33 @@ const ownerPurchaseService = {
       distinct: true,
     });
 
+    const requestIds = rows.map((r) => r.id);
+    const txs = requestIds.length
+      ? await Transaction.findAll({
+          where: {
+            transactionType: "equipment_purchase",
+            [Op.or]: requestIds.map((id) => ({ metadata: { [Op.like]: `%\"purchaseRequestId\":${id}%` } })),
+          },
+          order: [["id", "DESC"]],
+        })
+      : [];
+    const latestTxByRequestId = new Map();
+    for (const tx of txs) {
+      const meta = parseMeta(tx.metadata);
+      const prId = Number(meta.purchaseRequestId || 0);
+      if (prId && !latestTxByRequestId.has(prId)) latestTxByRequestId.set(prId, tx);
+    }
+    const enriched = rows.map((r) => {
+      const j = r.toJSON();
+      const tx = latestTxByRequestId.get(j.id);
+      return {
+        ...j,
+        paymentTransaction: tx ? tx.toJSON() : null,
+      };
+    });
+
     return {
-      data: rows,
+      data: enriched,
       meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
     };
   },
@@ -447,6 +553,192 @@ const ownerPurchaseService = {
     ensure(pr.gym?.ownerId === ownerUserId, "Not authorized", 403);
 
     return pr;
+  },
+
+  async createPurchaseRequestPayOSLink(ownerUserId, requestId) {
+    const pr = await PurchaseRequest.findByPk(requestId, {
+      include: [{ model: Gym, as: "gym", attributes: ["id", "ownerId"] }],
+    });
+    ensure(pr && pr.gym?.ownerId === ownerUserId, "Purchase request not found or not authorized", 404);
+    ensure(String(pr.status) === "approved_waiting_payment", "Yêu cầu chưa ở trạng thái chờ thanh toán", 400);
+
+    const requestIdNumber = Number(pr.id);
+    let existing = null;
+    try {
+      existing = await Transaction.findOne({
+        where: {
+          transactionType: "equipment_purchase",
+          paymentStatus: "pending",
+          [Op.and]: [sequelize.where(sequelize.json("metadata.purchaseRequestId"), requestIdNumber)],
+        },
+        order: [["id", "DESC"]],
+      });
+    } catch {
+      existing = await Transaction.findOne({
+        where: {
+          transactionType: "equipment_purchase",
+          paymentStatus: "pending",
+          metadata: { [Op.like]: `%\"purchaseRequestId\":${requestIdNumber}%` },
+        },
+        order: [["id", "DESC"]],
+      });
+    }
+    const tx =
+      existing ||
+      (await Transaction.create({
+        transactionCode: `PRPAY-${Date.now()}`,
+        gymId: pr.gymId,
+        amount: Math.round(Number(pr.quantity || 0) * Number(pr.expectedUnitPrice || 0)),
+        transactionType: "equipment_purchase",
+        paymentMethod: "payos",
+        paymentStatus: "pending",
+        description: `Thanh toán yêu cầu mua ${pr.code}`,
+        transactionDate: new Date(),
+        processedBy: ownerUserId,
+        metadata: {
+          purchaseRequestId: pr.id,
+          purchaseRequestCode: pr.code,
+          source: "direct_purchase_request",
+        },
+      }));
+
+    const returnBase = process.env.FRONTEND_URL || "http://localhost:3000";
+    const returnUrl = `${returnBase}/owner/purchase-requests?payos=success&orderCode=${encodeURIComponent(tx.id)}`;
+    const cancelUrl = `${returnBase}/owner/purchase-requests?payos=cancel`;
+
+    const { checkoutUrl, orderCode, paymentLinkId } = await payosService.createPackagePaymentLink({
+      orderCode: tx.id,
+      amount: Math.round(Number(tx.amount || 0)),
+      description: `Thanh toan ${pr.code}`,
+      returnUrl,
+      cancelUrl,
+    });
+
+    await tx.update({
+      metadata: {
+        ...(tx.metadata || {}),
+        payos: { orderCode, paymentLinkId, checkoutUrl },
+      },
+    });
+
+    return { checkoutUrl, orderCode, paymentLinkId, transactionId: tx.id, amount: Number(tx.amount || 0) };
+  },
+
+  async confirmReceivePurchaseRequest(ownerUserId, requestId) {
+    return sequelize.transaction(async (t) => {
+      const pr = await PurchaseRequest.findByPk(requestId, {
+        include: [{ model: Gym, as: "gym", attributes: ["id", "ownerId"] }],
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      ensure(pr && pr.gym?.ownerId === ownerUserId, "Purchase request not found or not authorized", 404);
+      ensure(String(pr.status) === "shipping", "Yêu cầu chưa ở trạng thái đang giao", 400);
+
+      const existingSaleLog = await Inventory.findOne({
+        where: {
+          transactionType: "sale",
+          transactionId: pr.id,
+          transactionCode: pr.code,
+          equipmentId: pr.equipmentId,
+        },
+        transaction: t,
+      });
+      if (!existingSaleLog) {
+        let remaining = Number(pr.quantity || 0);
+        const centralGymCount = await Gym.count({ where: { ownerId: null }, transaction: t });
+        const adminStocks = await EquipmentStock.findAll({
+          where: { equipmentId: pr.equipmentId },
+          include: centralGymCount
+            ? [{ model: Gym, as: "gym", attributes: ["id", "ownerId"], required: true, where: { ownerId: null } }]
+            : [],
+          order: [["availableQuantity", "DESC"], ["id", "ASC"]],
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+        for (const st of adminStocks) {
+          if (remaining <= 0) break;
+          const avail = Number(st.availableQuantity || 0);
+          if (avail <= 0) continue;
+          const take = Math.min(avail, remaining);
+          const before = Number(st.quantity || 0);
+          st.quantity = Math.max(0, before - take);
+          st.availableQuantity = Math.max(0, Number(st.availableQuantity || 0) - take);
+          await st.save({ transaction: t });
+          await Inventory.create(
+            {
+              gymId: st.gymId,
+              equipmentId: pr.equipmentId,
+              transactionType: "sale",
+              transactionId: pr.id,
+              transactionCode: pr.code,
+              quantity: -take,
+              unitPrice: pr.expectedUnitPrice || 0,
+              totalValue: Number(pr.expectedUnitPrice || 0) * take,
+              stockBefore: before,
+              stockAfter: Number(st.quantity || 0),
+              notes: `Xuất kho bán cho yêu cầu ${pr.code} (fallback khi owner xác nhận nhận)`,
+              recordedBy: ownerUserId || null,
+              recordedAt: new Date(),
+            },
+            { transaction: t }
+          );
+          remaining -= take;
+        }
+        ensure(remaining <= 0, "Admin stock is not enough to complete this request", 400);
+      }
+
+      let ownerStock = await EquipmentStock.findOne({
+        where: { gymId: pr.gymId, equipmentId: pr.equipmentId },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!ownerStock) {
+        ownerStock = await EquipmentStock.create(
+          { gymId: pr.gymId, equipmentId: pr.equipmentId, quantity: 0, availableQuantity: 0 },
+          { transaction: t }
+        );
+      }
+
+      const addQty = Number(pr.quantity || 0);
+      const before = Number(ownerStock.quantity || 0);
+      ownerStock.quantity = before + addQty;
+      ownerStock.availableQuantity = Number(ownerStock.availableQuantity || 0) + addQty;
+      await ownerStock.save({ transaction: t });
+
+      const unitCount = await EquipmentUnit.count({ where: { equipmentId: pr.equipmentId }, transaction: t });
+      const codePrefix = `EQ-${String(pr.equipmentId).padStart(4, "0")}`;
+      const units = Array.from({ length: addQty }).map((_, idx) => ({
+        equipmentId: pr.equipmentId,
+        gymId: pr.gymId,
+        assetCode: `${codePrefix}-${String(unitCount + idx + 1).padStart(6, "0")}`,
+        status: "active",
+        usageStatus: "in_stock",
+      }));
+      if (units.length) await EquipmentUnit.bulkCreate(units, { transaction: t });
+
+      await Inventory.create(
+        {
+          gymId: pr.gymId,
+          equipmentId: pr.equipmentId,
+          transactionType: "transfer_in",
+          transactionId: pr.id,
+          transactionCode: pr.code,
+          quantity: addQty,
+          unitPrice: pr.expectedUnitPrice || 0,
+          totalValue: Number(pr.expectedUnitPrice || 0) * addQty,
+          stockBefore: before,
+          stockAfter: Number(ownerStock.quantity || 0),
+          notes: `Owner xác nhận đã nhận thiết bị từ yêu cầu ${pr.code}`,
+          recordedBy: ownerUserId,
+          recordedAt: new Date(),
+        },
+        { transaction: t }
+      );
+
+      pr.status = "completed";
+      await pr.save({ transaction: t });
+      return pr;
+    });
   },
 
   // ===== PROCUREMENT PAYMENTS =====
@@ -521,21 +813,207 @@ const ownerPurchaseService = {
 
     const poById = new Map(purchaseOrders.map((po) => [po.id, po]));
 
-    const data = rows.map((row) => {
+    const normalizedRows = rows.map((row) => {
       const json = row.toJSON();
       const metadata = parseMetadata(json.metadata);
       const poId = Number(metadata?.purchaseOrderId);
+      const prId = Number(metadata?.purchaseRequestId);
       return {
         ...json,
         metadata,
         paymentPhase: metadata?.paymentPhase || null,
+        purchaseRequestId: Number.isFinite(prId) ? prId : null,
         purchaseOrder: Number.isFinite(poId) ? poById.get(poId) || null : null,
+      };
+    });
+
+    // New procurement flow expects one logical payment record per purchase request.
+    // If historical duplicates exist (pending + completed), keep the completed/latest row.
+    const groupedByRequest = new Map();
+    const passthroughRows = [];
+    for (const row of normalizedRows) {
+      if (!row.purchaseRequestId) {
+        passthroughRows.push(row);
+        continue;
+      }
+      const existing = groupedByRequest.get(row.purchaseRequestId);
+      if (!existing) {
+        groupedByRequest.set(row.purchaseRequestId, row);
+        continue;
+      }
+      const existingCompleted = String(existing.paymentStatus || "").toLowerCase() === "completed";
+      const rowCompleted = String(row.paymentStatus || "").toLowerCase() === "completed";
+      if (rowCompleted && !existingCompleted) {
+        groupedByRequest.set(row.purchaseRequestId, row);
+        continue;
+      }
+      const existingTime = new Date(existing.updatedAt || existing.createdAt || 0).getTime();
+      const rowTime = new Date(row.updatedAt || row.createdAt || 0).getTime();
+      if (rowTime > existingTime) groupedByRequest.set(row.purchaseRequestId, row);
+    }
+
+    const data = [...groupedByRequest.values(), ...passthroughRows].sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+
+    return {
+      data,
+      meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
+    };
+  },
+
+  async getPayablePurchaseOrders(ownerUserId, query = {}) {
+    const { page, limit, offset } = parsePaging(query);
+    const ownerGyms = await Gym.findAll({
+      where: { ownerId: ownerUserId },
+      attributes: ["id"],
+      raw: true,
+    });
+    const gymIds = ownerGyms.map((g) => g.id);
+    if (gymIds.length === 0) {
+      return { data: [], meta: { page, limit, totalItems: 0, totalPages: 0 } };
+    }
+
+    const { rows, count } = await PurchaseOrder.findAndCountAll({
+      where: {
+        gymId: { [Op.in]: gymIds },
+        status: { [Op.in]: ["deposit_pending", "received"] },
+      },
+      include: [
+        { model: Supplier, as: "supplier", attributes: ["id", "name"] },
+        { model: Gym, as: "gym", attributes: ["id", "name"] },
+      ],
+      order: [["updatedAt", "DESC"]],
+      limit,
+      offset,
+    });
+
+    const poIds = rows.map((r) => r.id);
+    const txs = poIds.length
+      ? await Transaction.findAll({
+          where: {
+            transactionType: "equipment_purchase",
+            paymentStatus: "completed",
+            [Op.or]: [
+              ...poIds.map((id) => ({ metadata: { [Op.like]: `%\"purchaseOrderId\":${id}%` } })),
+            ],
+          },
+        })
+      : [];
+
+    const paidByPo = new Map();
+    const depositByPo = new Map();
+    for (const tx of txs) {
+      const meta = parseMeta(tx.metadata);
+      const poId = Number(meta.purchaseOrderId || 0);
+      if (!poId) continue;
+      const amount = Number(tx.amount || 0);
+      paidByPo.set(poId, Number(paidByPo.get(poId) || 0) + amount);
+      if (String(meta.paymentPhase || "").toLowerCase() === "deposit") {
+        depositByPo.set(poId, Number(depositByPo.get(poId) || 0) + amount);
+      }
+    }
+
+    const data = rows.map((po) => {
+      const total = Number(po.totalAmount || 0);
+      const paid = Number(paidByPo.get(po.id) || 0);
+      const remaining = Math.max(0, total - paid);
+      const depositTarget = total * 0.3;
+      const depositPaid = Number(depositByPo.get(po.id) || 0);
+      const depositRemaining = Math.max(0, depositTarget - depositPaid);
+      return {
+        ...po.toJSON(),
+        paymentSummary: {
+          totalAmount: total,
+          paidAmount: paid,
+          remainingAmount: remaining,
+          depositTarget,
+          depositPaid,
+          depositRemaining,
+        },
       };
     });
 
     return {
       data,
       meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
+    };
+  },
+
+  async createPurchaseOrderPayOSLink(ownerUserId, purchaseOrderId, payload = {}) {
+    const po = await PurchaseOrder.findByPk(purchaseOrderId, {
+      include: [{ model: Gym, as: "gym", attributes: ["id", "ownerId"] }],
+    });
+    ensure(po && po.gym?.ownerId === ownerUserId, "Purchase order not found or not authorized", 404);
+    ensure(["deposit_pending", "received"].includes(String(po.status || "")), "PO chưa ở trạng thái có thể thanh toán", 400);
+
+    const poId = Number(po.id);
+    const txs = await Transaction.findAll({
+      where: {
+        transactionType: "equipment_purchase",
+        paymentStatus: "completed",
+        metadata: { [Op.like]: `%\"purchaseOrderId\":${poId}%` },
+      },
+    });
+    const total = Number(po.totalAmount || 0);
+    const paid = txs.reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+    const remaining = Math.max(0, total - paid);
+    ensure(remaining > 0, "PO đã thanh toán đủ", 400);
+
+    const phase = "full";
+    const amount = Math.round(remaining);
+    ensure(amount > 0, "Số tiền thanh toán không hợp lệ", 400);
+
+    const tx = await Transaction.create({
+      transactionCode: `POPAY-${Date.now()}`,
+      gymId: po.gymId,
+      amount: Math.round(amount),
+      transactionType: "equipment_purchase",
+      paymentMethod: "payos",
+      paymentStatus: "pending",
+      description: `Thanh toán toàn bộ PO ${po.code}`,
+      transactionDate: new Date(),
+      processedBy: ownerUserId,
+      metadata: {
+        purchaseOrderId: po.id,
+        purchaseOrderCode: po.code,
+        paymentPhase: phase,
+        paymentChannel: "payos",
+      },
+    });
+
+    const returnBase = process.env.FRONTEND_URL || "http://localhost:3000";
+    const returnUrl = `${returnBase}/owner/procurement-payments?payos=success&orderCode=${encodeURIComponent(tx.id)}`;
+    const cancelUrl = `${returnBase}/owner/procurement-payments?payos=cancel`;
+
+    const { checkoutUrl, orderCode, paymentLinkId } = await payosService.createPackagePaymentLink({
+      orderCode: tx.id,
+      amount: Math.round(amount),
+      description: `Thanh toan ${po.code}`,
+      returnUrl,
+      cancelUrl,
+    });
+
+    await tx.update({
+      metadata: {
+        ...(tx.metadata || {}),
+        payos: {
+          orderCode,
+          paymentLinkId,
+          checkoutUrl,
+        },
+      },
+    });
+
+    return {
+      checkoutUrl,
+      transactionId: tx.id,
+      orderCode,
+      paymentLinkId,
+      amount: Math.round(amount),
+      paymentPhase: phase,
+      purchaseOrderId: po.id,
+      purchaseOrderCode: po.code,
     };
   },
 };
