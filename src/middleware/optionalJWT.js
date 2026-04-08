@@ -6,7 +6,6 @@ const getTokenFromReq = (req) => {
   const auth = req.headers?.authorization || "";
   const [type, token] = auth.split(" ");
   if (type === "Bearer" && token) return token;
-  if (req.cookies?.jwt) return req.cookies.jwt;
   return null;
 };
 

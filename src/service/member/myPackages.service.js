@@ -243,7 +243,7 @@ const memberMyPackageService = {
   async getMyPackages(userId) {
     const members = await getMembersByUserId(userId);
     if (!members || members.length === 0) {
-      const err = new Error("Bạn chưa có membership ở gym nào (chưa mua gói).");
+      const err = new Error("Không tìm thấy thành viên");
       err.statusCode = 404;
       throw err;
     }
