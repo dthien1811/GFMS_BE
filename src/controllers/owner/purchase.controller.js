@@ -11,6 +11,15 @@ const ownerPurchaseController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+  async getEquipmentsForPurchase(req, res) {
+    try {
+      const data = await ownerPurchaseService.getEquipmentsForPurchase(req.user.id, req.query);
+      return res.status(200).json(data);
+    } catch (e) {
+      console.error("Get equipments for purchase error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 
   // Quotations
   async getQuotations(req, res) {
@@ -95,6 +104,26 @@ const ownerPurchaseController = {
     }
   },
 
+  async getPayablePurchaseOrders(req, res) {
+    try {
+      const data = await ownerPurchaseService.getPayablePurchaseOrders(req.user.id, req.query);
+      return res.status(200).json(data);
+    } catch (e) {
+      console.error("Get payable purchase orders error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async createPurchaseOrderPayOSLink(req, res) {
+    try {
+      const data = await ownerPurchaseService.createPurchaseOrderPayOSLink(req.user.id, req.params.id, req.body || {});
+      return res.status(200).json({ data });
+    } catch (e) {
+      console.error("Create purchase order payos link error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
   async previewPurchaseStock(req, res) {
     try {
       const result = await ownerPurchaseService.previewPurchaseStock(req.user.id, req.query);
@@ -131,6 +160,26 @@ const ownerPurchaseController = {
       return res.status(200).json({ data });
     } catch (e) {
       console.error("Get purchase request detail error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async createPurchaseRequestPayOSLink(req, res) {
+    try {
+      const data = await ownerPurchaseService.createPurchaseRequestPayOSLink(req.user.id, req.params.id);
+      return res.status(200).json({ data });
+    } catch (e) {
+      console.error("Create purchase request payos link error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async confirmReceivePurchaseRequest(req, res) {
+    try {
+      const data = await ownerPurchaseService.confirmReceivePurchaseRequest(req.user.id, req.params.id);
+      return res.status(200).json({ data });
+    } catch (e) {
+      console.error("Confirm receive purchase request error:", e);
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },

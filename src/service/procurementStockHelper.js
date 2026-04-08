@@ -55,7 +55,10 @@ async function getGymEquipmentStockRow(gymId, equipmentId, transaction) {
  * Snapshot phục vụ owner preview + lưu vào purchase request.
  */
 async function buildStockContext(gymId, equipmentId, transaction) {
-  const equipment = await Equipment.findByPk(Number(equipmentId), { transaction });
+  const equipment = await Equipment.findByPk(Number(equipmentId), {
+    attributes: ["id", "name", "minStockLevel"],
+    transaction,
+  });
   if (!equipment) return null;
 
   const stockRow = await getGymEquipmentStockRow(gymId, equipmentId, transaction);
