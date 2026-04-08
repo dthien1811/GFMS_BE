@@ -965,8 +965,8 @@ const bookingService = {
           orderCode: tx.id,
           amount: plan.package.price,
           description: `Thanh toán gói ${plan.package.name}`,
-          returnUrl: `${frontendBase}/member/bookings?payos=success&orderCode=${encodeURIComponent(tx.id)}`,
-          cancelUrl: `${frontendBase}/member/bookings?payos=cancel&orderCode=${encodeURIComponent(tx.id)}`,
+          returnUrl: `${frontendBase}/member/payment-success?payos=success&orderCode=${encodeURIComponent(tx.id)}`,
+          cancelUrl: `${frontendBase}/member/payment-success?payos=cancel&orderCode=${encodeURIComponent(tx.id)}`,
         });
         payosCheckoutUrl = payosResp.checkoutUrl || null;
 
