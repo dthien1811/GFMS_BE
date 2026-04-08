@@ -187,8 +187,8 @@ const payosController = {
 
       const userId = req.user?.id;
       if (userId) {
-        const member = await db.Member.findOne({ where: { userId } });
-        if (!member || member.id !== tx.memberId) {
+        const member = await db.Member.findByPk(tx.memberId, { attributes: ["id", "userId"] });
+        if (!member || Number(member.userId) !== Number(userId)) {
           return res.status(403).json({ message: "Không có quyền xác nhận giao dịch này" });
         }
       }
@@ -239,7 +239,8 @@ const payosController = {
         info
       );
       const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
-      await realtimeService.notifyUser(userId, {
+      const memberUserId = userId || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId;
+      await realtimeService.notifyUser(memberUserId, {
         title: "Thanh toán gói thành công",
         message: `Gói ${pkg?.name || "tập"} đã được kích hoạt cho tài khoản của bạn.`,
         notificationType: "package_purchase",
