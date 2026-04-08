@@ -124,7 +124,7 @@ const isTrainerWorkingForSlot = (availableHoursRaw, bookingDate, startTime, endT
   });
 };
 
-const findInternalReplacementForBusyBooking = async ({ booking, transaction = null }) => {
+const findInternalReplacementForBusyBooking = async ({ booking, transaction = null, preferredTrainerId = null, maxCandidates = 5 }) => {
   const gymId = Number(booking?.gymId || 0);
   const currentTrainerId = Number(booking?.trainerId || 0);
   if (!gymId || !currentTrainerId) {
@@ -169,6 +169,7 @@ const findInternalReplacementForBusyBooking = async ({ booking, transaction = nu
     shareConflict: 0,
   };
 
+  const validCandidates = [];
   for (const candidate of candidates) {
     if (!hasSpecializationOverlap(candidate.specialization, currentTrainer.specialization)) {
       diagnostics.specializationMismatch += 1;
@@ -253,14 +254,28 @@ const findInternalReplacementForBusyBooking = async ({ booking, transaction = nu
       }
     }
 
-    return { replacement: candidate, reason: "" };
+    validCandidates.push(candidate);
+    if (validCandidates.length >= Math.max(1, Number(maxCandidates) || 5)) break;
+  }
+
+  if (validCandidates.length > 0) {
+    const preferredId = Number(preferredTrainerId || 0);
+    const preferred = preferredId
+      ? validCandidates.find((item) => Number(item?.id) === preferredId) || null
+      : null;
+    return {
+      replacement: preferred || validCandidates[0],
+      candidates: validCandidates,
+      reason: "",
+    };
   }
 
   if (!diagnostics.total) {
-    return { replacement: null, reason: "Không có huấn luyện viên nội bộ nào khác trong chi nhánh này." };
+    return { replacement: null, candidates: [], reason: "Không có huấn luyện viên nội bộ nào khác trong chi nhánh này." };
   }
   return {
     replacement: null,
+    candidates: [],
     reason:
       `Không có huấn luyện viên nội bộ phù hợp (` +
       `khác chuyên môn: ${diagnostics.specializationMismatch}, ` +
@@ -299,7 +314,7 @@ module.exports = {
           {
             model: User,
             as: 'requester',
-            attributes: ['id', 'username'],  // Lấy cột 'username' của người gửi
+            attributes: ['id', 'username', 'avatar'],
           },
           {
             model: User,
@@ -401,6 +416,7 @@ module.exports = {
             hourlyRate: Number.isFinite(hr) && hr > 0 ? hr : null,
           },
           requesterUsername: request.requester ? request.requester.username : null,
+          requesterAvatar: request.requester ? request.requester.avatar : null,
           approverUsername: request.approver ? request.approver.username : null,
         };
       });
@@ -414,7 +430,9 @@ module.exports = {
             attributes: ["id", "trainerId", "gymId", "bookingDate", "startTime", "endTime"],
           });
           if (!booking) return item;
-          const replacement = await findInternalReplacementForBusyBooking({ booking });
+          const replacementResult = await findInternalReplacementForBusyBooking({ booking, maxCandidates: 5 });
+          const replacement = replacementResult?.replacement || null;
+          const candidates = Array.isArray(replacementResult?.candidates) ? replacementResult.candidates : [];
           return {
             ...item,
             requestData: {
@@ -422,6 +440,11 @@ module.exports = {
               internalReplacementAvailable: Boolean(replacement),
               internalReplacementTrainerId: replacement?.id || null,
               internalReplacementTrainerName: replacement?.User?.username || null,
+              internalReplacementCandidates: candidates.map((candidate) => ({
+                id: candidate?.id || null,
+                name: candidate?.User?.username || null,
+                specialization: candidate?.specialization || "",
+              })),
             },
           };
         })
@@ -473,6 +496,7 @@ module.exports = {
       if (!request) throw new Error('Request not found');
 
       const assignmentMode = String(options?.assignmentMode || "internal_first").toLowerCase();
+      const selectedTrainerId = Number(options?.selectedTrainerId || 0);
       const normalizedType = String(request.requestType || '').trim().toUpperCase();
       if (normalizedType === 'BECOME_TRAINER') {
         const application = request?.data?.application || {};
@@ -556,9 +580,24 @@ module.exports = {
 
         const shouldAutoAssignInternal = assignmentMode !== "borrow_only";
         const replacementResult = shouldAutoAssignInternal
-          ? await findInternalReplacementForBusyBooking({ booking, transaction: t })
+          ? await findInternalReplacementForBusyBooking({
+              booking,
+              transaction: t,
+              preferredTrainerId: selectedTrainerId || null,
+              maxCandidates: 10,
+            })
           : { replacement: null, reason: "" };
         const replacement = replacementResult?.replacement || null;
+        const candidates = Array.isArray(replacementResult?.candidates) ? replacementResult.candidates : [];
+
+        if (shouldAutoAssignInternal && selectedTrainerId > 0) {
+          const isSelectedCandidateValid = candidates.some((candidate) => Number(candidate?.id) === selectedTrainerId);
+          if (!isSelectedCandidateValid) {
+            const err = new Error("Huấn luyện viên nội bộ đã chọn không còn phù hợp ở thời điểm duyệt. Vui lòng tải lại danh sách.");
+            err.statusCode = 409;
+            throw err;
+          }
+        }
 
         if (shouldAutoAssignInternal && !replacement) {
           const err = new Error(
@@ -588,6 +627,11 @@ module.exports = {
           internalReplacementAvailable: Boolean(replacement),
           internalReplacementTrainerId: replacement?.id || null,
           internalReplacementTrainerName: replacement?.User?.username || null,
+          internalReplacementCandidates: candidates.map((candidate) => ({
+            id: candidate?.id || null,
+            name: candidate?.User?.username || null,
+            specialization: candidate?.specialization || "",
+          })),
           assignmentMode,
           needsBorrowFlow: !replacement,
         };
