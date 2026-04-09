@@ -1,5 +1,6 @@
 import db from "../../models";
 import { Op } from "sequelize";
+import realtimeService from "../realtime.service";
 
 const { Maintenance, Equipment, Gym, User, sequelize } = db;
 
@@ -139,6 +140,23 @@ const ownerMaintenanceService = {
           { transaction: t }
         );
 
+        const gymName = gym?.name || `Gym #${gymId}`;
+        const equipLabel = equipment?.name || equipment?.code || `Equipment #${equipmentId}`;
+        const preview = (m.issueDescription || "").slice(0, 120);
+        t.afterCommit(async () => {
+          try {
+            await realtimeService.notifyAdministrators({
+              title: "Bảo trì thiết bị — yêu cầu mới",
+              message: `Mã #${m.id} · ${gymName} · ${equipLabel}${preview ? ` · ${preview}` : ""}`,
+              notificationType: "admin_maintenance_request_submitted",
+              relatedType: "maintenance",
+              relatedId: m.id,
+            });
+          } catch (e) {
+            console.error("[owner.maintenance] notifyAdministrators:", e?.message || e);
+          }
+        });
+
         return m;
       });
     } catch (error) {
@@ -173,6 +191,21 @@ const ownerMaintenanceService = {
       );
 
       await m.update({ status: "cancelled" }, { transaction: t });
+
+      const mid = m.id;
+      t.afterCommit(async () => {
+        try {
+          await realtimeService.notifyAdministrators({
+            title: "Bảo trì — owner đã huỷ yêu cầu",
+            message: `Mã #${mid} đã chuyển sang trạng thái huỷ (owner).`,
+            notificationType: "admin_maintenance_cancelled_by_owner",
+            relatedType: "maintenance",
+            relatedId: mid,
+          });
+        } catch (e) {
+          console.error("[owner.maintenance] cancel notify:", e?.message || e);
+        }
+      });
 
       return m;
     });

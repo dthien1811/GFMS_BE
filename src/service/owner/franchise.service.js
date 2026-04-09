@@ -1,4 +1,5 @@
 import db from "../../models/index";
+import realtimeService from "../realtime.service";
 
 const { FranchiseRequest, User } = db;
 
@@ -43,6 +44,20 @@ const createFranchiseRequest = async (userId, data) => {
     businessPlan,
     status: "pending",
   });
+
+  try {
+    const u = await User.findByPk(userId, { attributes: ["username", "email"] });
+    const ownerLabel = u?.username || u?.email || `User #${userId}`;
+    await realtimeService.notifyAdministrators({
+      title: "Yêu cầu nhượng quyền mới",
+      message: `Mã #${franchiseRequest.id} · ${businessName} · ${contactPerson} · Owner: ${ownerLabel}`,
+      notificationType: "admin_franchise_request_submitted",
+      relatedType: "franchise_request",
+      relatedId: franchiseRequest.id,
+    });
+  } catch (e) {
+    console.error("[owner.franchise] notifyAdministrators:", e?.message || e);
+  }
 
   return franchiseRequest;
 };
@@ -178,41 +193,9 @@ const updateMyFranchiseRequest = async (userId, requestId, data) => {
   return franchiseRequest;
 };
 
-/**
- * Owner xóa franchise request của mình (chỉ khi còn pending)
- */
-const deleteMyFranchiseRequest = async (userId, requestId) => {
-  const franchiseRequest = await FranchiseRequest.findOne({
-    where: {
-      id: requestId,
-      requesterId: userId,
-    },
-  });
-
-  if (!franchiseRequest) {
-    const error = new Error("Không tìm thấy franchise request hoặc bạn không có quyền xóa");
-    error.statusCode = 404;
-    throw error;
-  }
-
-  // Chỉ cho phép xóa khi status là pending
-  if (franchiseRequest.status !== "pending") {
-    const error = new Error(
-      `Không thể xóa franchise request với status '${franchiseRequest.status}'`
-    );
-    error.statusCode = 400;
-    throw error;
-  }
-
-  await franchiseRequest.destroy();
-
-  return { message: "Đã xóa franchise request thành công" };
-};
-
 export default {
   createFranchiseRequest,
   getMyFranchiseRequests,
   getMyFranchiseRequestDetail,
   updateMyFranchiseRequest,
-  deleteMyFranchiseRequest,
 };

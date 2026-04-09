@@ -20,6 +20,155 @@ const sanitizeUser = (u) => {
   return obj;
 };
 
+/** Chuẩn hoá lỗi Sequelize → thông báo tiếng Việt, kèm gợi ý format */
+const formatSequelizeUserError = (e) => {
+  if (!e) return "Không thể lưu người dùng.";
+  if (e.name === "SequelizeUniqueConstraintError") {
+    const paths = (e.errors || []).map((x) => x.path).filter(Boolean);
+    if (paths.includes("email")) return "Email này đã được đăng ký. Vui lòng dùng email khác.";
+    if (paths.includes("username")) return "Tên đăng nhập đã tồn tại. Chọn tên khác (3–32 ký tự, chữ/số/_).";
+    return "Dữ liệu trùng lặp (email hoặc tên đăng nhập đã có trong hệ thống).";
+  }
+  if (e.name === "SequelizeValidationError") {
+    const parts = (e.errors || []).map((err) => {
+      const path = err.path || "field";
+      if (path === "email") {
+        return "Email: cần đúng định dạng (vd: ten@gmail.com).";
+      }
+      if (path === "phone") {
+        return "Số điện thoại: nếu nhập thì chỉ 10–11 chữ số, không khoảng trắng (vd: 0912345678).";
+      }
+      if (path === "sex") {
+        return "Giới tính: chọn Nam / Nữ / Khác.";
+      }
+      return `${path}: ${err.message || "không hợp lệ"}`;
+    });
+    return `Dữ liệu chưa đạt yêu cầu:\n• ${parts.join("\n• ")}`;
+  }
+  return e.message || "Không thể lưu người dùng.";
+};
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const USERNAME_RE = /^[a-zA-Z0-9_]{3,32}$/;
+const PHONE_RE = /^[0-9]{10,11}$/;
+
+const validateUserPayload = (payload, { requirePassword, requireGroup } = {}) => {
+  const email = String(payload.email || "").trim();
+  const username = String(payload.username || "").trim();
+  const password = String(payload.password || "");
+  const phoneRaw = payload.phone != null ? String(payload.phone).trim() : "";
+  const sex = payload.sex != null ? String(payload.sex) : "male";
+
+  if (!email) throw new Error("Email là bắt buộc.\nĐịnh dạng: ten@gmail.com (có @ và tên miền).");
+  if (!EMAIL_RE.test(email)) {
+    throw new Error("Email không đúng định dạng.\nVí dụ hợp lệ: user.name@gmail.com");
+  }
+  if (!username) throw new Error("Tên đăng nhập là bắt buộc.\nQuy tắc: 3–32 ký tự, chỉ chữ không dấu, số và dấu gạch dưới _.");
+  if (!USERNAME_RE.test(username)) {
+    throw new Error(
+      "Tên đăng nhập không hợp lệ.\nCần: 3–32 ký tự, chỉ a-z, A-Z, 0-9 và _. Không dùng khoảng trắng hoặc ký tự đặc biệt."
+    );
+  }
+  if (requirePassword) {
+    if (!password) throw new Error("Mật khẩu là bắt buộc khi tạo mới.\nNên tối thiểu 6 ký tự.");
+    if (password.length < 6) throw new Error("Mật khẩu quá ngắn.\nYêu cầu: tối thiểu 6 ký tự.");
+  } else if (password && password.length < 6) {
+    throw new Error("Mật khẩu mới quá ngắn.\nYêu cầu: tối thiểu 6 ký tự (hoặc để trống nếu không đổi).");
+  }
+  if (phoneRaw && !PHONE_RE.test(phoneRaw)) {
+    throw new Error(
+      "Số điện thoại không hợp lệ.\nNếu nhập: chỉ 10–11 chữ số, không dấu +, không khoảng trắng (vd: 0912345678)."
+    );
+  }
+  if (!["male", "female", "other"].includes(sex)) {
+    throw new Error('Giới tính không hợp lệ. Chọn một trong: "male", "female", "other" (Nam/Nữ/Khác).');
+  }
+
+  let groupId = payload.groupId;
+  if (groupId === "" || groupId === undefined) groupId = null;
+  if (requireGroup && (groupId == null || groupId === "")) {
+    throw new Error("Vui lòng chọn nhóm (Group) cho tài khoản.\nĐây là nhóm quyền trong hệ thống, không phải danh sách Role riêng lẻ.");
+  }
+  if (groupId != null) {
+    const n = Number(groupId);
+    if (!Number.isFinite(n) || n < 1) throw new Error("Nhóm (group) không hợp lệ. Chọn lại từ danh sách.");
+    groupId = n;
+  }
+
+  return {
+    email,
+    username,
+    password,
+    phone: phoneRaw || null,
+    sex,
+    groupId,
+    address: payload.address != null ? String(payload.address).trim() || null : null,
+    status: payload.status || "active",
+  };
+};
+
+const validateUserUpdatePayload = (payload) => {
+  const out = {};
+  if (payload.email != null) {
+    const email = String(payload.email).trim();
+    if (!email) throw new Error("Email không được để trống.\nĐịnh dạng: ten@gmail.com.");
+    if (!EMAIL_RE.test(email)) throw new Error("Email không đúng định dạng.\nVí dụ: user@gmail.com");
+    out.email = email;
+  }
+  if (payload.username != null) {
+    const username = String(payload.username).trim();
+    if (!username) throw new Error("Tên đăng nhập không được để trống.");
+    if (!USERNAME_RE.test(username)) {
+      throw new Error(
+        "Tên đăng nhập không hợp lệ.\nCần: 3–32 ký tự, chỉ a-z, A-Z, 0-9 và _."
+      );
+    }
+    out.username = username;
+  }
+  if (payload.password) {
+    const password = String(payload.password);
+    if (password.length < 6) throw new Error("Mật khẩu mới quá ngắn.\nYêu cầu: tối thiểu 6 ký tự.");
+    out.password = password;
+  }
+  if (payload.phone !== undefined) {
+    const phoneRaw = payload.phone ? String(payload.phone).trim() : "";
+    if (phoneRaw && !PHONE_RE.test(phoneRaw)) {
+      throw new Error("Số điện thoại không hợp lệ.\nChỉ 10–11 chữ số, không khoảng trắng (vd: 0912345678).");
+    }
+    out.phone = phoneRaw || null;
+  }
+  if (payload.address !== undefined) {
+    out.address = payload.address ? String(payload.address).trim() : null;
+  }
+  if (payload.sex != null) {
+    const sex = String(payload.sex);
+    if (!["male", "female", "other"].includes(sex)) throw new Error("Giới tính không hợp lệ.");
+    out.sex = sex;
+  }
+  if (payload.status != null) out.status = payload.status;
+  if (payload.groupId !== undefined) {
+    let groupId = payload.groupId;
+    if (groupId === "" || groupId === null) {
+      out.groupId = null;
+    } else {
+      const n = Number(groupId);
+      if (!Number.isFinite(n) || n < 1) throw new Error("Nhóm không hợp lệ. Chọn lại từ danh sách.");
+      out.groupId = n;
+    }
+  }
+  return out;
+};
+
+async function assertGroupExists(groupId) {
+  if (groupId == null) return;
+  const g = await db.Group.findByPk(groupId);
+  if (!g) {
+    throw new Error(
+      "Nhóm bạn chọn không tồn tại trong hệ thống.\nHãy tải lại trang (danh sách nhóm có thể đã cập nhật)."
+    );
+  }
+}
+
 const toStatusFilter = (raw) => {
   const v = String(raw || "active").toLowerCase();
   // default: active (chuẩn admin UX)
@@ -105,27 +254,27 @@ const useApiService = {
 
   // UC-USER-14: create user
   createUser: async (payload, auditMeta = {}) => {
-    const email = String(payload.email || "").trim();
-    const username = String(payload.username || "").trim();
-    const password = String(payload.password || "");
+    const v = validateUserPayload(payload, { requirePassword: true, requireGroup: true });
+    await assertGroupExists(v.groupId);
 
-    if (!email) throw new Error("Email is required");
-    if (!username) throw new Error("Username is required");
-    if (!password) throw new Error("Password is required");
+    const hashed = await bcrypt.hash(v.password, SALT_ROUNDS);
 
-    const hashed = await bcrypt.hash(password, SALT_ROUNDS);
-
-    const created = await db.User.create({
-      email,
-      username,
-      password: hashed,
-      phone: payload.phone || null,
-      address: payload.address || null,
-      sex: payload.sex || "male",
-      status: payload.status || "active",
-      groupId: payload.groupId ?? null,
-      avatar: payload.avatar || "default-avatar.png"
-    });
+    let created;
+    try {
+      created = await db.User.create({
+        email: v.email,
+        username: v.username,
+        password: hashed,
+        phone: v.phone,
+        address: v.address,
+        sex: v.sex,
+        status: v.status,
+        groupId: v.groupId,
+        avatar: payload.avatar || "default-avatar.png"
+      });
+    } catch (e) {
+      throw new Error(formatSequelizeUserError(e));
+    }
 
     await writeAuditLog({
       ...auditMeta,
@@ -146,20 +295,20 @@ const useApiService = {
 
     const before = sanitizeUser(user);
 
-    const updates = {};
-    if (payload.email != null) updates.email = String(payload.email).trim();
-    if (payload.username != null) updates.username = String(payload.username).trim();
-    if (payload.phone != null) updates.phone = payload.phone ? String(payload.phone).trim() : null;
-    if (payload.address != null) updates.address = payload.address ? String(payload.address).trim() : null;
-    if (payload.sex != null) updates.sex = payload.sex;
-    if (payload.status != null) updates.status = payload.status;
-    if (payload.groupId !== undefined) updates.groupId = payload.groupId;
+    const patch = validateUserUpdatePayload(payload);
+    if (patch.groupId !== undefined) await assertGroupExists(patch.groupId);
 
-    if (payload.password) {
-      updates.password = await bcrypt.hash(String(payload.password), SALT_ROUNDS);
+    const updates = { ...patch };
+    if (updates.password) {
+      updates.password = await bcrypt.hash(String(updates.password), SALT_ROUNDS);
     }
 
-    const updated = await user.update(updates);
+    let updated;
+    try {
+      updated = await user.update(updates);
+    } catch (e) {
+      throw new Error(formatSequelizeUserError(e));
+    }
 
     await writeAuditLog({
       ...auditMeta,
@@ -204,7 +353,15 @@ const useApiService = {
       order: [["id", "ASC"]],
       raw: true
     });
-    return { data: rows };
+    // DB có thể bị seed/migrate lặp nhiều dòng cùng tên nhóm → dropdown trùng; gộp theo tên (giữ id nhỏ nhất).
+    const byNameKey = new Map();
+    for (const r of rows) {
+      const key = String(r.name || "").trim().toLowerCase() || `__id_${r.id}`;
+      const prev = byNameKey.get(key);
+      if (!prev || Number(r.id) < Number(prev.id)) byNameKey.set(key, r);
+    }
+    const deduped = Array.from(byNameKey.values()).sort((a, b) => Number(a.id) - Number(b.id));
+    return { data: deduped };
   }
 };
 

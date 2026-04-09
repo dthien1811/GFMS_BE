@@ -1,8 +1,9 @@
 import db from "../../models";
 import { Op } from "sequelize";
 import procurementStockHelper from "../procurementStockHelper";
+import realtimeService from "../realtime.service";
 
-const { buildStockContext, validateRequestReason } = procurementStockHelper;
+const { buildStockContext, computeFulfillmentPlan, validateRequestReason } = procurementStockHelper;
 
 const {
   Supplier,
@@ -31,6 +32,53 @@ const ensure = (condition, message, statusCode = 400) => {
   if (!condition) throw { message, statusCode };
 };
 
+const parseTxMetadata = (meta) => {
+  if (!meta) return {};
+  if (typeof meta === "string") {
+    try {
+      return JSON.parse(meta);
+    } catch (e) {
+      return {};
+    }
+  }
+  return meta;
+};
+
+function buildPOSummary(poId, totalAmount, txs = []) {
+  const poTxs = (txs || []).filter(
+    (x) => Number(parseTxMetadata(x.metadata)?.purchaseOrderId) === Number(poId)
+  );
+  const paidAmount = poTxs
+    .filter((x) => String(x.paymentStatus || "").toLowerCase() === "completed")
+    .reduce((s, x) => s + Number(x.amount || 0), 0);
+  const depositPaidAmount = poTxs
+    .filter(
+      (x) =>
+        String(x.paymentStatus || "").toLowerCase() === "completed" &&
+        String(parseTxMetadata(x.metadata)?.paymentPhase || "").toLowerCase() === "deposit"
+    )
+    .reduce((s, x) => s + Number(x.amount || 0), 0);
+  const total = Number(totalAmount || 0);
+  const depositRequired = total * 0.3;
+  const remainingAmount = Math.max(0, total - paidAmount);
+  const paymentStage =
+    paidAmount <= 0
+      ? "not_started"
+      : paidAmount >= total
+      ? "fully_paid"
+      : depositPaidAmount >= depositRequired
+      ? "deposit_completed"
+      : "partially_paid";
+  return {
+    paidAmount,
+    depositRequired,
+    depositPaidAmount,
+    remainingAmount,
+    paymentStage,
+    transactions: poTxs.map((x) => ({ ...x.toJSON(), metadata: parseTxMetadata(x.metadata) })),
+  };
+}
+
 const ownerPurchaseService = {
   // ===== SUPPLIERS =====
   async getSuppliers(ownerUserId, query) {
@@ -57,7 +105,14 @@ const ownerPurchaseService = {
     });
 
     return {
-      data: rows,
+      data: rows.map((row) => {
+        const json = row.toJSON ? row.toJSON() : row;
+        const snapshot = json.stockSnapshot || null;
+        return {
+          ...json,
+          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
+        };
+      }),
       meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
     };
   },
@@ -103,7 +158,14 @@ const ownerPurchaseService = {
     });
 
     return {
-      data: rows,
+      data: rows.map((row) => {
+        const json = row.toJSON ? row.toJSON() : row;
+        const snapshot = json.stockSnapshot || null;
+        return {
+          ...json,
+          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
+        };
+      }),
       meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
     };
   },
@@ -179,6 +241,21 @@ const ownerPurchaseService = {
 
       await QuotationItem.bulkCreate(quotationItems, { transaction: t });
 
+      const gymName = gym?.name || `Gym #${gymId}`;
+      t.afterCommit(async () => {
+        try {
+          await realtimeService.notifyAdministrators({
+            title: "Mua sắm — quotation chờ báo giá",
+            message: `${quotation.code} · ${gymName} · NCC ${supplier?.name || supplierId} · Cần nhập giá / xử lý báo giá`,
+            notificationType: "admin_procurement_quotation_needs_quote",
+            relatedType: "quotation",
+            relatedId: quotation.id,
+          });
+        } catch (e) {
+          console.error("[owner.purchase] quotation notify:", e?.message || e);
+        }
+      });
+
       return quotation;
     });
   },
@@ -223,8 +300,26 @@ const ownerPurchaseService = {
       distinct: true,
     });
 
+    const txs = await Transaction.findAll({
+      where: {
+        transactionType: "equipment_purchase",
+        gymId: { [Op.in]: gymIds },
+      },
+      order: [["createdAt", "DESC"]],
+    });
+
+    const data = await Promise.all(
+      (rows || []).map(async (row) => {
+        const json = row.toJSON ? row.toJSON() : row;
+        const paymentSummary = buildPOSummary(json.id, json.totalAmount, txs);
+        return {
+          ...json,
+          paymentSummary,
+        };
+      })
+    );
     return {
-      data: rows,
+      data,
       meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) },
     };
   },
@@ -247,7 +342,31 @@ const ownerPurchaseService = {
     ensure(po, "Purchase order not found", 404);
     ensure(po.gym?.ownerId === ownerUserId, "Not authorized", 403);
 
-    return po;
+    const txs = await Transaction.findAll({
+      where: {
+        transactionType: "equipment_purchase",
+        gymId: po.gymId,
+      },
+      order: [["createdAt", "DESC"]],
+    });
+    const paymentSummary = buildPOSummary(po.id, po.totalAmount, txs);
+    const receipts = await Receipt.findAll({
+      where: { purchaseOrderId: po.id },
+      include: [{ model: ReceiptItem, as: "items", attributes: ["quantity"] }],
+    });
+    const receiptSummary = {
+      totalReceiptCount: receipts.length,
+      completedReceiptCount: receipts.filter((x) => String(x.status) === "completed").length,
+      totalReceivedQuantity: receipts.reduce(
+        (sum, r) => sum + (r.items || []).reduce((s, it) => s + Number(it.quantity || 0), 0),
+        0
+      ),
+    };
+    return {
+      ...po.toJSON(),
+      paymentSummary,
+      receiptSummary,
+    };
   },
 
   // ===== RECEIPTS =====
@@ -326,7 +445,8 @@ const ownerPurchaseService = {
 
     const ctx = await buildStockContext(gymId, equipmentId, null);
     ensure(ctx, "Equipment not found", 404);
-    return { data: ctx };
+    const requestedQty = Number(query.requestedQty || query.quantity || 0);
+    return { data: { ...ctx, fulfillmentPlan: computeFulfillmentPlan(requestedQty, ctx) } };
   },
 
   async createPurchaseRequest(ownerUserId, payload) {
@@ -365,6 +485,15 @@ const ownerPurchaseService = {
       const count = await PurchaseRequest.count({ transaction: t });
       const code = `PR-${Date.now()}-${count + 1}`;
 
+      const fulfillmentPlan = computeFulfillmentPlan(qty, ctx);
+      const availableQty = Number(ctx?.availableQuantity || 0);
+      const issueQty = Number(fulfillmentPlan.issueQty || 0);
+      const purchaseQty = Number(fulfillmentPlan.purchaseQty || 0);
+      const unitPrice = Number(expectedUnitPrice || 0);
+      const payableAmount = purchaseQty * unitPrice;
+      const depositAmount = payableAmount * 0.3;
+      const remainingAmount = payableAmount - depositAmount;
+
       const pr = await PurchaseRequest.create(
         {
           code,
@@ -374,16 +503,38 @@ const ownerPurchaseService = {
           requestedBy: ownerUserId,
           quantity: qty,
           expectedUnitPrice: Number(expectedUnitPrice || 0),
+          availableQty,
+          issueQty,
+          purchaseQty,
+          payableAmount,
+          depositAmount,
+          remainingAmount,
           reason: String(reason || "").trim(),
           priority: String(priority || "normal").trim() || "normal",
           note: note ? String(note) : null,
           status: "submitted",
-          stockSnapshot: ctx,
+          stockSnapshot: { ...ctx, fulfillmentPlan },
         },
         { transaction: t }
       );
 
-      return pr;
+      const gymName = gym?.name || `Gym #${gymId}`;
+      const equipLabel = equipment?.name || equipment?.code || `Equipment #${equipmentId}`;
+      t.afterCommit(async () => {
+        try {
+          await realtimeService.notifyAdministrators({
+            title: "Mua sắm — yêu cầu mua mới",
+            message: `${pr.code} · ${gymName} · ${equipLabel} · SL ${qty} · Cần xử lý báo giá / chuyển quotation`,
+            notificationType: "admin_procurement_pr_submitted",
+            relatedType: "purchase_request",
+            relatedId: pr.id,
+          });
+        } catch (e) {
+          console.error("[owner.purchase] PR notify:", e?.message || e);
+        }
+      });
+
+      return { ...pr.toJSON(), stockSnapshot: { ...ctx, fulfillmentPlan } };
     });
   },
 
@@ -446,7 +597,10 @@ const ownerPurchaseService = {
     ensure(pr, "Purchase request not found", 404);
     ensure(pr.gym?.ownerId === ownerUserId, "Not authorized", 403);
 
-    return pr;
+    return {
+      ...pr.toJSON(),
+      fulfillmentPlan: pr.stockSnapshot?.fulfillmentPlan || computeFulfillmentPlan(pr.quantity, pr.stockSnapshot),
+    };
   },
 
   // ===== PROCUREMENT PAYMENTS =====

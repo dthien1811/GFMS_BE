@@ -1,5 +1,8 @@
+const procurementStockHelper = require("./procurementStockHelper");
+const { computeFulfillmentPlan } = procurementStockHelper;
 // src/service/adminPurchaseWorkflowService.js
 const { Op } = require("sequelize");
+const realtimeService = require("./realtime.service").default;
 const {
   sequelize,
   Quotation,
@@ -169,7 +172,17 @@ class AdminPurchaseWorkflowService {
       ],
     });
 
-    return { data: rows, meta: { page, limit, total: count } };
+    return {
+      data: rows.map((row) => {
+        const json = row.toJSON ? row.toJSON() : row;
+        const snapshot = json.stockSnapshot || null;
+        return {
+          ...json,
+          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
+        };
+      }),
+      meta: { page, limit, total: count },
+    };
   }
 
   async getQuotationDetail(id) {
@@ -476,7 +489,17 @@ class AdminPurchaseWorkflowService {
       ],
     });
 
-    return { data: rows, meta: { page, limit, total: count } };
+    return {
+      data: rows.map((row) => {
+        const json = row.toJSON ? row.toJSON() : row;
+        const snapshot = json.stockSnapshot || null;
+        return {
+          ...json,
+          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
+        };
+      }),
+      meta: { page, limit, total: count },
+    };
   }
 
   async getPurchaseOrderDetail(id) {
@@ -656,7 +679,17 @@ class AdminPurchaseWorkflowService {
       ],
     });
 
-    return { data: rows, meta: { page, limit, total: count } };
+    return {
+      data: rows.map((row) => {
+        const json = row.toJSON ? row.toJSON() : row;
+        const snapshot = json.stockSnapshot || null;
+        return {
+          ...json,
+          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
+        };
+      }),
+      meta: { page, limit, total: count },
+    };
   }
 
   async getReceiptDetail(id) {
@@ -854,6 +887,8 @@ class AdminPurchaseWorkflowService {
 
   async completeReceipt(receiptId, adminId, req) {
     return sequelize.transaction(async (t) => {
+      let poAwaitingFinalPayment = null;
+
       const receipt = await Receipt.findByPk(receiptId, {
         include: [{ model: ReceiptItem, as: "items" }],
         transaction: t,
@@ -977,6 +1012,14 @@ class AdminPurchaseWorkflowService {
             },
             t
           );
+
+          if (po.status === "received" && paid < totalAmt - EPS) {
+            poAwaitingFinalPayment = {
+              id: po.id,
+              code: po.code || String(po.id),
+              remaining: totalAmt - paid,
+            };
+          }
         }
       }
 
@@ -992,6 +1035,23 @@ class AdminPurchaseWorkflowService {
         },
         t
       );
+
+      if (poAwaitingFinalPayment) {
+        const snap = poAwaitingFinalPayment;
+        t.afterCommit(async () => {
+          try {
+            await realtimeService.notifyAdministrators({
+              title: "Mua sắm — chờ thanh toán cuối",
+              message: `PO ${snap.code}: đã nhận đủ hàng, còn ${Number(snap.remaining).toLocaleString("vi-VN")}đ — ghi nhận thanh toán (tab Thanh toán).`,
+              notificationType: "admin_procurement_po_awaits_final_payment",
+              relatedType: "purchase_order",
+              relatedId: snap.id,
+            });
+          } catch (e) {
+            console.error("[adminPurchaseWorkflow] notify admins final payment:", e?.message || e);
+          }
+        });
+      }
 
       return receipt;
     });
@@ -1206,8 +1266,17 @@ class AdminPurchaseWorkflowService {
         { model: Quotation, as: "quotation", attributes: ["id", "code", "status"] },
       ],
     });
-
-    return { data: rows, meta: { page, limit, total: count } };
+    return {
+      data: rows.map((row) => {
+        const json = row.toJSON ? row.toJSON() : row;
+        const snapshot = json.stockSnapshot || null;
+        return {
+          ...json,
+          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
+        };
+      }),
+      meta: { page, limit, total: count },
+    };
   }
 
   async getPurchaseRequestDetail(id) {
@@ -1221,7 +1290,10 @@ class AdminPurchaseWorkflowService {
       ],
     });
     if (!pr) throw new Error("Purchase request not found");
-    return pr;
+    return {
+      ...pr.toJSON(),
+      fulfillmentPlan: pr.stockSnapshot?.fulfillmentPlan || computeFulfillmentPlan(pr.quantity, pr.stockSnapshot),
+    };
   }
 
   async rejectPurchaseRequest(requestId, body, adminId, req) {
@@ -1279,11 +1351,101 @@ class AdminPurchaseWorkflowService {
       const supplier = await Supplier.findByPk(supplierId, { transaction: t });
       if (!supplier) throw new Error("Supplier not found");
 
+      const unitPrice = Number(pr.expectedUnitPrice || 0);
+      const requestedQty = Number(pr.quantity || 0);
+      const availableQty = Math.max(
+        0,
+        Number(
+          pr.availableQty ??
+            pr.stockSnapshot?.availableQuantity ??
+            pr.stockSnapshot?.fulfillmentPlan?.availableQuantity ??
+            0
+        )
+      );
+      const issueQty = Math.min(requestedQty, availableQty);
+      const purchaseQty = Math.max(requestedQty - availableQty, 0);
+      const totalAmount = purchaseQty * unitPrice;
+      const payableAmount = totalAmount;
+      const depositAmount = payableAmount * 0.3;
+      const remainingAmount = payableAmount - depositAmount;
+
+      if (issueQty > 0) {
+        let stock = await EquipmentStock.findOne({
+          where: { gymId: pr.gymId, equipmentId: pr.equipmentId },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+        const beforeQty = Number(stock?.quantity || 0);
+        const beforeAvail = Number(stock?.availableQuantity ?? stock?.quantity ?? 0);
+        if (beforeAvail < issueQty) {
+          throw new Error(
+            `Current available stock is ${beforeAvail}, cannot issue ${issueQty}. Please refresh and submit again.`
+          );
+        }
+        const afterQty = Math.max(0, beforeQty - issueQty);
+        const afterAvail = Math.max(0, beforeAvail - issueQty);
+        if (!stock) {
+          stock = await EquipmentStock.create(
+            {
+              gymId: pr.gymId,
+              equipmentId: pr.equipmentId,
+              quantity: 0,
+              availableQuantity: 0,
+              reservedQuantity: 0,
+            },
+            { transaction: t }
+          );
+        }
+        stock.quantity = afterQty;
+        stock.availableQuantity = afterAvail;
+        await stock.save({ transaction: t });
+
+        await Inventory.create(
+          {
+            gymId: pr.gymId,
+            equipmentId: pr.equipmentId,
+            transactionType: "adjustment",
+            transactionId: pr.id,
+            transactionCode: pr.code,
+            quantity: -issueQty,
+            unitPrice: null,
+            totalValue: null,
+            stockBefore: beforeAvail,
+            stockAfter: afterAvail,
+            notes: `Issued from stock for purchase request ${pr.code}`,
+            recordedBy: adminId || null,
+            recordedAt: new Date(),
+          },
+          { transaction: t }
+        );
+      }
+
+      pr.availableQty = availableQty;
+      pr.issueQty = issueQty;
+      pr.purchaseQty = purchaseQty;
+      pr.payableAmount = payableAmount;
+      pr.depositAmount = depositAmount;
+      pr.remainingAmount = remainingAmount;
+
+      if (purchaseQty <= 0) {
+        pr.status = "fulfilled_from_stock";
+        await pr.save({ transaction: t });
+        return {
+          purchaseRequestId: pr.id,
+          status: pr.status,
+          requestedQty,
+          availableQty,
+          issueQty,
+          purchaseQty,
+          unitPrice,
+          payableAmount,
+          depositAmount,
+          remainingAmount,
+        };
+      }
+
       const count = await Quotation.count({ transaction: t });
       const code = `QUO-${Date.now()}-${count + 1}`;
-      const unitPrice = Number(pr.expectedUnitPrice || 0);
-      const qty = Number(pr.quantity || 0);
-      const totalAmount = qty * unitPrice;
 
       const quotation = await Quotation.create(
         {
@@ -1303,7 +1465,7 @@ class AdminPurchaseWorkflowService {
         {
           quotationId: quotation.id,
           equipmentId: pr.equipmentId,
-          quantity: qty,
+          quantity: purchaseQty,
           unitPrice,
           totalPrice: totalAmount,
         },

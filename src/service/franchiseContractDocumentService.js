@@ -1016,20 +1016,61 @@ async function freezeLatest(franchiseRequestId, { transaction = null } = {}) {
 }
 
 async function resolveDocumentPathByType(franchiseRequestId, type, { transaction = null } = {}) {
-  const latest = await getLatestDocument(franchiseRequestId, { transaction });
-  if (!latest) return null;
-
   const key = String(type || "").toLowerCase();
-  const map = {
-    original: latest.originalPdfPath,
-    owner_signed: latest.ownerSignedPdfPath,
-    owner: latest.ownerSignedPdfPath,
-    final: latest.finalPdfPath,
-    certificate: latest.certificatePdfPath,
+  const fieldByType = {
+    original: "originalPdfPath",
+    owner_signed: "ownerSignedPdfPath",
+    owner: "ownerSignedPdfPath",
+    final: "finalPdfPath",
+    certificate: "certificatePdfPath",
   };
-  const rel = map[key];
-  if (!rel) return null;
-  return { relPath: rel, absPath: isHttpUrl(rel) ? null : absFromRel(rel), doc: latest };
+  const field = fieldByType[key];
+  if (!field) return null;
+
+  // Không chỉ dùng getLatestDocument(): sau resend có thể có version mới (chưa có final)
+  // trong khi version cũ đã có final/certificate → owner (token) bị 404, admin vẫn xem được nếu trỏ đúng bản.
+  const rows = await FranchiseContractDocument.findAll({
+    where: { franchiseRequestId },
+    order: [["version", "DESC"]],
+    transaction,
+  });
+  if (!rows.length) return null;
+
+  for (const docRow of rows) {
+    const rel = docRow[field];
+    if (rel && String(rel).trim()) {
+      return {
+        relPath: rel,
+        absPath: isHttpUrl(rel) ? null : absFromRel(rel),
+        doc: docRow,
+        servedType: key,
+      };
+    }
+  }
+  return null;
+}
+
+function rowHasAnyPdfPath(docRow) {
+  if (!docRow) return false;
+  return [docRow.originalPdfPath, docRow.ownerSignedPdfPath, docRow.finalPdfPath, docRow.certificatePdfPath].some(
+    (p) => p && String(p).trim()
+  );
+}
+
+/**
+ * Demo / DB lệch: chưa có file PDF trên bất kỳ version nào → tạo bản gốc (kể cả completed mock thiếu file).
+ * Nếu đã có ít nhất một path thì không ghi đè.
+ */
+async function ensureFranchiseContractHasPdf(fr, { transaction = null } = {}) {
+  const rows = await FranchiseContractDocument.findAll({
+    where: { franchiseRequestId: fr.id },
+    order: [["version", "DESC"]],
+    transaction,
+  });
+  const hasAny = rows.some(rowHasAnyPdfPath);
+  if (hasAny) return { ensured: false };
+  await generateOriginalPdf(fr, { transaction });
+  return { ensured: true };
 }
 
 module.exports = {
@@ -1041,5 +1082,6 @@ module.exports = {
   generateCertificate,
   freezeLatest,
   resolveDocumentPathByType,
+  ensureFranchiseContractHasPdf,
   sha256,
 };

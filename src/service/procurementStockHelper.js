@@ -54,6 +54,30 @@ async function getGymEquipmentStockRow(gymId, equipmentId, transaction) {
 /**
  * Snapshot phục vụ owner preview + lưu vào purchase request.
  */
+function computeFulfillmentPlan(requestedQty, ctx) {
+  const requested = Math.max(0, Number(requestedQty || 0));
+  const available = Math.max(0, Number(ctx?.availableQuantity || 0));
+  const issueQty = Math.min(requested, available);
+  const purchaseQty = Math.max(requested - issueQty, 0);
+  return {
+    requestedQuantity: requested,
+    availableQuantity: available,
+    issueQty,
+    purchaseQty,
+    stockUsedQuantity: issueQty,
+    purchaseQuantity: purchaseQty,
+    canFulfillFromStock: purchaseQty === 0,
+  };
+}
+
+function computeStockStatus(ctx) {
+  const available = Math.max(0, Number(ctx?.availableQuantity || 0));
+  const minStock = Math.max(0, Number(ctx?.minStockLevel || 0));
+  if (available <= 0) return "out_of_stock";
+  if (available <= minStock) return "low_stock";
+  return "in_stock";
+}
+
 async function buildStockContext(gymId, equipmentId, transaction) {
   const equipment = await Equipment.findByPk(Number(equipmentId), { transaction });
   if (!equipment) return null;
@@ -63,15 +87,22 @@ async function buildStockContext(gymId, equipmentId, transaction) {
   const availableQuantity = stockRow ? Number(stockRow.availableQuantity ?? stockRow.quantity ?? 0) : 0;
   const minStock = Number(equipment.minStockLevel ?? 0);
   const pendingPurchaseQty = await getPendingOrderedQuantity(gymId, equipmentId, transaction);
+  const shortageToMin = Math.max(minStock - availableQuantity, 0);
 
-  return {
+  const ctx = {
     equipmentId: Number(equipmentId),
     equipmentName: equipment.name,
     quantityOnHand: quantity,
     availableQuantity,
     minStockLevel: minStock,
     pendingPurchaseQty,
+    shortageToMin,
     shouldReorder: availableQuantity <= minStock,
+  };
+
+  return {
+    ...ctx,
+    stockStatus: computeStockStatus(ctx),
   };
 }
 
@@ -108,5 +139,7 @@ module.exports = {
   getPendingOrderedQuantity,
   getGymEquipmentStockRow,
   buildStockContext,
+  computeFulfillmentPlan,
+  computeStockStatus,
   validateRequestReason,
 };
