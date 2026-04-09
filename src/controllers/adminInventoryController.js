@@ -73,6 +73,15 @@ const adminInventoryController = {
     }
   },
 
+  async deleteEquipment(req, res) {
+    try {
+      const data = await adminInventoryService.deleteEquipment(req.params.id);
+      return ok(res, data);
+    } catch (e) {
+      return bad(res, e, "DELETE /equipments/:id");
+    }
+  },
+
   // Images
   async getEquipmentImages(req, res) {
     try {

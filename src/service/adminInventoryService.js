@@ -130,6 +130,31 @@ const pickEquipmentPayload = (payload = {}) => {
   return out;
 };
 
+const validateEquipmentPayload = (payload = {}, { isCreate = false } = {}) => {
+  const errors = [];
+  const name = String(payload.name || "").trim();
+  const code = String(payload.code || "").trim();
+  const price = payload.price;
+  const quantity = payload.quantity;
+
+  if (isCreate && !name) errors.push("Tên thiết bị là bắt buộc.");
+  if (payload.name !== undefined && !name) errors.push("Tên thiết bị không được để trống.");
+
+  if (code && !/^[A-Za-z0-9._-]+$/.test(code)) {
+    errors.push("Mã thiết bị chỉ được chứa chữ, số và các ký tự . _ -");
+  }
+
+  if (price !== undefined && price !== null && Number(price) < 0) {
+    errors.push("Giá bán không được âm.");
+  }
+
+  if (quantity !== undefined && quantity !== null && Number(quantity) < 0) {
+    errors.push("Số lượng không được âm.");
+  }
+
+  return errors;
+};
+
 const pickSupplierPayload = (payload = {}) => {
   const out = {
     name: payload.name,
@@ -414,21 +439,20 @@ async getEquipments(query = {}) {
     const stTable = tbl(db.EquipmentStock, "EquipmentStock");
     const eqTable = db.Equipment ? tbl(db.Equipment, "Equipment") : null;
     const gymTable = db.Gym ? tbl(db.Gym, "Gym") : null;
+    const catTable = db.EquipmentCategory ? tbl(db.EquipmentCategory, "EquipmentCategory") : null;
 
     const where = [];
     const params = {};
     const includeOwnerGyms = query.includeOwnerGyms === true || String(query.includeOwnerGyms || "") === "true";
+    let centralOnly = false;
     if (!includeOwnerGyms && gymTable) {
-      // Only apply admin-only filter when central gyms actually exist.
-      // Some datasets have no ownerId=NULL gym; forcing this filter would return empty list.
+      // Only apply central-gym filter when central gyms exist.
       const centralCountRows = await db.sequelize.query(
         `SELECT COUNT(*) AS total FROM \`${gymTable}\` WHERE ownerId IS NULL`,
         { type: QueryTypes.SELECT }
       );
       const centralCount = Number(centralCountRows?.[0]?.total || 0);
-      if (centralCount > 0) {
-        where.push(`g.ownerId IS NULL`);
-      }
+      centralOnly = centralCount > 0;
     }
 
     if (gymId) {
@@ -441,26 +465,55 @@ async getEquipments(query = {}) {
       params.q = qLike(q);
     }
 
+    // Use equipment table as the base, so new equipment still appears
+    // in inventory even when it has no stock row yet (quantity = 0).
+    const stockScopeConds = [];
+    if (centralOnly) stockScopeConds.push(`g.ownerId IS NULL`);
+    if (gymId) stockScopeConds.push(`s.gymId = :gymId`);
+    const stockScope = stockScopeConds.length ? stockScopeConds.join(" AND ") : "1=1";
+
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const joinEq = eqTable ? `LEFT JOIN \`${eqTable}\` e ON e.id = s.equipmentId` : "";
-    const joinGym = gymTable ? `LEFT JOIN \`${gymTable}\` g ON g.id = s.gymId` : "";
-    const baseFromSql = `FROM \`${stTable}\` s ${joinEq} ${joinGym} ${whereSql}`;
+
+    const joins = `
+      LEFT JOIN \`${stTable}\` s ON s.equipmentId = e.id
+      ${gymTable ? `LEFT JOIN \`${gymTable}\` g ON g.id = s.gymId` : ""}
+      ${catTable ? `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId` : ""}
+    `;
+
+    const baseFromSql = `FROM \`${eqTable}\` e ${joins} ${whereSql}`;
 
     const [rows, countRows] = await Promise.all([
       db.sequelize.query(
         `
         SELECT 
-          s.*,
-          ${eqTable ? "e.name AS equipmentName, e.code AS equipmentCode, e.minStockLevel AS equipmentMinStockLevel" : "NULL AS equipmentName, NULL AS equipmentCode, 0 AS equipmentMinStockLevel"},
-          ${gymTable ? "g.name AS gymName" : "NULL AS gymName"}
+          e.id AS equipmentId,
+          e.name AS equipmentName,
+          e.code AS equipmentCode,
+          ${catTable ? "c.name AS categoryName," : "NULL AS categoryName,"}
+          e.minStockLevel AS equipmentMinStockLevel,
+          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.quantity ELSE 0 END), 0) AS quantity,
+          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.availableQuantity ELSE 0 END), 0) AS availableQuantity,
+          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.reservedQuantity ELSE 0 END), 0) AS reservedQuantity,
+          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.damagedQuantity ELSE 0 END), 0) AS damagedQuantity,
+          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.maintenanceQuantity ELSE 0 END), 0) AS maintenanceQuantity,
+          NULL AS reorderPoint,
+          NULL AS gymName
         ${baseFromSql}
-        ORDER BY g.name ASC, e.name ASC, s.id DESC
+        GROUP BY e.id, e.name, e.code, e.minStockLevel ${catTable ? ", c.name" : ""}
+        ORDER BY e.name ASC, e.id DESC
         LIMIT :limit OFFSET :offset
         `,
         { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
       ),
       db.sequelize.query(
-        `SELECT COUNT(*) AS total ${baseFromSql}`,
+        `
+        SELECT COUNT(*) AS total
+        FROM (
+          SELECT e.id
+          ${baseFromSql}
+          GROUP BY e.id
+        ) x
+        `,
         { type: QueryTypes.SELECT, replacements: params }
       ),
     ]);
@@ -485,6 +538,11 @@ async getEquipments(query = {}) {
 
   // ================== EQUIPMENT (C/R/D) ==================
   async createEquipment(payload) {
+    const validationErrors = validateEquipmentPayload(payload, { isCreate: true });
+    if (validationErrors.length) {
+      throw new Error(validationErrors.join(" "));
+    }
+
     const clean = pickEquipmentPayload(payload);
     if (!String(clean.name || "").trim()) throw new Error("name is required");
     const created = await db.Equipment.create(clean, { fields: Object.keys(clean) });
@@ -515,6 +573,11 @@ async getEquipments(query = {}) {
 
   async updateEquipment(id, payload) {
     const table = tbl(db.Equipment, "Equipment");
+    const validationErrors = validateEquipmentPayload(payload, { isCreate: false });
+    if (validationErrors.length) {
+      throw new Error(validationErrors.join(" "));
+    }
+
     const clean = pickEquipmentPayload(payload);
 
     if (clean.name !== undefined && !String(clean.name || "").trim()) {
@@ -541,6 +604,50 @@ async getEquipments(query = {}) {
     );
     const after = await selectById(table, id);
     return after;
+  },
+
+  async deleteEquipment(id) {
+    const eqId = Number(id);
+    if (!eqId) throw new Error("Invalid equipment id");
+
+    const equipment = await db.Equipment.findByPk(eqId, { attributes: ["id", "name"] });
+    if (!equipment) throw new Error("Thiết bị không tồn tại");
+
+    const [stockCount, inventoryCount, unitCount, quotationItemCount, poItemCount, receiptItemCount, requestCount] =
+      await Promise.all([
+        db.EquipmentStock.count({ where: { equipmentId: eqId } }),
+        db.Inventory.count({ where: { equipmentId: eqId } }),
+        db.EquipmentUnit ? db.EquipmentUnit.count({ where: { equipmentId: eqId } }) : 0,
+        db.QuotationItem ? db.QuotationItem.count({ where: { equipmentId: eqId } }) : 0,
+        db.PurchaseOrderItem ? db.PurchaseOrderItem.count({ where: { equipmentId: eqId } }) : 0,
+        db.ReceiptItem ? db.ReceiptItem.count({ where: { equipmentId: eqId } }) : 0,
+        db.PurchaseRequest ? db.PurchaseRequest.count({ where: { equipmentId: eqId } }) : 0,
+      ]);
+
+    if (stockCount > 0 || inventoryCount > 0 || unitCount > 0 || quotationItemCount > 0 || poItemCount > 0 || receiptItemCount > 0 || requestCount > 0) {
+      throw new Error(
+        "Không thể xóa thiết bị vì đã phát sinh dữ liệu kho/chứng từ. Hãy dùng 'Ẩn thiết bị' thay vì xóa cứng."
+      );
+    }
+
+    const images = db.EquipmentImage
+      ? await db.EquipmentImage.findAll({ where: { equipmentId: eqId } })
+      : [];
+
+    await db.sequelize.transaction(async (t) => {
+      if (db.EquipmentImage) {
+        await db.EquipmentImage.destroy({ where: { equipmentId: eqId }, transaction: t });
+      }
+      await db.Equipment.destroy({ where: { id: eqId }, transaction: t });
+    });
+
+    for (const img of images) {
+      try {
+        if (img.publicId) await cloudinaryService.destroy(img.publicId, "image");
+      } catch (_) {}
+    }
+
+    return { message: `Đã xóa thiết bị "${equipment.name}"` };
   },
 
   // ================== SUPPLIER (C/R/U) ==================

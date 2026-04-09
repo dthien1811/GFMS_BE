@@ -3,8 +3,10 @@ import { Op, QueryTypes } from "sequelize";
 import procurementStockHelper from "../procurementStockHelper";
 import realtimeService from "../realtime.service";
 import payosService from "../payment/payos.service";
+import equipmentUnitEventUtils from "../../utils/equipmentUnitEvent";
 
 const { buildStockContext, computeFulfillmentPlan, validateRequestReason } = procurementStockHelper;
+const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
 const {
   Supplier,
@@ -786,7 +788,7 @@ const ownerPurchaseService = {
       ensure(pr && pr.gym?.ownerId === ownerUserId, "Purchase request not found or not authorized", 404);
       ensure(String(pr.status) === "shipping", "Yêu cầu chưa ở trạng thái đang giao", 400);
 
-      const existingSaleLog = await Inventory.findOne({
+      const saleLogs = await Inventory.findAll({
         where: {
           transactionType: "sale",
           transactionId: pr.id,
@@ -795,8 +797,15 @@ const ownerPurchaseService = {
         },
         transaction: t,
       });
-      if (!existingSaleLog) {
-        let remaining = Number(pr.quantity || 0);
+      const alreadySoldQty = (saleLogs || []).reduce(
+        (sum, row) => sum + Math.abs(Number(row.quantity || 0)),
+        0
+      );
+      const requestedQty = Number(pr.quantity || 0);
+      if (alreadySoldQty < requestedQty) {
+        // Backfill thiếu hụt: nếu trước đó có log sale nhưng chưa đủ quantity,
+        // vẫn phải tiếp tục trừ kho admin cho phần còn thiếu.
+        let remaining = requestedQty - alreadySoldQty;
         const adminStocks = await EquipmentStock.findAll({
           where: { equipmentId: pr.equipmentId },
           include: [
@@ -811,13 +820,32 @@ const ownerPurchaseService = {
           transaction: t,
           lock: t.LOCK.UPDATE,
         });
-        const stockGymIds = Array.from(new Set(adminStocks.map((s) => Number(s.gymId)).filter((id) => Number.isFinite(id) && id > 0)));
+        const centralGyms = await Gym.findAll({
+          where: { ownerId: null },
+          attributes: ["id"],
+          raw: true,
+          transaction: t,
+          lock: t.LOCK.SHARE,
+        });
+        const centralGymIdSet = new Set(
+          (centralGyms || []).map((g) => Number(g.id)).filter((id) => Number.isFinite(id) && id > 0)
+        );
+        const centralStocks = adminStocks.filter((s) => centralGymIdSet.has(Number(s.gymId)));
+        const nonOwnerStocks = adminStocks.filter((s) => Number(s.gymId) !== Number(pr.gymId));
+        const sourceStocks = centralStocks.length ? centralStocks : nonOwnerStocks;
+        if (!sourceStocks.length) {
+          throw { message: "Không tìm thấy kho nguồn để trừ bù khi xác nhận nhận hàng.", statusCode: 400 };
+        }
+
+        const stockGymIds = Array.from(
+          new Set(sourceStocks.map((s) => Number(s.gymId)).filter((id) => Number.isFinite(id) && id > 0))
+        );
         const validGyms = stockGymIds.length
           ? await Gym.findAll({ where: { id: { [Op.in]: stockGymIds } }, attributes: ["id"], transaction: t, lock: t.LOCK.SHARE })
           : [];
         const validGymIdSet = new Set(validGyms.map((g) => Number(g.id)));
         const fallbackLogGymId = validGymIdSet.has(Number(pr.gymId)) ? Number(pr.gymId) : Number(validGyms[0]?.id || 0);
-        for (const st of adminStocks) {
+        for (const st of sourceStocks) {
           if (remaining <= 0) break;
           const avail = Number(st.availableQuantity || 0);
           if (avail <= 0) continue;
@@ -869,16 +897,41 @@ const ownerPurchaseService = {
       ownerStock.availableQuantity = Number(ownerStock.availableQuantity || 0) + addQty;
       await ownerStock.save({ transaction: t });
 
-      const unitCount = await EquipmentUnit.count({ where: { equipmentId: pr.equipmentId }, transaction: t });
       const codePrefix = `EQ-${String(pr.equipmentId).padStart(4, "0")}`;
+      const now = Date.now();
+      const seed = Math.floor(Math.random() * 1000000);
       const units = Array.from({ length: addQty }).map((_, idx) => ({
         equipmentId: pr.equipmentId,
         gymId: pr.gymId,
-        assetCode: `${codePrefix}-${String(unitCount + idx + 1).padStart(6, "0")}`,
+        assetCode: `${codePrefix}-GYM-${pr.gymId}-${now}-${seed}-${idx + 1}`,
         status: "active",
         usageStatus: "in_stock",
       }));
-      if (units.length) await EquipmentUnit.bulkCreate(units, { transaction: t });
+      let createdUnits = [];
+      if (units.length) {
+        createdUnits = await EquipmentUnit.bulkCreate(units, { transaction: t });
+      }
+
+      if (createdUnits.length) {
+        await logEquipmentUnitEvents(
+          createdUnits.map((unit) => ({
+            equipmentUnitId: unit.id,
+            equipmentId: pr.equipmentId,
+            gymId: pr.gymId,
+            eventType: "created",
+            referenceType: "purchase_request",
+            referenceId: pr.id,
+            performedBy: ownerUserId || null,
+            notes: `Owner xác nhận nhận hàng qua yêu cầu ${pr.code}`,
+            metadata: {
+              purchaseRequestCode: pr.code,
+              source: "owner_confirm_receive_purchase_request",
+            },
+            eventAt: new Date(),
+          })),
+          { transaction: t }
+        );
+      }
 
       await Inventory.create(
         {

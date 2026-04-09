@@ -41,6 +41,7 @@ router.get("/equipments", adminInventoryController.getEquipments);
 router.post("/equipments", adminInventoryController.createEquipment);
 router.put("/equipments/:id", adminInventoryController.updateEquipment);
 router.patch("/equipments/:id/discontinue", adminInventoryController.discontinueEquipment);
+router.delete("/equipments/:id", adminInventoryController.deleteEquipment);
 
 // Images
 router.get("/equipments/:id/images", adminInventoryController.getEquipmentImages);
