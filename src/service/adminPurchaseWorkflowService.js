@@ -37,11 +37,12 @@ async function createEquipmentUnits({ gymId, equipmentId, quantity, notes }, tra
   if (!qty) return [];
 
   const now = Date.now();
+  const seed = Math.floor(Math.random() * 1000000);
   return EquipmentUnit.bulkCreate(
     Array.from({ length: qty }, (_, index) => ({
       gymId: Number(gymId),
       equipmentId: Number(equipmentId),
-      assetCode: `EQ-${equipmentId}-GYM-${gymId}-${now}-${index + 1}`,
+      assetCode: `EQ-${equipmentId}-GYM-${gymId}-${now}-${seed}-${index + 1}`,
       status: "active",
       usageStatus: "in_stock",
       notes: notes || null,
@@ -1538,14 +1539,42 @@ class AdminPurchaseWorkflowService {
         transaction: t,
         lock: t.LOCK.UPDATE,
       });
-      const stockGymIds = Array.from(new Set(stocks.map((s) => Number(s.gymId)).filter((id) => Number.isFinite(id) && id > 0)));
+      // Chỉ trừ kho trung tâm/admin (ownerId IS NULL). Nếu hệ thống chưa có kho trung tâm
+      // thì fallback trừ các kho còn lại để không chặn flow.
+      const centralGyms = await Gym.findAll({
+        where: { ownerId: null },
+        attributes: ["id"],
+        raw: true,
+        transaction: t,
+        lock: t.LOCK.SHARE,
+      });
+      const centralGymIdSet = new Set(
+        (centralGyms || []).map((g) => Number(g.id)).filter((id) => Number.isFinite(id) && id > 0)
+      );
+      const centralStocks = stocks.filter((s) => centralGymIdSet.has(Number(s.gymId)));
+      // Fallback without central gyms: never deduct from the same owner gym receiving goods.
+      const nonOwnerStocks = stocks.filter((s) => Number(s.gymId) !== Number(pr.gymId));
+      const sourceStocks = centralStocks.length ? centralStocks : nonOwnerStocks;
+
+      if (!sourceStocks.length) {
+        throw new Error("Không tìm thấy kho nguồn để xuất hàng (đã loại trừ kho owner nhận hàng).");
+      }
+
+      const stockGymIds = Array.from(
+        new Set(sourceStocks.map((s) => Number(s.gymId)).filter((id) => Number.isFinite(id) && id > 0))
+      );
       const validGyms = stockGymIds.length
-        ? await Gym.findAll({ where: { id: { [Op.in]: stockGymIds } }, attributes: ["id"], transaction: t, lock: t.LOCK.SHARE })
+        ? await Gym.findAll({
+            where: { id: { [Op.in]: stockGymIds } },
+            attributes: ["id"],
+            transaction: t,
+            lock: t.LOCK.SHARE,
+          })
         : [];
       const validGymIdSet = new Set(validGyms.map((g) => Number(g.id)));
-      const fallbackLogGymId = validGymIdSet.has(Number(pr.gymId)) ? Number(pr.gymId) : Number(validGyms[0]?.id || 0);
+      const fallbackLogGymId = Number(validGyms[0]?.id || 0);
       let remaining = neededQty;
-      for (const st of stocks) {
+      for (const st of sourceStocks) {
         if (remaining <= 0) break;
         const avail = Number(st.availableQuantity || 0);
         if (avail <= 0) continue;
@@ -1686,54 +1715,70 @@ class AdminPurchaseWorkflowService {
       const remainingAmount = payableAmount - depositAmount;
 
       if (issueQty > 0) {
-        let stock = await EquipmentStock.findOne({
-          where: { gymId: pr.gymId, equipmentId: pr.equipmentId },
+        // IMPORTANT: "Cấp từ kho" phải trừ từ kho trung tâm/admin, không trừ kho của owner gym.
+        const adminStocks = await EquipmentStock.findAll({
+          where: { equipmentId: pr.equipmentId },
+          include: [
+            {
+              model: Gym,
+              as: "gym",
+              attributes: ["id", "ownerId"],
+              required: false,
+            },
+          ],
+          order: [["availableQuantity", "DESC"], ["id", "ASC"]],
           transaction: t,
           lock: t.LOCK.UPDATE,
         });
-        const beforeQty = Number(stock?.quantity || 0);
-        const beforeAvail = Number(stock?.availableQuantity ?? stock?.quantity ?? 0);
-        if (beforeAvail < issueQty) {
-          throw new Error(
-            `Current available stock is ${beforeAvail}, cannot issue ${issueQty}. Please refresh and submit again.`
-          );
-        }
-        const afterQty = Math.max(0, beforeQty - issueQty);
-        const afterAvail = Math.max(0, beforeAvail - issueQty);
-        if (!stock) {
-          stock = await EquipmentStock.create(
+
+        // Ưu tiên kho trung tâm (ownerId IS NULL). Nếu hệ thống không có kho trung tâm
+        // thì fallback dùng tất cả kho hiện có để không chặn nghiệp vụ.
+        const centralStocks = adminStocks.filter((s) => s.gym && s.gym.ownerId == null);
+        const sourceStocks = centralStocks.length ? centralStocks : adminStocks;
+
+        let remainingIssue = issueQty;
+        for (const st of sourceStocks) {
+          if (remainingIssue <= 0) break;
+          const avail = Number(st.availableQuantity || 0);
+          if (avail <= 0) continue;
+
+          const take = Math.min(avail, remainingIssue);
+          const beforeQty = Number(st.quantity || 0);
+          const beforeAvail = Number(st.availableQuantity || 0);
+          const afterQty = Math.max(0, beforeQty - take);
+          const afterAvail = Math.max(0, beforeAvail - take);
+
+          st.quantity = afterQty;
+          st.availableQuantity = afterAvail;
+          await st.save({ transaction: t });
+
+          await Inventory.create(
             {
-              gymId: pr.gymId,
+              gymId: st.gymId,
               equipmentId: pr.equipmentId,
-              quantity: 0,
-              availableQuantity: 0,
-              reservedQuantity: 0,
+              transactionType: "sale",
+              transactionId: pr.id,
+              transactionCode: pr.code,
+              quantity: -take,
+              unitPrice: null,
+              totalValue: null,
+              stockBefore: beforeAvail,
+              stockAfter: afterAvail,
+              notes: `Issued from admin stock for purchase request ${pr.code}`,
+              recordedBy: adminId || null,
+              recordedAt: new Date(),
             },
             { transaction: t }
           );
-        }
-        stock.quantity = afterQty;
-        stock.availableQuantity = afterAvail;
-        await stock.save({ transaction: t });
 
-        await Inventory.create(
-          {
-            gymId: pr.gymId,
-            equipmentId: pr.equipmentId,
-            transactionType: "adjustment",
-            transactionId: pr.id,
-            transactionCode: pr.code,
-            quantity: -issueQty,
-            unitPrice: null,
-            totalValue: null,
-            stockBefore: beforeAvail,
-            stockAfter: afterAvail,
-            notes: `Issued from stock for purchase request ${pr.code}`,
-            recordedBy: adminId || null,
-            recordedAt: new Date(),
-          },
-          { transaction: t }
-        );
+          remainingIssue -= take;
+        }
+
+        if (remainingIssue > 0) {
+          throw new Error(
+            `Admin stock is not enough to issue ${issueQty}. Missing ${remainingIssue}. Please refresh and try again.`
+          );
+        }
       }
 
       pr.availableQty = availableQty;
