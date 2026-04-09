@@ -2,7 +2,8 @@ const procurementStockHelper = require("./procurementStockHelper");
 const { computeFulfillmentPlan } = procurementStockHelper;
 // src/service/adminPurchaseWorkflowService.js
 const { Op } = require("sequelize");
-const realtimeService = require("./realtime.service").default;
+const realtimeServiceModule = require("./realtime.service");
+const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
 const {
   sequelize,
   Quotation,
@@ -24,8 +25,6 @@ const {
   PurchaseRequest,
   EquipmentUnit,
 } = require("../models");
-const realtimeServiceModule = require("./realtime.service");
-const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
 const notificationGymService = require("./notification-gym.service");
 const { attachGymIdsToNotifications } = notificationGymService;
 const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
