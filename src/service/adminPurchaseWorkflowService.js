@@ -1524,16 +1524,26 @@ class AdminPurchaseWorkflowService {
       const neededQty = Number(pr.quantity || 0);
       if (neededQty <= 0) throw new Error("Invalid request quantity");
 
-      const centralGymCount = await Gym.count({ where: { ownerId: null }, transaction: t });
       const stocks = await EquipmentStock.findAll({
         where: { equipmentId: pr.equipmentId },
-        include: centralGymCount
-          ? [{ model: Gym, as: "gym", attributes: ["id", "ownerId"], required: true, where: { ownerId: null } }]
-          : [],
+        include: [
+          {
+            model: Gym,
+            as: "gym",
+            attributes: ["id", "ownerId"],
+            required: false,
+          },
+        ],
         order: [["availableQuantity", "DESC"], ["id", "ASC"]],
         transaction: t,
         lock: t.LOCK.UPDATE,
       });
+      const stockGymIds = Array.from(new Set(stocks.map((s) => Number(s.gymId)).filter((id) => Number.isFinite(id) && id > 0)));
+      const validGyms = stockGymIds.length
+        ? await Gym.findAll({ where: { id: { [Op.in]: stockGymIds } }, attributes: ["id"], transaction: t, lock: t.LOCK.SHARE })
+        : [];
+      const validGymIdSet = new Set(validGyms.map((g) => Number(g.id)));
+      const fallbackLogGymId = validGymIdSet.has(Number(pr.gymId)) ? Number(pr.gymId) : Number(validGyms[0]?.id || 0);
       let remaining = neededQty;
       for (const st of stocks) {
         if (remaining <= 0) break;
@@ -1544,10 +1554,13 @@ class AdminPurchaseWorkflowService {
         st.quantity = Math.max(0, before - take);
         st.availableQuantity = Math.max(0, Number(st.availableQuantity || 0) - take);
         await st.save({ transaction: t });
+        remaining -= take;
 
+        const stockGymId = validGymIdSet.has(Number(st.gymId)) ? Number(st.gymId) : fallbackLogGymId;
+        if (!stockGymId) continue;
         await Inventory.create(
           {
-            gymId: st.gymId,
+            gymId: stockGymId,
             equipmentId: pr.equipmentId,
             transactionType: "sale",
             transactionId: pr.id,
@@ -1563,7 +1576,6 @@ class AdminPurchaseWorkflowService {
           },
           { transaction: t }
         );
-        remaining -= take;
       }
       if (remaining > 0) throw new Error("Admin stock is not enough to ship this request");
 
