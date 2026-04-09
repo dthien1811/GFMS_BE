@@ -826,10 +826,11 @@ async getTechnicians(req) {
 
   async getFranchiseRequests(req) {
   const { page, limit, offset } = parsePaging(req.query);
-  const { status, q } = req.query;
+  const { status, q, contractStatus } = req.query;
 
   const where = {};
   if (status) where.status = status;
+  if (contractStatus) where.contractStatus = contractStatus;
 
   if (q) {
     where[Op.or] = [
@@ -838,6 +839,7 @@ async getTechnicians(req) {
       { contactPerson: { [Op.like]: `%${q}%` } },
       { contactPhone: { [Op.like]: `%${q}%` } },
       { contactEmail: { [Op.like]: `%${q}%` } },
+      { contractUrl: { [Op.like]: `%${q}%` } },
     ];
   }
 

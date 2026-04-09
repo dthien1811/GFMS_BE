@@ -16,22 +16,7 @@ const adminTrainerShareOverrideController = require("../controllers/adminTrainer
 const jwtAction = require("../middleware/JWTAction");
 const { checkUserPermission } = require("../middleware/permission");
 
-// ===== FIX UPLOAD MIDDLEWARE: normalize export =====
-const uploadModule = require("../middleware/uploadEquipmentImages");
-
-function resolveUploadMiddleware(mod) {
-  if (typeof mod === "function") return mod;
-  if (mod && typeof mod.uploadEquipmentImages === "function") return mod.uploadEquipmentImages;
-  if (mod && typeof mod.default === "function") return mod.default;
-
-  if (mod && typeof mod.array === "function") return mod.array("images", 10);
-  if (mod && typeof mod.single === "function") return mod.single("image");
-
-  console.warn("[WARN] uploadEquipmentImages is not a middleware function. Got:", typeof mod, mod && Object.keys(mod));
-  return (req, res, next) => next();
-}
-
-const uploadEquipmentImages = resolveUploadMiddleware(uploadModule);
+const { uploadEquipmentImages } = require("../middleware/uploadEquipmentImages");
 
 // ========================
 // PROTECT ALL ROUTES
@@ -53,8 +38,8 @@ router.get("/gyms", adminInventoryController.getGyms);
 router.get("/equipment-categories", adminInventoryController.getEquipmentCategories);
 router.get("/equipments", adminInventoryController.getEquipments);
 
-router.post("/equipments", uploadEquipmentImages, adminInventoryController.createEquipment);
-router.put("/equipments/:id", uploadEquipmentImages, adminInventoryController.updateEquipment);
+router.post("/equipments", adminInventoryController.createEquipment);
+router.put("/equipments/:id", adminInventoryController.updateEquipment);
 router.patch("/equipments/:id/discontinue", adminInventoryController.discontinueEquipment);
 
 // Images

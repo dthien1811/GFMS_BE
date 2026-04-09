@@ -6,6 +6,7 @@ const cloudinary = require("../config/cloudinary");
 
 const svc = require("../service/adminFranchiseContractService");
 const docSvc = require("../service/franchiseContractDocumentService");
+const { FranchiseRequest } = require("../models");
 const { safeSend } = require("../utils/mailer");
 
 function pickEmail(fr) {
@@ -267,8 +268,32 @@ async function downloadDocument(req, res) {
   try {
     const id = Number(req.params.id);
     const type = String(req.query.type || "final");
+    const key = type.toLowerCase();
 
-    const resolved = await docSvc.resolveDocumentPathByType(id, type);
+    const fr = await FranchiseRequest.findByPk(id);
+    if (!fr) return res.status(404).json({ ok: false, message: "FranchiseRequest not found" });
+
+    let resolved = await docSvc.resolveDocumentPathByType(id, type);
+    if (!resolved && key === "final") {
+      resolved = await docSvc.resolveDocumentPathByType(id, "owner_signed");
+    }
+    if (!resolved && key === "final") {
+      resolved = await docSvc.resolveDocumentPathByType(id, "original");
+    }
+    if (!resolved && ["sent", "viewed", "signed", "completed"].includes(fr.contractStatus)) {
+      try {
+        await docSvc.ensureFranchiseContractHasPdf(fr);
+      } catch (e) {
+        console.error("[adminFranchiseContractController] ensureFranchiseContractHasPdf", e?.message || e);
+      }
+      resolved = await docSvc.resolveDocumentPathByType(id, type);
+      if (!resolved && key === "final") {
+        resolved = await docSvc.resolveDocumentPathByType(id, "owner_signed");
+      }
+      if (!resolved && key === "final") {
+        resolved = await docSvc.resolveDocumentPathByType(id, "original");
+      }
+    }
     if (!resolved) return res.status(404).json({ ok: false, message: "Document not found" });
 
     const filenameMap = {
@@ -277,7 +302,6 @@ async function downloadDocument(req, res) {
       final: `FranchiseContract_${id}_final.pdf`,
       certificate: `FranchiseContract_${id}_certificate.pdf`,
     };
-    const key = type.toLowerCase();
     const filename = filenameMap[key] || `FranchiseContract_${id}.pdf`;
 
     res.setHeader("Content-Type", "application/pdf");
@@ -302,7 +326,8 @@ async function downloadDocument(req, res) {
       final: assets.finalPublicId,
       certificate: assets.certificatePublicId,
     };
-    const publicId = publicIdMap[key] || null;
+    const servedKey = String(resolved.servedType || key).toLowerCase();
+    const publicId = publicIdMap[servedKey] || publicIdMap[key] || null;
 
     const headers = authHeadersFromReq(req);
 
@@ -312,7 +337,7 @@ async function downloadDocument(req, res) {
       return;
     } catch (e) {
       const status = e?.response?.status;
-      if ((status === 401 || status === 403) && publicId) {
+      if ((status === 401 || status === 403 || status === 404) && publicId) {
         // Try signed authenticated
         const signedAuth = signedCloudinaryUrl(publicId, { type: "authenticated" });
         if (signedAuth) {

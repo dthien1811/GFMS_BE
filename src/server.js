@@ -76,9 +76,11 @@ const corsOptions = {
     const o = String(origin);
     if (o === FRONTEND_URL) return cb(null, true);
 
-    // allow localhost variants in dev
-    if (FRONTEND_URL.includes("localhost") && /^https?:\/\/localhost:\\d+$/i.test(o)) return cb(null, true);
-    if (FRONTEND_URL.includes("127.0.0.1") && /^https?:\/\/127\\.0\\.0\\.1:\\d+$/i.test(o)) return cb(null, true);
+    // Dev: FRONTEND_URL và origin đều là localhost hoặc 127.0.0.1 (có thể khác host hoặc cổng).
+    // Trước đây regex dùng "\\d+" nên không khớp :3000; owner mở 127.0.0.1 + admin dùng localhost → CORS chặn /sign-contract.
+    const localOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o);
+    const feLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(String(FRONTEND_URL));
+    if (feLocal && localOrigin) return cb(null, true);
 
     // ✅ allow Chrome PDF Viewer
     if (o.startsWith("chrome-extension://")) return cb(null, true);

@@ -1,6 +1,7 @@
 const { QueryTypes } = require("sequelize");
 const dbImport = require("../models");
 const db = dbImport?.default || dbImport;
+const fs = require("fs");
 const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
 const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
@@ -32,6 +33,12 @@ const qLike = (s) => `%${String(s || "").trim()}%`;
 const normalizeList = (rows, totalItems, page, limit) => {
   const totalPages = Math.max(1, Math.ceil(Number(totalItems || 0) / limit));
   return { data: rows, meta: { page, limit, totalItems: Number(totalItems || 0), totalPages } };
+};
+
+const normalizeUploadBuffer = (file) => {
+  if (file?.buffer) return file.buffer;
+  if (file?.path && fs.existsSync(file.path)) return fs.readFileSync(file.path);
+  return null;
 };
 
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -437,36 +444,43 @@ async getEquipments(query = {}) {
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
     const joinEq = eqTable ? `LEFT JOIN \`${eqTable}\` e ON e.id = s.equipmentId` : "";
     const joinGym = gymTable ? `LEFT JOIN \`${gymTable}\` g ON g.id = s.gymId` : "";
+    const baseFromSql = `FROM \`${stTable}\` s ${joinEq} ${joinGym} ${whereSql}`;
 
     const [rows, countRows] = await Promise.all([
       db.sequelize.query(
         `
         SELECT 
           s.*,
-          ${eqTable ? "e.name AS equipmentName, e.code AS equipmentCode" : "NULL AS equipmentName, NULL AS equipmentCode"},
+          ${eqTable ? "e.name AS equipmentName, e.code AS equipmentCode, e.minStockLevel AS equipmentMinStockLevel" : "NULL AS equipmentName, NULL AS equipmentCode, 0 AS equipmentMinStockLevel"},
           ${gymTable ? "g.name AS gymName" : "NULL AS gymName"}
-        FROM \`${stTable}\` s
-        ${joinEq}
-        ${joinGym}
-        ${whereSql}
-        ORDER BY s.id DESC
+        ${baseFromSql}
+        ORDER BY g.name ASC, e.name ASC, s.id DESC
         LIMIT :limit OFFSET :offset
         `,
         { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
       ),
       db.sequelize.query(
-        `
-        SELECT COUNT(*) AS total
-        FROM \`${stTable}\` s
-        ${joinGym}
-        ${whereSql}
-        `,
+        `SELECT COUNT(*) AS total ${baseFromSql}`,
         { type: QueryTypes.SELECT, replacements: params }
       ),
     ]);
 
+    const normalizedRows = (rows || []).map((row) => {
+      const currentQuantity = Number(row.availableQuantity ?? row.quantity ?? 0);
+      const minStockLevel = Number(row.equipmentMinStockLevel ?? row.minStockLevel ?? row.reorderPoint ?? 0);
+      const shortageQuantity = Math.max(minStockLevel - currentQuantity, 0);
+      const stockStatus = currentQuantity <= 0 ? "Hết hàng" : currentQuantity <= minStockLevel ? "Sắp thiếu" : "Đủ hàng";
+      return {
+        ...row,
+        currentQuantity,
+        minStockLevel,
+        shortageQuantity,
+        stockStatus,
+      };
+    });
+
     const totalItems = Number(countRows?.[0]?.total || 0);
-    return normalizeList(rows, totalItems, page, limit);
+    return normalizeList(normalizedRows, totalItems, page, limit);
   },
 
   // ================== EQUIPMENT (C/R/D) ==================
@@ -1011,8 +1025,9 @@ async getEquipmentImages(equipmentId) {
     // ✅ Upload to Cloudinary (do NOT store on local disk)
     const uploaded = [];
     for (const f of files) {
-      if (!f?.buffer) throw new Error("Invalid uploaded file (missing buffer)");
-      const r = await cloudinaryService.uploadImageBuffer(f.buffer, {
+      const buffer = normalizeUploadBuffer(f);
+      if (!buffer) throw new Error("Invalid uploaded file");
+      const r = await cloudinaryService.uploadImageBuffer(buffer, {
         folder: "gfms/equipments",
         filename: f.originalname,
       });
