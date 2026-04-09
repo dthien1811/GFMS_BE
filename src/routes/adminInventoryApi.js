@@ -64,8 +64,11 @@ router.get("/inventory-logs", adminInventoryController.getInventoryLogs);
 // MODULE 2: PURCHASE WORKFLOW
 // ========================
 router.get("/purchase-requests", adminPurchaseWorkflowController.getPurchaseRequests);
+router.get("/purchase-transactions", adminPurchaseWorkflowController.getEquipmentSalesTransactions);
 router.get("/purchase-requests/:id", adminPurchaseWorkflowController.getPurchaseRequestDetail);
 router.patch("/purchase-requests/:id/reject", adminPurchaseWorkflowController.rejectPurchaseRequest);
+router.patch("/purchase-requests/:id/approve", adminPurchaseWorkflowController.approvePurchaseRequest);
+router.patch("/purchase-requests/:id/confirm-payment-and-ship", adminPurchaseWorkflowController.confirmPurchaseRequestPaymentAndShip);
 router.post("/purchase-requests/:id/convert-to-quotation", adminPurchaseWorkflowController.convertPurchaseRequestToQuotation);
 
 router.get("/quotations", adminPurchaseWorkflowController.getQuotations);

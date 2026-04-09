@@ -2,6 +2,8 @@ const { QueryTypes } = require("sequelize");
 const dbImport = require("../models");
 const db = dbImport?.default || dbImport;
 const fs = require("fs");
+const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
+const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
 // ✅ Cloudinary storage (enterprise)
 const cloudinaryService = require("./cloudinaryService");
@@ -109,6 +111,7 @@ const pickEquipmentPayload = (payload = {}) => {
     "code",
     "description",
     "categoryId",
+    "preferredSupplierId",
     "brand",
     "model",
     "specifications",
@@ -213,6 +216,24 @@ const getOrCreateStockRaw = async ({ gymId, equipmentId }, t) => {
   return again?.[0] || null;
 };
 
+const createEquipmentUnitsRaw = async ({ gymId, equipmentId, quantity, notes }, transaction) => {
+  const qty = Math.max(0, Number(quantity || 0));
+  if (!qty) return [];
+
+  const now = Date.now();
+  return db.EquipmentUnit.bulkCreate(
+    Array.from({ length: qty }, (_, index) => ({
+      gymId: Number(gymId),
+      equipmentId: Number(equipmentId),
+      assetCode: `EQ-${equipmentId}-GYM-${gymId}-${now}-${index + 1}`,
+      status: "active",
+      usageStatus: "in_stock",
+      notes: notes || null,
+    })),
+    { transaction }
+  );
+};
+
 // ================= service =================
 const adminInventoryService = {
   // ✅ GYMS (dropdown)
@@ -245,6 +266,7 @@ async getEquipments(query = {}) {
   const eqTable = "equipment";
   const catTable = "equipmentcategory";
   const imgTable = "equipmentimage";
+  const supTable = "supplier";
 
   const where = [];
   const params = {};
@@ -265,6 +287,7 @@ async getEquipments(query = {}) {
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const joinCatSql = `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId`;
+  const joinSupSql = `LEFT JOIN \`${supTable}\` s ON s.id = e.preferredSupplierId`;
 
   // ✅ lấy ảnh đại diện: ưu tiên isPrimary=1, nếu không có thì lấy ảnh đầu tiên theo sortOrder/id
   // -> tuyệt đối KHÔNG dính gymId
@@ -285,19 +308,23 @@ async getEquipments(query = {}) {
       e.code,
       e.description,
       e.categoryId,
+      e.preferredSupplierId,
       e.brand,
       e.model,
       e.specifications,
       e.unit,
+      e.price,
       e.minStockLevel,
       e.maxStockLevel,
       e.status,
       e.createdAt,
       e.updatedAt,
       c.name AS categoryName,
+      s.name AS preferredSupplierName,
       ${primaryImageSubQuery} AS primaryImageUrl
     FROM \`${eqTable}\` e
     ${joinCatSql}
+    ${joinSupSql}
     ${whereSql}
     ORDER BY e.id DESC
     LIMIT :limit OFFSET :offset
@@ -390,6 +417,19 @@ async getEquipments(query = {}) {
 
     const where = [];
     const params = {};
+    const includeOwnerGyms = query.includeOwnerGyms === true || String(query.includeOwnerGyms || "") === "true";
+    if (!includeOwnerGyms && gymTable) {
+      // Only apply admin-only filter when central gyms actually exist.
+      // Some datasets have no ownerId=NULL gym; forcing this filter would return empty list.
+      const centralCountRows = await db.sequelize.query(
+        `SELECT COUNT(*) AS total FROM \`${gymTable}\` WHERE ownerId IS NULL`,
+        { type: QueryTypes.SELECT }
+      );
+      const centralCount = Number(centralCountRows?.[0]?.total || 0);
+      if (centralCount > 0) {
+        where.push(`g.ownerId IS NULL`);
+      }
+    }
 
     if (gymId) {
       where.push(`s.gymId = :gymId`);
@@ -448,6 +488,28 @@ async getEquipments(query = {}) {
     const clean = pickEquipmentPayload(payload);
     if (!String(clean.name || "").trim()) throw new Error("name is required");
     const created = await db.Equipment.create(clean, { fields: Object.keys(clean) });
+
+    const initialQty = Math.max(0, Number(payload?.quantity || 0));
+    if (initialQty > 0) {
+      const defaultGym = await db.Gym.findOne({
+        attributes: ["id"],
+        order: [["id", "ASC"]],
+      });
+
+      if (defaultGym?.id) {
+        await db.EquipmentStock.create({
+          equipmentId: created.id,
+          gymId: Number(defaultGym.id),
+          quantity: initialQty,
+          reservedQuantity: 0,
+          availableQuantity: initialQty,
+          location: null,
+          reorderPoint: null,
+          lastRestocked: new Date(),
+        });
+      }
+    }
+
     return created;
   },
 
@@ -682,6 +744,35 @@ async getEquipments(query = {}) {
             },
           }
         );
+
+        const createdUnits = await createEquipmentUnitsRaw(
+          {
+            gymId,
+            equipmentId,
+            quantity,
+            notes: `Inbound receipt ${code}`,
+          },
+          t
+        );
+
+        await logEquipmentUnitEvents(
+          createdUnits.map((unit) => ({
+            equipmentUnitId: unit.id,
+            equipmentId,
+            gymId,
+            eventType: "created",
+            referenceType: "receipt",
+            referenceId: Number(receipt.id),
+            performedBy: processedBy,
+            notes: `Nhập kho qua phiếu ${code}`,
+            metadata: {
+              receiptCode: code,
+              source: "admin_inventory_receipt",
+            },
+            eventAt: receiptDateObj,
+          })),
+          { transaction: t }
+        );
       }
 
       await db.sequelize.query(
@@ -729,6 +820,23 @@ async getEquipments(query = {}) {
 
       if (beforeAvail < qty) throw new Error("Not enough availableQuantity");
 
+      const units = await db.EquipmentUnit.findAll({
+        where: {
+          gymId,
+          equipmentId,
+          status: "active",
+          transferId: null,
+        },
+        order: [["id", "ASC"]],
+        limit: qty,
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+
+      if (units.length < qty) {
+        throw new Error("Not enough active equipment units");
+      }
+
       const afterAvail = beforeAvail - qty;
       const afterQty = Math.max(0, beforeQty - qty);
 
@@ -744,6 +852,38 @@ async getEquipments(query = {}) {
           transaction: t,
           replacements: { id: Number(stock.id), afterAvail, afterQty },
         }
+      );
+
+      await db.EquipmentUnit.update(
+        {
+          status: "disposed",
+          transferId: null,
+          notes: payload.notes ?? reason ?? null,
+        },
+        {
+          where: { id: { [db.Sequelize.Op.in]: units.map((unit) => unit.id) } },
+          transaction: t,
+        }
+      );
+
+      await logEquipmentUnitEvents(
+        units.map((unit) => ({
+          equipmentUnitId: unit.id,
+          equipmentId,
+          gymId,
+          eventType: "disposed",
+          referenceType: "inventory_export",
+          referenceId: null,
+          performedBy: recordedBy,
+          notes: payload.notes ?? reason ?? null,
+          metadata: {
+            transactionCode,
+            reason,
+            source: "admin_inventory_export",
+          },
+          eventAt: recordedAt,
+        })),
+        { transaction: t }
       );
 
       await db.sequelize.query(

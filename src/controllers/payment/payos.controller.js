@@ -1,9 +1,11 @@
 import db from "../../models";
 import payosService from "../../service/payment/payos.service";
 import realtimeService from "../../service/realtime.service";
+import { Op } from "sequelize";
 
 const PAID_STATUSES = new Set(["PAID", "SUCCESS", "SUCCEEDED"]);
 const ALLOWED_STATUSES = new Set(["pending", "completed", "failed", "refunded", "cancelled"]);
+const EPS = 0.01;
 
 const toAllowedStatus = (raw) => {
   const v = String(raw || "").toLowerCase();
@@ -72,6 +74,64 @@ async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
   return activation;
 }
 
+const parseMeta = (value) => {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+};
+
+async function syncPurchaseOrderAfterPayment(poId) {
+  const po = await db.PurchaseOrder.findByPk(poId, {
+    include: [{ model: db.PurchaseOrderItem, as: "items" }],
+  });
+  if (!po) return null;
+
+  const txs = await db.Transaction.findAll({
+    where: {
+      transactionType: "equipment_purchase",
+      paymentStatus: "completed",
+      metadata: { [Op.like]: `%\"purchaseOrderId\":${poId}%` },
+    },
+  });
+
+  const total = Number(po.totalAmount || 0);
+  const paid = txs.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const allReceived = (po.items || []).every(
+    (x) => Number(x.receivedQuantity || 0) >= Number(x.quantity || 0)
+  );
+
+  let nextStatus = po.status;
+  if (po.status === "deposit_pending" && paid > EPS) {
+    nextStatus = "deposit_paid";
+  }
+  if (allReceived && paid >= total - EPS) {
+    nextStatus = "completed";
+  } else if (allReceived && nextStatus === "deposit_paid") {
+    nextStatus = "received";
+  }
+
+  if (nextStatus !== po.status) {
+    po.status = nextStatus;
+    await po.save();
+  }
+
+  return { po, paid, remaining: Math.max(0, total - paid) };
+}
+
+async function syncPurchaseRequestAfterPayment(requestId) {
+  const pr = await db.PurchaseRequest.findByPk(requestId);
+  if (!pr) return null;
+  if (String(pr.status) === "approved_waiting_payment") {
+    pr.status = "paid_waiting_admin_confirm";
+    await pr.save();
+  }
+  return pr;
+}
+
 const payosController = {
   // Webhook payOS gọi về khi thanh toán thay đổi trạng thái
   async webhook(req, res) {
@@ -131,9 +191,49 @@ const payosController = {
         return res.status(200).json({ message: "Trạng thái không phải PAID – đã lưu log." });
       }
 
+      if (tx.transactionType === "equipment_purchase") {
+        const meta = parseMeta(tx.metadata);
+        const poId = Number(meta.purchaseOrderId || 0);
+        const requestId = Number(meta.purchaseRequestId || 0);
+        await tx.update(
+          {
+            paymentStatus: "completed",
+            transactionDate: new Date(),
+            amount: amount || tx.amount,
+            metadata: {
+              ...(tx.metadata || {}),
+              payosWebhook: data,
+            },
+          },
+          { silent: false }
+        );
+        const sync = poId ? await syncPurchaseOrderAfterPayment(poId) : null;
+        const syncedRequest = requestId ? await syncPurchaseRequestAfterPayment(requestId) : null;
+        if (sync?.po?.requestedBy) {
+          await realtimeService.notifyUser(sync.po.requestedBy, {
+            title: "Thanh toán PO thành công",
+            message: `PO ${sync.po.code} đã ghi nhận thanh toán ${Number(tx.amount || 0).toLocaleString("vi-VN")}đ.`,
+            notificationType: "payment",
+            relatedType: "purchaseorder",
+            relatedId: sync.po.id,
+          });
+        }
+        if (syncedRequest?.requestedBy) {
+          await realtimeService.notifyUser(syncedRequest.requestedBy, {
+            title: "Thanh toán yêu cầu mua thành công",
+            message: `${syncedRequest.code} đã được ghi nhận thanh toán, chờ admin xác nhận và chuyển hàng.`,
+            notificationType: "payment",
+            relatedType: "purchaserequest",
+            relatedId: syncedRequest.id,
+          });
+        }
+        return res.status(200).json({ message: "OK", purchaseOrderId: poId || null, purchaseRequestId: requestId || null });
+      }
+
       const activation = await activatePackageFromTransaction(tx, amount, "payosWebhook", data);
       const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
-      await realtimeService.notifyUser(tx.processedBy || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId, {
+      const memberUserId = tx.processedBy || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId;
+      await realtimeService.notifyUser(memberUserId, {
         title: "Thanh toán gói thành công",
         message: `Gói ${pkg?.name || "tập"} đã được kích hoạt cho tài khoản của bạn.`,
         notificationType: "package_purchase",
@@ -185,9 +285,9 @@ const payosController = {
       }
 
       const userId = req.user?.id;
-      if (userId) {
-        const member = await db.Member.findOne({ where: { userId } });
-        if (!member || member.id !== tx.memberId) {
+      if (userId && tx.transactionType !== "equipment_purchase") {
+        const member = await db.Member.findByPk(tx.memberId, { attributes: ["id", "userId"] });
+        if (!member || Number(member.userId) !== Number(userId)) {
           return res.status(403).json({ message: "Không có quyền xác nhận giao dịch này" });
         }
       }
@@ -231,14 +331,49 @@ const payosController = {
         return res.status(200).json({ message: "Chưa thanh toán", status: normalized || "PENDING" });
       }
 
-      const activation = await activatePackageFromTransaction(
-        tx,
-        amountPaid || amountTotal,
-        "payosConfirm",
-        info
-      );
+      if (tx.transactionType === "equipment_purchase") {
+        const meta = parseMeta(tx.metadata);
+        const poId = Number(meta.purchaseOrderId || 0);
+        const requestId = Number(meta.purchaseRequestId || 0);
+        await tx.update(
+          {
+            paymentStatus: "completed",
+            transactionDate: new Date(),
+            amount: amountPaid || amountTotal || tx.amount,
+            metadata: {
+              ...(tx.metadata || {}),
+              payosConfirm: info,
+            },
+          },
+          { silent: false }
+        );
+        const sync = poId ? await syncPurchaseOrderAfterPayment(poId) : null;
+        const syncedRequest = requestId ? await syncPurchaseRequestAfterPayment(requestId) : null;
+        if (sync?.po?.requestedBy) {
+          await realtimeService.notifyUser(sync.po.requestedBy, {
+            title: "Thanh toán PO thành công",
+            message: `PO ${sync.po.code} đã ghi nhận thanh toán ${Number(tx.amount || 0).toLocaleString("vi-VN")}đ.`,
+            notificationType: "payment",
+            relatedType: "purchaseorder",
+            relatedId: sync.po.id,
+          });
+        }
+        if (syncedRequest?.requestedBy) {
+          await realtimeService.notifyUser(syncedRequest.requestedBy, {
+            title: "Thanh toán yêu cầu mua thành công",
+            message: `${syncedRequest.code} đã được ghi nhận thanh toán, chờ admin xác nhận và chuyển hàng.`,
+            notificationType: "payment",
+            relatedType: "purchaserequest",
+            relatedId: syncedRequest.id,
+          });
+        }
+        return res.status(200).json({ message: "OK", purchaseOrderId: poId || null, purchaseRequestId: requestId || null });
+      }
+
+      const activation = await activatePackageFromTransaction(tx, amountPaid || amountTotal, "payosConfirm", info);
       const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
-      await realtimeService.notifyUser(userId, {
+      const memberUserId = userId || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId;
+      await realtimeService.notifyUser(memberUserId, {
         title: "Thanh toán gói thành công",
         message: `Gói ${pkg?.name || "tập"} đã được kích hoạt cho tài khoản của bạn.`,
         notificationType: "package_purchase",

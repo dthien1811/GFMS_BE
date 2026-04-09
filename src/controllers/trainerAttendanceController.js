@@ -113,4 +113,26 @@ module.exports = {
       });
     }
   },
+
+  async requestBusySlot(req, res, next) {
+    try {
+      const userId = getUserId(req);
+      const { bookingId, reason } = req.body || {};
+      if (!bookingId) return res.status(400).json({ EM: "bookingId is required" });
+
+      const result = await attendanceService.requestBusySlot({
+        userId,
+        bookingId,
+        reason,
+      });
+
+      res.status(200).json(result);
+    } catch (e) {
+      res.status(e.statusCode || 500).json({
+        EM: "Error sending busy slot request",
+        DT: e.message,
+        message: e.message,
+      });
+    }
+  },
 };

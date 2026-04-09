@@ -1,4 +1,11 @@
 import db from "../../models";
+import realtimeService from "../realtime.service";
+
+const emitGymChanged = (userIds = [], payload = {}) => {
+  [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
+    realtimeService.emitUser(userId, "gym:changed", payload);
+  });
+};
 
 const ownerGymService = {
   async getMyGyms(ownerUserId) {
@@ -139,6 +146,11 @@ const ownerGymService = {
     } else if (!Array.isArray(gymData.images)) {
       gymData.images = [];
     }
+
+    emitGymChanged([ownerUserId], {
+      gymId: Number(gym.id),
+      action: "updated",
+    });
 
     return gymData;
   },

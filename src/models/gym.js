@@ -62,6 +62,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: true,
       },
+
+      operatingHours: {
+        type: DataTypes.TEXT,
+        allowNull: true,
+      },
     },
     {
       tableName: 'gym',
@@ -120,11 +125,9 @@ module.exports = (sequelize, DataTypes) => {
     /**
      * ===== INVENTORY / MAINTENANCE (nếu có) =====
      */
-    if (models.Equipment) {
-      Gym.hasMany(models.Equipment, {
-        foreignKey: 'gymId',
-      });
-    }
+    // NOTE:
+    // Equipment is a global catalog entity and does not have gymId column.
+    // Stock per gym is tracked via EquipmentStock (gymId, equipmentId).
 
     if (models.MaintenanceRequest) {
       Gym.hasMany(models.MaintenanceRequest, {

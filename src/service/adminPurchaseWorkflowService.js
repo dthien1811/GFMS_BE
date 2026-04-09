@@ -22,9 +22,34 @@ const {
   Notification,
   Message,
   PurchaseRequest,
+  EquipmentUnit,
 } = require("../models");
+const realtimeServiceModule = require("./realtime.service");
+const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
+const notificationGymService = require("./notification-gym.service");
+const { attachGymIdsToNotifications } = notificationGymService;
+const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
+const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
 const EPS = 0.01;
+
+async function createEquipmentUnits({ gymId, equipmentId, quantity, notes }, transaction) {
+  const qty = Math.max(0, Number(quantity || 0));
+  if (!qty) return [];
+
+  const now = Date.now();
+  return EquipmentUnit.bulkCreate(
+    Array.from({ length: qty }, (_, index) => ({
+      gymId: Number(gymId),
+      equipmentId: Number(equipmentId),
+      assetCode: `EQ-${equipmentId}-GYM-${gymId}-${now}-${index + 1}`,
+      status: "active",
+      usageStatus: "in_stock",
+      notes: notes || null,
+    })),
+    { transaction }
+  );
+}
 
 async function findEquipmentPurchaseTxsForPO(poId, transaction) {
   const poIdN = Number(poId);
@@ -114,7 +139,7 @@ async function createAudit({ userId, action, tableName, recordId, oldValues, new
 
 async function createNotification({ userId, title, message, notificationType, relatedType, relatedId }, t) {
   if (!userId) return null;
-  return Notification.create(
+  const row = await Notification.create(
     {
       userId,
       title,
@@ -126,6 +151,29 @@ async function createNotification({ userId, title, message, notificationType, re
     },
     { transaction: t }
   );
+
+  const payload = {
+    id: row.id,
+    title,
+    message,
+    notificationType: notificationType || null,
+    relatedType: relatedType || null,
+    relatedId: relatedId || null,
+    isRead: false,
+    createdAt: row.createdAt,
+  };
+
+  const [enrichedPayload] = await attachGymIdsToNotifications([payload]);
+
+  if (t?.afterCommit) {
+    t.afterCommit(() => {
+      realtimeService.emitUser(userId, "notification:new", enrichedPayload);
+    });
+  } else {
+    realtimeService.emitUser(userId, "notification:new", enrichedPayload);
+  }
+
+  return row;
 }
 
 async function createMessage({ senderId, receiverId, content }, t) {
@@ -964,6 +1012,36 @@ class AdminPurchaseWorkflowService {
             { transaction: t }
           );
 
+          const createdUnits = await createEquipmentUnits(
+            {
+              gymId: receipt.gymId,
+              equipmentId,
+              quantity: addQty,
+              notes: `Inbound receipt ${receipt.code}`,
+            },
+            t
+          );
+
+          await logEquipmentUnitEvents(
+            createdUnits.map((unit) => ({
+              equipmentUnitId: unit.id,
+              equipmentId,
+              gymId: receipt.gymId,
+              eventType: "created",
+              referenceType: "receipt",
+              referenceId: receipt.id,
+              performedBy: adminId || null,
+              notes: `Nhập kho qua phiếu ${receipt.code}`,
+              metadata: {
+                receiptCode: receipt.code,
+                purchaseOrderId: receipt.purchaseOrderId || null,
+                source: "purchase_workflow_receipt",
+              },
+              eventAt: receipt.receiptDate || new Date(),
+            })),
+            { transaction: t }
+          );
+
           if (po) {
             const poi = (po.items || []).find((x) => String(x.equipmentId) === String(equipmentId));
             if (poi) {
@@ -1279,6 +1357,86 @@ class AdminPurchaseWorkflowService {
     };
   }
 
+  async getEquipmentSalesTransactions(query) {
+    const { page, limit, offset } = paging(query || {});
+    const where = {
+      transactionType: "equipment_purchase",
+    };
+
+    const keyword = String(query?.q || "").trim();
+
+    const shouldLoadAll = Boolean(keyword);
+    const { rows, count } = await Transaction.findAndCountAll({
+      where,
+      order: [["createdAt", "DESC"]],
+      ...(shouldLoadAll ? {} : { limit, offset }),
+    });
+
+    const txRows = rows.map((row) => row.toJSON());
+    const prIds = Array.from(
+      new Set(
+        txRows
+          .map((row) => Number(row?.metadata?.purchaseRequestId || 0))
+          .filter((id) => Number.isFinite(id) && id > 0)
+      )
+    );
+
+    const requests = prIds.length
+      ? await PurchaseRequest.findAll({
+          where: { id: { [Op.in]: prIds } },
+          include: [
+            { model: User, as: "requester", attributes: ["id", "username", "email"] },
+            { model: Equipment, as: "equipment", attributes: ["id", "name", "code"] },
+            { model: Gym, as: "gym", attributes: ["id", "name"] },
+          ],
+        })
+      : [];
+    const requestById = new Map(requests.map((r) => [Number(r.id), r]));
+
+    let data = txRows.map((tx) => {
+      const prId = Number(tx?.metadata?.purchaseRequestId || 0);
+      const pr = requestById.get(prId) || null;
+      const ownerName = pr?.requester?.username || pr?.requester?.email || "-";
+      return {
+        id: tx.id,
+        transactionCode: tx.transactionCode,
+        amount: Number(tx.amount || 0),
+        paymentStatus: tx.paymentStatus,
+        paymentMethod: tx.paymentMethod,
+        transactionDate: tx.transactionDate || tx.createdAt,
+        createdAt: tx.createdAt,
+        purchaseRequestCode: pr?.code || tx?.metadata?.purchaseRequestCode || "-",
+        owner: ownerName,
+        equipmentName: pr?.equipment?.name || "-",
+        gymName: pr?.gym?.name || "-",
+        quantity: Number(pr?.quantity || 0),
+      };
+    });
+
+    if (keyword) {
+      const qLower = keyword.toLowerCase();
+      data = data.filter((item) =>
+        [
+          item.transactionCode,
+          item.purchaseRequestCode,
+          item.owner,
+          item.equipmentName,
+          item.gymName,
+          String(item.quantity || ""),
+          String(item.amount || ""),
+          String(item.paymentStatus || ""),
+        ]
+          .join(" ")
+          .toLowerCase()
+          .includes(qLower)
+      );
+    }
+
+    const total = keyword ? data.length : count;
+    const paged = shouldLoadAll ? data.slice(offset, offset + limit) : data;
+    return { data: paged, meta: { page, limit, total } };
+  }
+
   async getPurchaseRequestDetail(id) {
     const pr = await PurchaseRequest.findByPk(id, {
       include: [
@@ -1294,6 +1452,153 @@ class AdminPurchaseWorkflowService {
       ...pr.toJSON(),
       fulfillmentPlan: pr.stockSnapshot?.fulfillmentPlan || computeFulfillmentPlan(pr.quantity, pr.stockSnapshot),
     };
+  }
+
+  async approvePurchaseRequest(requestId, adminId, req) {
+    return sequelize.transaction(async (t) => {
+      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!pr) throw new Error("Purchase request not found");
+      if (pr.status !== "submitted") throw new Error("Only submitted requests can be approved");
+
+      const old = pr.toJSON();
+      pr.status = "approved_waiting_payment";
+      await pr.save({ transaction: t });
+
+      const amount = Number(pr.quantity || 0) * Number(pr.expectedUnitPrice || 0);
+      await Transaction.create(
+        {
+          transactionCode: genCode("TX"),
+          gymId: pr.gymId,
+          amount,
+          transactionType: "equipment_purchase",
+          paymentMethod: "payos",
+          paymentStatus: "pending",
+          description: `Payment for purchase request ${pr.code}`,
+          metadata: {
+            purchaseRequestId: pr.id,
+            purchaseRequestCode: pr.code,
+            source: "direct_purchase_request",
+          },
+          transactionDate: new Date(),
+          processedBy: pr.requestedBy || null,
+        },
+        { transaction: t }
+      );
+
+      await createAudit(
+        {
+          userId: adminId,
+          action: "PURCHASE_REQUEST_APPROVED",
+          tableName: "purchaserequest",
+          recordId: pr.id,
+          oldValues: old,
+          newValues: pr.toJSON(),
+          req,
+        },
+        t
+      );
+
+      await createNotification(
+        {
+          userId: pr.requestedBy,
+          title: "Yêu cầu mua đã được duyệt",
+          message: `${pr.code} đã được duyệt. Vui lòng thanh toán để admin xử lý giao hàng.`,
+          notificationType: "purchase_request",
+          relatedType: "purchaserequest",
+          relatedId: pr.id,
+        },
+        t
+      );
+
+      return pr;
+    });
+  }
+
+  async confirmPurchaseRequestPaymentAndShip(requestId, adminId, req) {
+    return sequelize.transaction(async (t) => {
+      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!pr) throw new Error("Purchase request not found");
+      if (pr.status !== "paid_waiting_admin_confirm") {
+        throw new Error("Request must be paid_waiting_admin_confirm");
+      }
+
+      const neededQty = Number(pr.quantity || 0);
+      if (neededQty <= 0) throw new Error("Invalid request quantity");
+
+      const centralGymCount = await Gym.count({ where: { ownerId: null }, transaction: t });
+      const stocks = await EquipmentStock.findAll({
+        where: { equipmentId: pr.equipmentId },
+        include: centralGymCount
+          ? [{ model: Gym, as: "gym", attributes: ["id", "ownerId"], required: true, where: { ownerId: null } }]
+          : [],
+        order: [["availableQuantity", "DESC"], ["id", "ASC"]],
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      let remaining = neededQty;
+      for (const st of stocks) {
+        if (remaining <= 0) break;
+        const avail = Number(st.availableQuantity || 0);
+        if (avail <= 0) continue;
+        const take = Math.min(avail, remaining);
+        const before = Number(st.quantity || 0);
+        st.quantity = Math.max(0, before - take);
+        st.availableQuantity = Math.max(0, Number(st.availableQuantity || 0) - take);
+        await st.save({ transaction: t });
+
+        await Inventory.create(
+          {
+            gymId: st.gymId,
+            equipmentId: pr.equipmentId,
+            transactionType: "sale",
+            transactionId: pr.id,
+            transactionCode: pr.code,
+            quantity: -take,
+            unitPrice: pr.expectedUnitPrice || 0,
+            totalValue: Number(pr.expectedUnitPrice || 0) * take,
+            stockBefore: before,
+            stockAfter: Number(st.quantity || 0),
+            notes: `Xuất kho bán cho yêu cầu ${pr.code}`,
+            recordedBy: adminId || null,
+            recordedAt: new Date(),
+          },
+          { transaction: t }
+        );
+        remaining -= take;
+      }
+      if (remaining > 0) throw new Error("Admin stock is not enough to ship this request");
+
+      const old = pr.toJSON();
+      pr.status = "shipping";
+      await pr.save({ transaction: t });
+
+      await createAudit(
+        {
+          userId: adminId,
+          action: "PURCHASE_REQUEST_SHIPPING",
+          tableName: "purchaserequest",
+          recordId: pr.id,
+          oldValues: old,
+          newValues: pr.toJSON(),
+          req,
+        },
+        t
+      );
+
+      await createNotification(
+        {
+          userId: pr.requestedBy,
+          title: "Admin đã nhận tiền, đang chuyển thiết bị",
+          message: `${pr.code} đã được xác nhận thanh toán và đang chuyển thiết bị cho bạn.`,
+          notificationType: "purchase_request",
+          relatedType: "purchaserequest",
+          relatedId: pr.id,
+        },
+        t
+      );
+
+      return pr;
+    });
   }
 
   async rejectPurchaseRequest(requestId, body, adminId, req) {

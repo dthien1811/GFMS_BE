@@ -19,11 +19,13 @@ const PackageModel = db.Package || db.package;
 const WithdrawalModel = db.Withdrawal || db.withdrawal;
 const ReviewModel = db.Review || db.review;
 const MemberModel = db.Member || db.member;
+const NotificationModel = db.Notification || db.notification;
 const fs = require("fs");
 const path = require("path");
 const ExcelJS = require("exceljs");
 const socketModule = require("../socket");
 const { emitToUser, emitToTrainer } = socketModule.default || socketModule;
+const realtimeService = require("../service/realtime.service").default;
 const uploadVideo = multer({
   storage: multer.memoryStorage(),
   // memoryStorage => tăng max fileSize sẽ tốn RAM hơn.
@@ -34,6 +36,7 @@ const uploadVideo = multer({
     cb(ok ? null : new Error("Chỉ chấp nhận file video"), ok);
   },
 });
+const MIN_WITHDRAWAL_AMOUNT = 100000;
 const uploadImage = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 12 * 1024 * 1024 },
@@ -347,6 +350,8 @@ exports.updateTrainer = async (req, res) => {
       return res.status(400).json({ message: normalized.error });
     }
     const payload = normalized.payload;
+    const userAddress = typeof rawPayload.userAddress === "string" ? rawPayload.userAddress.trim() : undefined;
+    delete payload.userAddress;
 
     if (payload.hourlyRate !== undefined && !isPositiveNumber(payload.hourlyRate)) {
       return res.status(400).json({ message: 'hourlyRate must be a non-negative number' });
@@ -356,6 +361,14 @@ exports.updateTrainer = async (req, res) => {
     }
 
     await trainer.update(payload);
+
+    if (userAddress !== undefined && UserModel && trainer.userId) {
+      const userRow = await UserModel.findByPk(trainer.userId);
+      if (userRow) {
+        userRow.address = userAddress;
+        await userRow.save();
+      }
+    }
 
     const updated = await TrainerModel.findByPk(id, { attributes: TRAINER_ATTRIBUTES, raw: true });
     return res.status(200).json(updated || trainer);
@@ -488,7 +501,15 @@ exports.getMyTrainerProfile = async (req, res) => {
     const trainer = await TrainerModel.findOne({
       where: { userId },
       attributes: TRAINER_ATTRIBUTES,
-      raw: true,
+      include: GymModel
+        ? [
+            {
+              model: GymModel,
+              attributes: ["id", "name", "operatingHours"],
+              required: false,
+            },
+          ]
+        : [],
     });
 
     if (!trainer) {
@@ -498,7 +519,16 @@ exports.getMyTrainerProfile = async (req, res) => {
       });
     }
 
-    return res.status(200).json(trainer);
+    const plain = trainer.get ? trainer.get({ plain: true }) : trainer;
+    if (plain?.Gym?.operatingHours && typeof plain.Gym.operatingHours === "string") {
+      try {
+        plain.Gym.operatingHours = JSON.parse(plain.Gym.operatingHours);
+      } catch {
+        /* keep string */
+      }
+    }
+
+    return res.status(200).json(plain);
   } catch (error) {
     console.error('[getMyTrainerProfile] Error:', error);
     return res.status(500).json({ message: 'Error fetching my trainer profile', error: error.message });
@@ -637,6 +667,11 @@ exports.requestWithdrawal = async (req, res) => {
     if (!amount || Number.isNaN(amount) || amount <= 0) {
       return res.status(400).json({ message: "Số tiền không hợp lệ" });
     }
+    if (Number(amount) < MIN_WITHDRAWAL_AMOUNT) {
+      return res.status(400).json({
+        message: `Số tiền rút tối thiểu là ${MIN_WITHDRAWAL_AMOUNT.toLocaleString("vi-VN")}đ`,
+      });
+    }
 
     if (trainer.pendingCommission != null && Number(amount) > Number(trainer.pendingCommission || 0)) {
       return res.status(400).json({ message: "Số tiền vượt quá phần hoa hồng đang chờ" });
@@ -681,6 +716,13 @@ exports.requestWithdrawal = async (req, res) => {
       const gym = await GymModel.findByPk(trainer.gymId, { attributes: ["ownerId"] });
       if (gym?.ownerId) {
         emitToUser(gym.ownerId, "withdrawal:created", { id: row.id, status: row.status });
+        await realtimeService.notifyUser(gym.ownerId, {
+          title: "Có yêu cầu rút tiền mới từ PT",
+          message: `PT #${trainer.id} vừa gửi yêu cầu rút ${Number(amount || 0).toLocaleString("vi-VN")}đ.`,
+          notificationType: "withdrawal",
+          relatedType: "withdrawal",
+          relatedId: row.id,
+        });
       }
       emitToTrainer(trainer.id, "withdrawal:created", { id: row.id, status: row.status });
     } catch (e) {
@@ -865,6 +907,18 @@ exports.uploadMyProfileImage = async (req, res) => {
       certificates: nextCertificates,
     };
     await trainerRow.save();
+
+    if (imageType === "avatar" && trainerRow.userId && UserModel) {
+      try {
+        const u = await UserModel.findByPk(trainerRow.userId, { attributes: ["id", "avatar"] });
+        if (u) {
+          u.avatar = uploaded.secure_url;
+          await u.save();
+        }
+      } catch (syncErr) {
+        console.warn("[uploadMyProfileImage] User.avatar sync:", syncErr?.message || syncErr);
+      }
+    }
 
     return res.status(200).json({
       data: {
@@ -1141,12 +1195,42 @@ exports.replyReview = async (req, res) => {
 
     const row = await ReviewModel.findOne({
       where: { id: reviewId, trainerId: trainer.id },
+      include: [
+        {
+          model: MemberModel,
+          attributes: ["id", "userId"],
+          required: false,
+        },
+      ],
     });
     if (!row) return res.status(404).json({ message: "Không tìm thấy review" });
 
     row.trainerReply = trainerReply;
     row.repliedAt = new Date();
     await row.save();
+
+    try {
+      const memberUserId =
+        row?.Member?.userId ||
+        (row?.memberId && MemberModel
+          ? (await MemberModel.findByPk(row.memberId, { attributes: ["userId"] }))?.userId
+          : null);
+
+      if (memberUserId && NotificationModel) {
+        const noti = await NotificationModel.create({
+          userId: memberUserId,
+          title: "PT đã phản hồi đánh giá của bạn",
+          message: trainerReply.slice(0, 160),
+          notificationType: "review",
+          relatedType: "review",
+          relatedId: row.id,
+          isRead: false,
+        });
+        emitToUser(memberUserId, "notification:new", noti.toJSON ? noti.toJSON() : noti);
+      }
+    } catch (notifyErr) {
+      console.warn("[replyReview] notify member error:", notifyErr?.message || notifyErr);
+    }
 
     return res.status(200).json({ data: row, message: "Đã phản hồi đánh giá" });
   } catch (error) {

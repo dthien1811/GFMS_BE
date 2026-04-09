@@ -21,6 +21,9 @@ router.get("/slots", bookingController.getAvailableSlots);
 router.post("/fixed-plan/options", bookingController.getFixedPlanOptions);
 router.post("/fixed-plan/confirm", bookingController.confirmFixedPlan);
 
+router.get("/reschedule-requests", bookingController.getMyRescheduleRequests);
+router.get("/:id/reschedule-options", bookingController.getMyRescheduleOptions);
+router.post("/:id/reschedule-request", bookingController.createRescheduleRequest);
 router.post("/", bookingController.createBooking);
 router.post("/week-pattern", bookingController.createWeekPatternBookings);
 router.get("/", bookingController.getMyBookings);
