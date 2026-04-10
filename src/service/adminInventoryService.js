@@ -1,6 +1,7 @@
 const { QueryTypes } = require("sequelize");
 const dbImport = require("../models");
 const db = dbImport?.default || dbImport;
+const { ADMIN_STOCK_GYM_NAME } = require("../constants/adminStockGym");
 const fs = require("fs");
 const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
 const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
@@ -129,6 +130,122 @@ const pickEquipmentPayload = (payload = {}) => {
   delete out.supplierId;
   return out;
 };
+
+/**
+ * Kho tồn admin: ưu tiên gym đúng tên hệ thống, sau đó gym ownerId = NULL (legacy).
+ * Nếu DB không cho ownerId NULL (lỗi 1048), gắn tạm user đầu tiên — vẫn nhận diện qua ADMIN_STOCK_GYM_NAME.
+ */
+async function getOrCreateAdminStockGym({ transaction } = {}) {
+  let gym = await db.Gym.findOne({
+    where: { name: ADMIN_STOCK_GYM_NAME },
+    attributes: ["id", "ownerId"],
+    order: [["id", "ASC"]],
+    transaction,
+  });
+  if (gym?.id) return gym;
+
+  gym = await db.Gym.findOne({
+    where: { ownerId: null },
+    attributes: ["id"],
+    order: [["id", "ASC"]],
+    transaction,
+  });
+  if (gym?.id) return gym;
+
+  try {
+    return await db.Gym.create(
+      { name: ADMIN_STOCK_GYM_NAME, ownerId: null, status: "active" },
+      { transaction }
+    );
+  } catch (e) {
+    const msg = String(e?.original?.sqlMessage || e?.message || "");
+    const isNullOwner =
+      e?.original?.code === "ER_BAD_NULL_ERROR" ||
+      e?.original?.errno === 1048 ||
+      msg.includes("ownerId");
+    if (!isNullOwner) throw e;
+
+    const uRows = await db.sequelize.query(`SELECT id FROM \`user\` ORDER BY id ASC LIMIT 1`, {
+      type: QueryTypes.SELECT,
+      transaction,
+    });
+    const uid = Number(uRows?.[0]?.id);
+    if (!uid) {
+      throw new Error(
+        "Không thể tạo kho Admin: cột gym.ownerId trên database đang NOT NULL. Chạy migration `20260410120000-gym-ownerid-allow-null.js` (ALTER ownerId NULL), hoặc tạo ít nhất một user."
+      );
+    }
+    return db.Gym.create(
+      { name: ADMIN_STOCK_GYM_NAME, ownerId: uid, status: "active" },
+      { transaction }
+    );
+  }
+}
+
+/**
+ * Đặt tổng tồn (quantity) tại kho Admin cho một thiết bị — dùng khi admin sửa ô "Số lượng".
+ * Giữ nguyên reserved / hỏng / bảo trì; chỉnh lại availableQuantity cho khớp.
+ */
+async function upsertAdminEquipmentStockTotal(equipmentId, targetTotalQty, { transaction } = {}) {
+  const eqId = Number(equipmentId);
+  if (!eqId) throw new Error("Invalid equipment id");
+  const total = Math.max(0, Math.floor(Number(targetTotalQty)));
+  const stockGym = await getOrCreateAdminStockGym({ transaction });
+  const gymId = Number(stockGym.id);
+  const stTable = tbl(db.EquipmentStock, "EquipmentStock");
+
+  const existing = await db.sequelize.query(
+    `SELECT id, quantity, reservedQuantity,
+            COALESCE(damagedQuantity, 0) AS damagedQuantity,
+            COALESCE(maintenanceQuantity, 0) AS maintenanceQuantity
+     FROM \`${stTable}\` WHERE equipmentId = :eqId AND gymId = :gymId LIMIT 1`,
+    { type: QueryTypes.SELECT, replacements: { eqId, gymId }, transaction }
+  );
+  const row = existing?.[0];
+
+  const reserved = Math.max(0, Number(row?.reservedQuantity ?? 0));
+  const damaged = Math.max(0, Number(row?.damagedQuantity ?? 0));
+  const maintenance = Math.max(0, Number(row?.maintenanceQuantity ?? 0));
+  const locked = reserved + damaged + maintenance;
+
+  if (total < locked) {
+    throw new Error(
+      `Số lượng tổng (${total}) không được nhỏ hơn đã giữ chỗ + hỏng + bảo trì (${locked}).`
+    );
+  }
+  const available = total - locked;
+
+  if (!row?.id) {
+    if (total === 0) return;
+    await db.EquipmentStock.create(
+      {
+        equipmentId: eqId,
+        gymId,
+        quantity: total,
+        reservedQuantity: 0,
+        availableQuantity: available,
+        lastRestocked: new Date(),
+      },
+      { transaction }
+    );
+    return;
+  }
+
+  const oldQty = Number(row.quantity ?? 0);
+  await db.sequelize.query(
+    `UPDATE \`${stTable}\`
+     SET quantity = :total,
+         availableQuantity = :available,
+         lastRestocked = CASE WHEN :total > :oldQty THEN NOW() ELSE lastRestocked END,
+         updatedAt = NOW()
+     WHERE id = :id`,
+    {
+      type: QueryTypes.UPDATE,
+      replacements: { total, available, oldQty, id: row.id },
+      transaction,
+    }
+  );
+}
 
 const validateEquipmentPayload = (payload = {}, { isCreate = false } = {}) => {
   const errors = [];
@@ -292,6 +409,8 @@ async getEquipments(query = {}) {
   const catTable = "equipmentcategory";
   const imgTable = "equipmentimage";
   const supTable = "supplier";
+  const stTable = tbl(db.EquipmentStock, "EquipmentStock");
+  const gymTable = tbl(db.Gym, "Gym");
 
   const where = [];
   const params = {};
@@ -346,7 +465,13 @@ async getEquipments(query = {}) {
       e.updatedAt,
       c.name AS categoryName,
       s.name AS preferredSupplierName,
-      ${primaryImageSubQuery} AS primaryImageUrl
+      ${primaryImageSubQuery} AS primaryImageUrl,
+      COALESCE((
+        SELECT SUM(st.quantity)
+        FROM \`${stTable}\` st
+        INNER JOIN \`${gymTable}\` g ON g.id = st.gymId AND (g.ownerId IS NULL OR g.name = :adminStockGymName)
+        WHERE st.equipmentId = e.id
+      ), 0) AS adminStockQuantity
     FROM \`${eqTable}\` e
     ${joinCatSql}
     ${joinSupSql}
@@ -364,7 +489,7 @@ async getEquipments(query = {}) {
   const [rows, countRows] = await Promise.all([
     db.sequelize.query(selectSql, {
       type: QueryTypes.SELECT,
-      replacements: { ...params, limit, offset },
+      replacements: { ...params, limit, offset, adminStockGymName: ADMIN_STOCK_GYM_NAME },
     }),
     db.sequelize.query(countSql, {
       type: QueryTypes.SELECT,
@@ -444,16 +569,6 @@ async getEquipments(query = {}) {
     const where = [];
     const params = {};
     const includeOwnerGyms = query.includeOwnerGyms === true || String(query.includeOwnerGyms || "") === "true";
-    let centralOnly = false;
-    if (!includeOwnerGyms && gymTable) {
-      // Only apply central-gym filter when central gyms exist.
-      const centralCountRows = await db.sequelize.query(
-        `SELECT COUNT(*) AS total FROM \`${gymTable}\` WHERE ownerId IS NULL`,
-        { type: QueryTypes.SELECT }
-      );
-      const centralCount = Number(centralCountRows?.[0]?.total || 0);
-      centralOnly = centralCount > 0;
-    }
 
     if (gymId) {
       where.push(`s.gymId = :gymId`);
@@ -467,8 +582,12 @@ async getEquipments(query = {}) {
 
     // Use equipment table as the base, so new equipment still appears
     // in inventory even when it has no stock row yet (quantity = 0).
+    // Mặc định admin chỉ cộng tồn tại gym hệ thống (ownerId NULL), không gộp tồn phòng gym franchise.
     const stockScopeConds = [];
-    if (centralOnly) stockScopeConds.push(`g.ownerId IS NULL`);
+    if (!includeOwnerGyms && gymTable) {
+      params.adminStockGymName = ADMIN_STOCK_GYM_NAME;
+      stockScopeConds.push(`(g.ownerId IS NULL OR g.name = :adminStockGymName)`);
+    }
     if (gymId) stockScopeConds.push(`s.gymId = :gymId`);
     const stockScope = stockScopeConds.length ? stockScopeConds.join(" AND ") : "1=1";
 
@@ -545,28 +664,29 @@ async getEquipments(query = {}) {
 
     const clean = pickEquipmentPayload(payload);
     if (!String(clean.name || "").trim()) throw new Error("name is required");
-    const created = await db.Equipment.create(clean, { fields: Object.keys(clean) });
 
     const initialQty = Math.max(0, Number(payload?.quantity || 0));
-    if (initialQty > 0) {
-      const defaultGym = await db.Gym.findOne({
-        attributes: ["id"],
-        order: [["id", "ASC"]],
-      });
 
-      if (defaultGym?.id) {
-        await db.EquipmentStock.create({
-          equipmentId: created.id,
-          gymId: Number(defaultGym.id),
-          quantity: initialQty,
-          reservedQuantity: 0,
-          availableQuantity: initialQty,
-          location: null,
-          reorderPoint: null,
-          lastRestocked: new Date(),
-        });
+    const created = await db.sequelize.transaction(async (transaction) => {
+      const row = await db.Equipment.create(clean, { fields: Object.keys(clean), transaction });
+      if (initialQty > 0) {
+        const stockGym = await getOrCreateAdminStockGym({ transaction });
+        await db.EquipmentStock.create(
+          {
+            equipmentId: row.id,
+            gymId: Number(stockGym.id),
+            quantity: initialQty,
+            reservedQuantity: 0,
+            availableQuantity: initialQty,
+            location: null,
+            reorderPoint: null,
+            lastRestocked: new Date(),
+          },
+          { transaction }
+        );
       }
-    }
+      return row;
+    });
 
     return created;
   },
@@ -584,15 +704,29 @@ async getEquipments(query = {}) {
       throw new Error("name is required");
     }
 
-    const built = buildUpdateSQL(table, id, clean);
-    if (built) {
-      await db.sequelize.query(built.sql, {
-        type: QueryTypes.UPDATE,
-        replacements: built.replacements,
-      });
-    }
+    const eqId = Number(id);
+    if (!eqId) throw new Error("Invalid equipment id");
 
-    const after = await selectById(table, id);
+    const syncStock =
+      payload.quantity !== undefined && payload.quantity !== null
+        ? Math.max(0, Math.floor(Number(payload.quantity)))
+        : null;
+
+    await db.sequelize.transaction(async (transaction) => {
+      const built = buildUpdateSQL(table, eqId, clean);
+      if (built) {
+        await db.sequelize.query(built.sql, {
+          type: QueryTypes.UPDATE,
+          replacements: built.replacements,
+          transaction,
+        });
+      }
+      if (syncStock !== null) {
+        await upsertAdminEquipmentStockTotal(eqId, syncStock, { transaction });
+      }
+    });
+
+    const after = await selectById(table, eqId);
     return after;
   },
 

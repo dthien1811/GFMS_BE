@@ -5,7 +5,13 @@ import realtimeService from "../realtime.service";
 import payosService from "../payment/payos.service";
 import equipmentUnitEventUtils from "../../utils/equipmentUnitEvent";
 
-const { buildStockContext, computeFulfillmentPlan, validateRequestReason } = procurementStockHelper;
+const {
+  buildStockContext,
+  computeFulfillmentPlan,
+  validateRequestReason,
+  selectSourceStocksForPurchaseRequestSale,
+  getCentralGymIds,
+} = procurementStockHelper;
 const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
 const {
@@ -812,7 +818,7 @@ const ownerPurchaseService = {
             {
               model: Gym,
               as: "gym",
-              attributes: ["id", "ownerId"],
+              attributes: ["id", "ownerId", "name"],
               required: false,
             },
           ],
@@ -820,21 +826,19 @@ const ownerPurchaseService = {
           transaction: t,
           lock: t.LOCK.UPDATE,
         });
-        const centralGyms = await Gym.findAll({
-          where: { ownerId: null },
-          attributes: ["id"],
-          raw: true,
-          transaction: t,
-          lock: t.LOCK.SHARE,
-        });
-        const centralGymIdSet = new Set(
-          (centralGyms || []).map((g) => Number(g.id)).filter((id) => Number.isFinite(id) && id > 0)
+        const centralGymIds = await getCentralGymIds(t);
+        const centralGymIdSet = new Set(centralGymIds);
+        const { sourceStocks, noteSuffix: backfillNoteSuffix } = selectSourceStocksForPurchaseRequestSale(
+          adminStocks,
+          pr,
+          centralGymIdSet
         );
-        const centralStocks = adminStocks.filter((s) => centralGymIdSet.has(Number(s.gymId)));
-        const nonOwnerStocks = adminStocks.filter((s) => Number(s.gymId) !== Number(pr.gymId));
-        const sourceStocks = centralStocks.length ? centralStocks : nonOwnerStocks;
         if (!sourceStocks.length) {
-          throw { message: "Không tìm thấy kho nguồn để trừ bù khi xác nhận nhận hàng.", statusCode: 400 };
+          throw {
+            message:
+              "Không tìm thấy kho nguồn để trừ bù khi xác nhận nhận hàng. Kiểm tra tồn kho trung tâm (admin).",
+            statusCode: 400,
+          };
         }
 
         const stockGymIds = Array.from(
@@ -869,7 +873,7 @@ const ownerPurchaseService = {
               totalValue: Number(pr.expectedUnitPrice || 0) * take,
               stockBefore: before,
               stockAfter: Number(st.quantity || 0),
-              notes: `Xuất kho bán cho yêu cầu ${pr.code} (fallback khi owner xác nhận nhận)`,
+              notes: `Xuất kho bán cho yêu cầu ${pr.code} (fallback khi owner xác nhận nhận)${backfillNoteSuffix}`,
               recordedBy: ownerUserId || null,
               recordedAt: new Date(),
             },

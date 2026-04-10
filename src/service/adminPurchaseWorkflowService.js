@@ -1,5 +1,7 @@
 const procurementStockHelper = require("./procurementStockHelper");
-const { computeFulfillmentPlan } = procurementStockHelper;
+const { computeFulfillmentPlan, selectSourceStocksForPurchaseRequestSale, getCentralGymIds } =
+  procurementStockHelper;
+const { isAdminStockGym } = require("../constants/adminStockGym");
 // src/service/adminPurchaseWorkflowService.js
 const { Op } = require("sequelize");
 const realtimeServiceModule = require("./realtime.service");
@@ -1531,7 +1533,7 @@ class AdminPurchaseWorkflowService {
           {
             model: Gym,
             as: "gym",
-            attributes: ["id", "ownerId"],
+            attributes: ["id", "ownerId", "name"],
             required: false,
           },
         ],
@@ -1539,25 +1541,18 @@ class AdminPurchaseWorkflowService {
         transaction: t,
         lock: t.LOCK.UPDATE,
       });
-      // Chỉ trừ kho trung tâm/admin (ownerId IS NULL). Nếu hệ thống chưa có kho trung tâm
-      // thì fallback trừ các kho còn lại để không chặn flow.
-      const centralGyms = await Gym.findAll({
-        where: { ownerId: null },
-        attributes: ["id"],
-        raw: true,
-        transaction: t,
-        lock: t.LOCK.SHARE,
-      });
-      const centralGymIdSet = new Set(
-        (centralGyms || []).map((g) => Number(g.id)).filter((id) => Number.isFinite(id) && id > 0)
+      const centralGymIds = await getCentralGymIds(t);
+      const centralGymIdSet = new Set(centralGymIds);
+      const { sourceStocks, noteSuffix: shipNoteSuffix } = selectSourceStocksForPurchaseRequestSale(
+        stocks,
+        pr,
+        centralGymIdSet
       );
-      const centralStocks = stocks.filter((s) => centralGymIdSet.has(Number(s.gymId)));
-      // Fallback without central gyms: never deduct from the same owner gym receiving goods.
-      const nonOwnerStocks = stocks.filter((s) => Number(s.gymId) !== Number(pr.gymId));
-      const sourceStocks = centralStocks.length ? centralStocks : nonOwnerStocks;
 
       if (!sourceStocks.length) {
-        throw new Error("Không tìm thấy kho nguồn để xuất hàng (đã loại trừ kho owner nhận hàng).");
+        throw new Error(
+          "Không tìm thấy kho nguồn để xuất hàng. Kiểm tra: (1) Có gym trung tâm (ownerId trống) và tồn nằm ở đó, hoặc (2) tồn nằm ở gym khác gym trong yêu cầu."
+        );
       }
 
       const stockGymIds = Array.from(
@@ -1599,7 +1594,7 @@ class AdminPurchaseWorkflowService {
             totalValue: Number(pr.expectedUnitPrice || 0) * take,
             stockBefore: before,
             stockAfter: Number(st.quantity || 0),
-            notes: `Xuất kho bán cho yêu cầu ${pr.code}`,
+            notes: `Xuất kho bán cho yêu cầu ${pr.code}${shipNoteSuffix}`,
             recordedBy: adminId || null,
             recordedAt: new Date(),
           },
@@ -1722,7 +1717,7 @@ class AdminPurchaseWorkflowService {
             {
               model: Gym,
               as: "gym",
-              attributes: ["id", "ownerId"],
+              attributes: ["id", "ownerId", "name"],
               required: false,
             },
           ],
@@ -1731,9 +1726,7 @@ class AdminPurchaseWorkflowService {
           lock: t.LOCK.UPDATE,
         });
 
-        // Ưu tiên kho trung tâm (ownerId IS NULL). Nếu hệ thống không có kho trung tâm
-        // thì fallback dùng tất cả kho hiện có để không chặn nghiệp vụ.
-        const centralStocks = adminStocks.filter((s) => s.gym && s.gym.ownerId == null);
+        const centralStocks = adminStocks.filter((s) => isAdminStockGym(s.gym));
         const sourceStocks = centralStocks.length ? centralStocks : adminStocks;
 
         let remainingIssue = issueQty;

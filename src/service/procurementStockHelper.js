@@ -1,5 +1,6 @@
 const { Op } = require("sequelize");
 const db = require("../models");
+const { ADMIN_STOCK_GYM_NAME } = require("../constants/adminStockGym");
 const { EquipmentStock, Equipment, PurchaseOrder, PurchaseOrderItem, Gym, sequelize } = db;
 
 const EXPANSION_REASONS = new Set([
@@ -53,7 +54,9 @@ async function getGymEquipmentStockRow(gymId, equipmentId, transaction) {
 
 async function getCentralGymIds(transaction) {
   const rows = await Gym.findAll({
-    where: { ownerId: null },
+    where: {
+      [Op.or]: [{ ownerId: null }, { name: ADMIN_STOCK_GYM_NAME }],
+    },
     attributes: ["id"],
     raw: true,
     transaction,
@@ -95,8 +98,9 @@ async function buildStockContext(gymId, equipmentId, transaction) {
   });
   if (!equipment) return null;
 
-  // Procurement flow for owner should consume from admin/central stock first.
-  // If no central gym exists, fallback to request gym stock.
+  // availableQuantity / quantityOnHand = tồn tại KHO TRUNG TÂM (admin), không phải tồn gym owner.
+  // Owner chỉ có tồn sau khi nhận hàng; dùng để tính có đủ bán từ admin hay không.
+  // Nếu chưa có gym trung tâm: fallback cộng tồn các gym khác gym trong yêu cầu (môi trường demo).
   const centralGymIds = await getCentralGymIds(transaction);
   let quantity = 0;
   let availableQuantity = 0;
@@ -153,9 +157,43 @@ async function buildStockContext(gymId, equipmentId, transaction) {
 }
 
 /**
- * Rule đồ án: lý do mở rộng / thay thế / bảo trì… luôn hợp lệ;
- * low_stock chỉ khi available <= min hoặc tồn dưới ngưỡng (đồng nghĩa cần bổ sung).
+ * Chọn dòng tồn để TRỪ khi bán/xuất cho owner qua PurchaseRequest.
+ * Nghiệp vụ chuẩn: trừ kho trung tâm (admin); gym nhận (owner) chỉ là fallback khi dữ liệu cũ sai.
+ *
+ * @param {Array<{ gymId: number, availableQuantity?: number }>} stocks
+ * @param {{ gymId: number }} pr
+ * @param {Set<number>} centralGymIdSet
+ * @returns {{ sourceStocks: typeof stocks, noteSuffix: string }}
  */
+function selectSourceStocksForPurchaseRequestSale(stocks, pr, centralGymIdSet) {
+  const recipientGymId = Number(pr.gymId);
+  const list = Array.isArray(stocks) ? stocks : [];
+  const centralStocks = list.filter((s) => centralGymIdSet.has(Number(s.gymId)));
+  const nonOwnerStocks = list.filter((s) => Number(s.gymId) !== recipientGymId);
+  let sourceStocks = centralStocks.length ? centralStocks : nonOwnerStocks;
+  let noteSuffix = "";
+
+  if (!sourceStocks.length && centralGymIdSet.size === 0 && list.length) {
+    sourceStocks = list;
+    noteSuffix = " [nguồn: toàn bộ kho — hệ thống chưa có gym trung tâm]";
+  }
+
+  if (!sourceStocks.length && list.length) {
+    const ownerGymWithAvail = list.filter(
+      (s) =>
+        Number(s.gymId) === recipientGymId && Number(s.availableQuantity || 0) > 0
+    );
+    if (ownerGymWithAvail.length) {
+      sourceStocks = ownerGymWithAvail;
+      noteSuffix =
+        " [nguồn: kho gym nhận — nên chuyển tồn về kho trung tâm cho đúng quy trình]";
+    }
+  }
+
+  return { sourceStocks, noteSuffix };
+}
+
+/** Rule đồ án: lý do mở rộng / thay thế / bảo trì… luôn hợp lệ; low_stock chỉ khi tồn kho trung tâm (ctx) dưới ngưỡng. */
 function validateRequestReason(reason, ctx) {
   const r = String(reason || "").trim();
   if (!r) return { ok: false, message: "reason is required" };
@@ -184,8 +222,10 @@ module.exports = {
   isExpansionReason,
   getPendingOrderedQuantity,
   getGymEquipmentStockRow,
+  getCentralGymIds,
   buildStockContext,
   computeFulfillmentPlan,
   computeStockStatus,
   validateRequestReason,
+  selectSourceStocksForPurchaseRequestSale,
 };
