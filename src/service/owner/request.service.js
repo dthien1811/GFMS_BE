@@ -22,6 +22,62 @@ const emitOwnerRequestChanged = (userIds = [], payload = {}) => {
 
 const getRequestNotificationTemplates = (requestType, rejectNote) => {
   const type = String(requestType || "").trim().toUpperCase();
+  const reasonSuffix = String(rejectNote || "").trim()
+    ? ` Lý do: ${String(rejectNote || "").trim()}`
+    : "";
+
+  if (type === "LEAVE") {
+    return {
+      approved: {
+        title: "Yêu cầu nghỉ phép đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu nghỉ phép của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu nghỉ phép bị từ chối",
+        message: `Yêu cầu nghỉ phép của bạn đã bị từ chối.${reasonSuffix}`.trim(),
+      },
+    };
+  }
+
+  if (type === "OVERTIME") {
+    return {
+      approved: {
+        title: "Yêu cầu tăng ca đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu tăng ca của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu tăng ca bị từ chối",
+        message: `Yêu cầu tăng ca của bạn đã bị từ chối.${reasonSuffix}`.trim(),
+      },
+    };
+  }
+
+  if (type === "SHIFT_CHANGE") {
+    return {
+      approved: {
+        title: "Yêu cầu đổi ca đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu đổi ca của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu đổi ca bị từ chối",
+        message: `Yêu cầu đổi ca của bạn đã bị từ chối.${reasonSuffix}`.trim(),
+      },
+    };
+  }
+
+  if (type === "TRANSFER_BRANCH") {
+    return {
+      approved: {
+        title: "Yêu cầu chuyển cơ sở đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu chuyển cơ sở của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu chuyển cơ sở bị từ chối",
+        message: `Yêu cầu chuyển cơ sở của bạn đã bị từ chối.${reasonSuffix}`.trim(),
+      },
+    };
+  }
+
   if (type === "BUSY_SLOT") {
     return {
       approved: {
@@ -35,14 +91,27 @@ const getRequestNotificationTemplates = (requestType, rejectNote) => {
     };
   }
 
+  if (type === "BECOME_TRAINER") {
+    return {
+      approved: {
+        title: "Đơn đăng ký huấn luyện viên đã được duyệt",
+        message: "Chủ gym đã duyệt đơn đăng ký trở thành huấn luyện viên của bạn.",
+      },
+      rejected: {
+        title: "Đơn đăng ký huấn luyện viên bị từ chối",
+        message: rejectNote || "Chủ gym đã từ chối đơn đăng ký trở thành huấn luyện viên của bạn.",
+      },
+    };
+  }
+
   return {
     approved: {
-      title: "Đơn đăng ký huấn luyện viên đã được duyệt",
-      message: "Chủ gym đã duyệt đơn đăng ký trở thành huấn luyện viên của bạn.",
+      title: `Yêu cầu ${prettyType(type)} đã được duyệt`,
+      message: `Yêu cầu ${prettyType(type)} của bạn đã được duyệt.`,
     },
     rejected: {
-      title: "Đơn đăng ký huấn luyện viên bị từ chối",
-      message: rejectNote || "Chủ gym đã từ chối đơn đăng ký trở thành huấn luyện viên của bạn.",
+      title: `Yêu cầu ${prettyType(type)} bị từ chối`,
+      message: `Yêu cầu ${prettyType(type)} của bạn đã bị từ chối.${reasonSuffix}`.trim(),
     },
   };
 };

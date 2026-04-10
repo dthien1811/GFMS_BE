@@ -19,6 +19,8 @@ const normalizeDateOnly = (dateStr) => {
 
 const now = () => new Date();
 const BUSY_REQUEST_NOTE_MARKER = "[PT_BUSY_REQUEST]";
+// Bật lại validate: chỉ điểm danh trong cửa sổ ngày (đã tới ngày buổi học, chưa quá hạn chỉnh sửa).
+const TEMP_DISABLE_ATTENDANCE_DATE_WINDOW_VALIDATION = false;
 
 
 const formatDateVN = (value) => {
@@ -127,6 +129,7 @@ const ensureAttendanceEditable = async (bookingId) => {
 };
 
 const assertAttendanceDateWindow = (booking) => {
+  if (TEMP_DISABLE_ATTENDANCE_DATE_WINDOW_VALIDATION) return;
   const bookingDay = toDateOnly(booking?.bookingDate);
   if (!bookingDay) return;
   const today = toDateOnly(now());
