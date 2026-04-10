@@ -121,7 +121,7 @@ async function countCompleted(activationId, transaction) {
   return db.Booking.count({
     where: {
       packageActivationId: activationId,
-      status: { [Op.in]: ["in_progress", "completed"] },
+      status: { [Op.in]: ["completed", "in_progress"] },
     },
     transaction,
   });
@@ -168,6 +168,33 @@ async function pickTrainerIdForActivation(activation, t) {
   // đơn giản: ưu tiên rating
   pool.sort((a, b) => Number(b.rating || 0) - Number(a.rating || 0));
   return pool[0].id;
+}
+
+
+function deriveExpiryDate(activationDate, expiryDate, durationDays) {
+  if (expiryDate) return expiryDate;
+  const days = Number(durationDays || 0);
+  if (!activationDate || !Number.isFinite(days) || days <= 0) return null;
+  const d = new Date(activationDate);
+  if (Number.isNaN(d.getTime())) return null;
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+async function isActivationReviewEligible(memberId, activation) {
+  if (!activation || !memberId) return false;
+  const total = Number(activation.totalSessions ?? activation.Package?.sessions ?? 0) || 0;
+  const status = String(activation.status || "").toLowerCase();
+  const done = await countCompleted(activation.id).catch(() => 0);
+  const remainingRaw = activation.sessionsRemaining;
+  const remaining = Number.isFinite(Number(remainingRaw)) ? Number(remainingRaw) : Math.max(0, total - done);
+  const isCompleted = status === 'completed' || (total > 0 && done >= total) || (total > 0 && remaining <= 0);
+  if (!isCompleted) return false;
+  const existing = await db.Review.findOne({
+    where: { memberId, packageActivationId: activation.id, reviewType: 'package' },
+    attributes: ['id'],
+  }).catch(() => null);
+  return !existing;
 }
 
 /* ================= MAIN SERVICE ================= */
@@ -225,7 +252,8 @@ const memberMyPackageService = {
       id: activation.id,
       status: activation.status,
       activationDate: activation.activationDate,
-      expiryDate: activation.expiryDate,
+      expiryDate: deriveExpiryDate(activation.activationDate, activation.expiryDate, activation.Package?.durationDays),
+      reviewEligible: await isActivationReviewEligible(activation.memberId, { ...activation, Package: activation.Package, totalSessions: total, status: remaining <= 0 ? 'completed' : activation.status }),
 
       // ✅ luôn trả theo synced value
       sessionsTotal: total,
@@ -241,6 +269,7 @@ const memberMyPackageService = {
 
   /* ===== GET LIST ===== */
   async getMyPackages(userId) {
+    try {
     const members = await getMembersByUserId(userId);
     if (!members || members.length === 0) {
       const err = new Error("Không tìm thấy thành viên");
@@ -259,7 +288,7 @@ const memberMyPackageService = {
         },
         {
           model: db.Transaction,
-          attributes: ["id", "transactionCode", "amount", "paymentMethod", "paymentStatus", "transactionDate", "description", "gymId", "trainerId"],
+          attributes: ["id", "transactionCode", "amount", "paymentMethod", "paymentStatus", "transactionDate", "description", "gymId", "trainerId", "createdAt"],
         },
         {
           model: db.Member,
@@ -273,21 +302,41 @@ const memberMyPackageService = {
     // ✅ sync counter cho từng activation (có thể hơi nhiều query, nhưng fix dứt điểm)
     const activationList = [];
     for (const a of activations) {
-      const { total, done, remaining } = await syncActivationCounters(a);
-      activationList.push({
-        id: a.id,
-        status: a.status,
-        activationDate: a.activationDate,
-        expiryDate: a.expiryDate,
-        totalSessions: total,
-        sessionsUsed: done,
-        sessionsRemaining: remaining,
-        pricePerSession: a.pricePerSession,
-        Package: a.Package,
-        Transaction: a.Transaction,
-        Member: a.Member,
-        Gym: a.Member?.Gym,
-      });
+      try {
+        const synced = await syncActivationCounters(a).catch(() => ({
+          total: Number(a.totalSessions ?? a.Package?.sessions ?? 0) || 0,
+          done: Number(a.sessionsUsed || 0) || 0,
+          remaining: Number(a.sessionsRemaining ?? Math.max(0, (Number(a.totalSessions ?? a.Package?.sessions ?? 0) || 0) - (Number(a.sessionsUsed || 0) || 0))) || 0,
+        }));
+        const total = synced.total;
+        const done = synced.done;
+        const remaining = synced.remaining;
+        const safeActivation = {
+          id: a.id,
+          memberId: a.memberId,
+          status: remaining <= 0 && total > 0 ? 'completed' : a.status,
+          sessionsRemaining: remaining,
+          totalSessions: total,
+          Package: a.Package,
+        };
+        activationList.push({
+          id: a.id,
+          status: a.status,
+          activationDate: a.activationDate,
+          expiryDate: deriveExpiryDate(a.activationDate, a.expiryDate, a.Package?.durationDays),
+          totalSessions: total,
+          sessionsUsed: done,
+          sessionsRemaining: remaining,
+          pricePerSession: a.pricePerSession,
+          reviewEligible: await isActivationReviewEligible(a.memberId, safeActivation),
+          Package: a.Package || null,
+          Transaction: a.Transaction || null,
+          Member: a.Member || null,
+          Gym: a.Member?.Gym || null,
+        });
+      } catch (err) {
+        console.error('[memberMyPackageService.getMyPackages] skip broken activation', a?.id, err?.message || err);
+      }
     }
 
     const pendingTransactions = await db.Transaction.findAll({
@@ -334,10 +383,14 @@ const memberMyPackageService = {
     }));
 
     return [...pendingList, ...activationList].sort((a, b) => {
-      const aDate = a.Transaction?.transactionDate || a.Transaction?.createdAt || new Date(0);
-      const bDate = b.Transaction?.transactionDate || b.Transaction?.createdAt || new Date(0);
+      const aDate = a.Transaction?.transactionDate || a.Transaction?.createdAt || a.activationDate || new Date(0);
+      const bDate = b.Transaction?.transactionDate || b.Transaction?.createdAt || b.activationDate || new Date(0);
       return new Date(bDate) - new Date(aDate);
     });
+    } catch (e) {
+      console.error('[memberMyPackageService.getMyPackages] error:', e?.message || e);
+      throw e;
+    }
   },
 
   /* ===== OPTIONAL: ASSIGN TRAINER ===== */
