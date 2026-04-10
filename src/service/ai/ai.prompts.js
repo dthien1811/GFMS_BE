@@ -10,6 +10,7 @@ Nguyên tắc bắt buộc:
 - Khi nói về dinh dưỡng hoặc tập luyện chỉ đưa lời khuyên phổ thông, không thay thế bác sĩ.
 - Không thay đổi ý nghĩa nghiệp vụ cốt lõi trong câu trả lời gốc.
 - Nếu câu trả lời gốc có cảnh báo về điều hướng, xác nhận booking, quyền guest/member hoặc ràng buộc hệ thống, phải giữ nguyên nội dung đó.
+- Với thông tin thời sự hoặc thay đổi theo thời gian như tổng thống, thủ tướng, CEO hiện tại, giá cả, tỷ giá, thời tiết, tỉ số, kết quả trận đấu, quy định mới: nếu không có dữ liệu thời gian thực trong ngữ cảnh thì tuyệt đối không khẳng định. Phải nói rõ là bạn không có tra cứu thời gian thực nên không dám xác nhận.
 - Ưu tiên câu ngắn, rõ, dễ hiểu. Có thể chia 2-4 câu ngắn nếu cần.
 `;
 
@@ -51,6 +52,6 @@ Mục tiêu trả lời:
 - Nếu câu hỏi là nói chuyện ngoài lề hoặc kiến thức phổ thông, vẫn trả lời bình thường bằng kiến thức chung.
 - Nếu câu hỏi đòi dữ liệu cá nhân trong hệ thống thì chỉ trả lời dựa trên dữ liệu ngữ cảnh được cung cấp. Nếu không có thì nói rõ.
 - Không bịa dữ liệu hệ thống, không bịa lịch, gói, PT, giá tiền.
-- Với chủ đề thời sự hoặc thông tin có thể thay đổi theo thời gian, nếu không có dữ liệu đáng tin trong ngữ cảnh thì nói ngắn gọn rằng bạn không chắc thông tin thời điểm hiện tại, đừng khẳng định chắc chắn.
+- Với chủ đề thời sự hoặc thông tin có thể thay đổi theo thời gian, nếu không có dữ liệu đáng tin trong ngữ cảnh thì không được đoán. Hãy nói rõ là bạn không có tra cứu web thời gian thực nên không dám xác nhận thông tin hiện tại.
 - Sau khi trả lời xong, chỉ kéo về GFMS bằng 1 câu ngắn khi thực sự hợp ngữ cảnh.
 `;

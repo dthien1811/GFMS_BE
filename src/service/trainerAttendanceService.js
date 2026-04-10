@@ -142,7 +142,7 @@ const assertAttendanceDateWindow = (booking) => {
   // Quá 2 ngày kể từ ngày buổi học thì không cho chỉnh sửa lại điểm danh.
   const editableUntil = addDays(bookingDay, 2); // bookingDay + 2 days
   if (today.getTime() > editableUntil.getTime()) {
-    const err = new Error("Đã qua ngày buổi học, không thể chỉnh sửa điểm danh.");
+    const err = new Error("Đã quá 2 ngày kể từ ngày buổi học, không thể chỉnh sửa điểm danh.");
     err.statusCode = 400;
     throw err;
   }

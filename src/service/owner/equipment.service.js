@@ -2,7 +2,7 @@ import db from "../../models";
 import { Op } from "sequelize";
 import realtimeService from "../realtime.service";
 
-const { Equipment, Gym, EquipmentCategory, EquipmentStock, EquipmentUnit, EquipmentUnitEvent, Maintenance, User, Supplier } = db;
+const { Equipment, Gym, EquipmentCategory, EquipmentStock, EquipmentUnit, EquipmentUnitEvent, Maintenance, User } = db;
 
 const emitEquipmentChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
@@ -141,7 +141,6 @@ const ownerEquipmentService = {
     const { q, status, categoryId, gymId } = query;
     const onlyInUse = String(query.onlyInUse || "false").toLowerCase() === "true";
     const aggregateByEquipment = String(query.aggregateByEquipment || "false").toLowerCase() === "true";
-    const includeNoStock = String(query.includeNoStock || "false").toLowerCase() === "true";
 
     // Get owner's gyms - filter theo ownerUserId
     const ownerGyms = await Gym.findAll({
@@ -176,59 +175,6 @@ const ownerEquipmentService = {
         { name: { [Op.like]: `%${q}%` } },
         { code: { [Op.like]: `%${q}%` } },
       ];
-    }
-
-    if (includeNoStock) {
-      const equipmentWhere = { status: "active" };
-      if (["active", "discontinued"].includes(requestedStatus)) {
-        equipmentWhere.status = requestedStatus;
-      }
-      if (categoryId && categoryId !== "all") {
-        equipmentWhere.categoryId = Number(categoryId);
-      }
-      if (q) {
-        equipmentWhere[Op.or] = [
-          { name: { [Op.like]: `%${q}%` } },
-          { code: { [Op.like]: `%${q}%` } },
-        ];
-      }
-
-      const { rows, count } = await Equipment.findAndCountAll({
-        where: equipmentWhere,
-        attributes: ["id", "name", "code", "categoryId", "status", "description", "price"],
-        include: [
-          { model: EquipmentCategory, as: "category", required: false, attributes: ["id", "name", "code"] },
-        ],
-        order: [["createdAt", "DESC"]],
-        limit,
-        offset,
-      });
-
-      return {
-        data: rows.map((item) => ({
-          id: item.id,
-          name: item.name,
-          code: item.code,
-          status: item.status,
-          description: item.description,
-          price: item.price,
-          categoryId: item.categoryId,
-          preferredSupplierId: null,
-          preferredSupplier: null,
-          EquipmentCategory: item.category || null,
-          stock: {
-            quantity: 0,
-            availableQuantity: 0,
-            reservedQuantity: 0,
-          },
-        })),
-        meta: {
-          page,
-          limit,
-          totalItems: count,
-          totalPages: Math.max(1, Math.ceil(count / limit)),
-        },
-      };
     }
 
     const stockQuery = {
@@ -278,8 +224,6 @@ const ownerEquipmentService = {
       description: stock.equipment.description,
       price: stock.equipment.price,
       categoryId: stock.equipment.categoryId,
-      preferredSupplierId: null,
-      preferredSupplier: null,
       EquipmentCategory: stock.equipment.category,
       Gym: stock.gym,
       stock: {

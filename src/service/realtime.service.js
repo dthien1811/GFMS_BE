@@ -1,24 +1,8 @@
-import { Op } from "sequelize";
 import db from "../models";
 import { attachGymIdsToNotifications } from "./notification-gym.service";
 import { emitToConversation, emitToGroup, emitToGym, emitToMember, emitToTrainer, emitToUser } from "../socket";
 
 const normalizePayload = (payload = {}) => ({ ...payload, ts: new Date().toISOString() });
-
-async function getAdministratorUserIds() {
-  const users = await db.User.findAll({
-    attributes: ["id"],
-    include: [
-      {
-        model: db.Group,
-        required: true,
-        attributes: [],
-        where: { name: { [Op.in]: ["Administrators", "Administrator"] } },
-      },
-    ],
-  });
-  return [...new Set(users.map((u) => Number(u.id)).filter((id) => Number.isFinite(id) && id > 0))];
-}
 
 const realtimeService = {
   async notifyUser(userId, payload) {
@@ -42,24 +26,8 @@ const realtimeService = {
   async notifyUsers(userIds = [], payload) {
     const ids = [...new Set((userIds || []).filter(Boolean).map(Number))];
     const rows = [];
-    for (const userId of ids) {
-      const row = await this.notifyUser(userId, payload);
-      if (row) rows.push(row);
-    }
+    for (const userId of ids) rows.push(await this.notifyUser(userId, payload));
     return rows;
-  },
-
-  /** Persist + socket to every user in Administrators group (GFMS admin console). */
-  async notifyAdministrators(payload) {
-    if (!payload?.title || !payload?.message) return [];
-    try {
-      const ids = await getAdministratorUserIds();
-      if (!ids.length) return [];
-      return await this.notifyUsers(ids, payload);
-    } catch (e) {
-      console.error("[realtime] notifyAdministrators:", e?.message || e);
-      return [];
-    }
   },
 
   emitMessage(conversationKey, payload) {

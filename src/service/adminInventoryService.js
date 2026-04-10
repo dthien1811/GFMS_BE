@@ -1,7 +1,6 @@
 const { QueryTypes } = require("sequelize");
 const dbImport = require("../models");
 const db = dbImport?.default || dbImport;
-const fs = require("fs");
 const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
 const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
@@ -33,12 +32,6 @@ const qLike = (s) => `%${String(s || "").trim()}%`;
 const normalizeList = (rows, totalItems, page, limit) => {
   const totalPages = Math.max(1, Math.ceil(Number(totalItems || 0) / limit));
   return { data: rows, meta: { page, limit, totalItems: Number(totalItems || 0), totalPages } };
-};
-
-const normalizeUploadBuffer = (file) => {
-  if (file?.buffer) return file.buffer;
-  if (file?.path && fs.existsSync(file.path)) return fs.readFileSync(file.path);
-  return null;
 };
 
 const pad2 = (n) => String(n).padStart(2, "0");
@@ -111,7 +104,6 @@ const pickEquipmentPayload = (payload = {}) => {
     "code",
     "description",
     "categoryId",
-    "preferredSupplierId",
     "brand",
     "model",
     "specifications",
@@ -128,31 +120,6 @@ const pickEquipmentPayload = (payload = {}) => {
   delete out.gymId;
   delete out.supplierId;
   return out;
-};
-
-const validateEquipmentPayload = (payload = {}, { isCreate = false } = {}) => {
-  const errors = [];
-  const name = String(payload.name || "").trim();
-  const code = String(payload.code || "").trim();
-  const price = payload.price;
-  const quantity = payload.quantity;
-
-  if (isCreate && !name) errors.push("Tên thiết bị là bắt buộc.");
-  if (payload.name !== undefined && !name) errors.push("Tên thiết bị không được để trống.");
-
-  if (code && !/^[A-Za-z0-9._-]+$/.test(code)) {
-    errors.push("Mã thiết bị chỉ được chứa chữ, số và các ký tự . _ -");
-  }
-
-  if (price !== undefined && price !== null && Number(price) < 0) {
-    errors.push("Giá bán không được âm.");
-  }
-
-  if (quantity !== undefined && quantity !== null && Number(quantity) < 0) {
-    errors.push("Số lượng không được âm.");
-  }
-
-  return errors;
 };
 
 const pickSupplierPayload = (payload = {}) => {
@@ -291,7 +258,6 @@ async getEquipments(query = {}) {
   const eqTable = "equipment";
   const catTable = "equipmentcategory";
   const imgTable = "equipmentimage";
-  const supTable = "supplier";
 
   const where = [];
   const params = {};
@@ -312,7 +278,6 @@ async getEquipments(query = {}) {
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
   const joinCatSql = `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId`;
-  const joinSupSql = `LEFT JOIN \`${supTable}\` s ON s.id = e.preferredSupplierId`;
 
   // ✅ lấy ảnh đại diện: ưu tiên isPrimary=1, nếu không có thì lấy ảnh đầu tiên theo sortOrder/id
   // -> tuyệt đối KHÔNG dính gymId
@@ -333,23 +298,19 @@ async getEquipments(query = {}) {
       e.code,
       e.description,
       e.categoryId,
-      e.preferredSupplierId,
       e.brand,
       e.model,
       e.specifications,
       e.unit,
-      e.price,
       e.minStockLevel,
       e.maxStockLevel,
       e.status,
       e.createdAt,
       e.updatedAt,
       c.name AS categoryName,
-      s.name AS preferredSupplierName,
       ${primaryImageSubQuery} AS primaryImageUrl
     FROM \`${eqTable}\` e
     ${joinCatSql}
-    ${joinSupSql}
     ${whereSql}
     ORDER BY e.id DESC
     LIMIT :limit OFFSET :offset
@@ -439,21 +400,9 @@ async getEquipments(query = {}) {
     const stTable = tbl(db.EquipmentStock, "EquipmentStock");
     const eqTable = db.Equipment ? tbl(db.Equipment, "Equipment") : null;
     const gymTable = db.Gym ? tbl(db.Gym, "Gym") : null;
-    const catTable = db.EquipmentCategory ? tbl(db.EquipmentCategory, "EquipmentCategory") : null;
 
     const where = [];
     const params = {};
-    const includeOwnerGyms = query.includeOwnerGyms === true || String(query.includeOwnerGyms || "") === "true";
-    let centralOnly = false;
-    if (!includeOwnerGyms && gymTable) {
-      // Only apply central-gym filter when central gyms exist.
-      const centralCountRows = await db.sequelize.query(
-        `SELECT COUNT(*) AS total FROM \`${gymTable}\` WHERE ownerId IS NULL`,
-        { type: QueryTypes.SELECT }
-      );
-      const centralCount = Number(centralCountRows?.[0]?.total || 0);
-      centralOnly = centralCount > 0;
-    }
 
     if (gymId) {
       where.push(`s.gymId = :gymId`);
@@ -465,119 +414,46 @@ async getEquipments(query = {}) {
       params.q = qLike(q);
     }
 
-    // Use equipment table as the base, so new equipment still appears
-    // in inventory even when it has no stock row yet (quantity = 0).
-    const stockScopeConds = [];
-    if (centralOnly) stockScopeConds.push(`g.ownerId IS NULL`);
-    if (gymId) stockScopeConds.push(`s.gymId = :gymId`);
-    const stockScope = stockScopeConds.length ? stockScopeConds.join(" AND ") : "1=1";
-
     const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
-
-    const joins = `
-      LEFT JOIN \`${stTable}\` s ON s.equipmentId = e.id
-      ${gymTable ? `LEFT JOIN \`${gymTable}\` g ON g.id = s.gymId` : ""}
-      ${catTable ? `LEFT JOIN \`${catTable}\` c ON c.id = e.categoryId` : ""}
-    `;
-
-    const baseFromSql = `FROM \`${eqTable}\` e ${joins} ${whereSql}`;
+    const joinEq = eqTable ? `LEFT JOIN \`${eqTable}\` e ON e.id = s.equipmentId` : "";
+    const joinGym = gymTable ? `LEFT JOIN \`${gymTable}\` g ON g.id = s.gymId` : "";
 
     const [rows, countRows] = await Promise.all([
       db.sequelize.query(
         `
         SELECT 
-          e.id AS equipmentId,
-          e.name AS equipmentName,
-          e.code AS equipmentCode,
-          ${catTable ? "c.name AS categoryName," : "NULL AS categoryName,"}
-          e.minStockLevel AS equipmentMinStockLevel,
-          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.quantity ELSE 0 END), 0) AS quantity,
-          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.availableQuantity ELSE 0 END), 0) AS availableQuantity,
-          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.reservedQuantity ELSE 0 END), 0) AS reservedQuantity,
-          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.damagedQuantity ELSE 0 END), 0) AS damagedQuantity,
-          COALESCE(SUM(CASE WHEN ${stockScope} THEN s.maintenanceQuantity ELSE 0 END), 0) AS maintenanceQuantity,
-          NULL AS reorderPoint,
-          NULL AS gymName
-        ${baseFromSql}
-        GROUP BY e.id, e.name, e.code, e.minStockLevel ${catTable ? ", c.name" : ""}
-        ORDER BY e.name ASC, e.id DESC
+          s.*,
+          ${eqTable ? "e.name AS equipmentName, e.code AS equipmentCode" : "NULL AS equipmentName, NULL AS equipmentCode"},
+          ${gymTable ? "g.name AS gymName" : "NULL AS gymName"}
+        FROM \`${stTable}\` s
+        ${joinEq}
+        ${joinGym}
+        ${whereSql}
+        ORDER BY s.id DESC
         LIMIT :limit OFFSET :offset
         `,
         { type: QueryTypes.SELECT, replacements: { ...params, limit, offset } }
       ),
       db.sequelize.query(
-        `
-        SELECT COUNT(*) AS total
-        FROM (
-          SELECT e.id
-          ${baseFromSql}
-          GROUP BY e.id
-        ) x
-        `,
+        `SELECT COUNT(*) AS total FROM \`${stTable}\` s ${whereSql}`,
         { type: QueryTypes.SELECT, replacements: params }
       ),
     ]);
 
-    const normalizedRows = (rows || []).map((row) => {
-      const currentQuantity = Number(row.availableQuantity ?? row.quantity ?? 0);
-      const minStockLevel = Number(row.equipmentMinStockLevel ?? row.minStockLevel ?? row.reorderPoint ?? 0);
-      const shortageQuantity = Math.max(minStockLevel - currentQuantity, 0);
-      const stockStatus = currentQuantity <= 0 ? "Hết hàng" : currentQuantity <= minStockLevel ? "Sắp thiếu" : "Đủ hàng";
-      return {
-        ...row,
-        currentQuantity,
-        minStockLevel,
-        shortageQuantity,
-        stockStatus,
-      };
-    });
-
     const totalItems = Number(countRows?.[0]?.total || 0);
-    return normalizeList(normalizedRows, totalItems, page, limit);
+    return normalizeList(rows, totalItems, page, limit);
   },
 
   // ================== EQUIPMENT (C/R/D) ==================
   async createEquipment(payload) {
-    const validationErrors = validateEquipmentPayload(payload, { isCreate: true });
-    if (validationErrors.length) {
-      throw new Error(validationErrors.join(" "));
-    }
-
     const clean = pickEquipmentPayload(payload);
     if (!String(clean.name || "").trim()) throw new Error("name is required");
     const created = await db.Equipment.create(clean, { fields: Object.keys(clean) });
-
-    const initialQty = Math.max(0, Number(payload?.quantity || 0));
-    if (initialQty > 0) {
-      const defaultGym = await db.Gym.findOne({
-        attributes: ["id"],
-        order: [["id", "ASC"]],
-      });
-
-      if (defaultGym?.id) {
-        await db.EquipmentStock.create({
-          equipmentId: created.id,
-          gymId: Number(defaultGym.id),
-          quantity: initialQty,
-          reservedQuantity: 0,
-          availableQuantity: initialQty,
-          location: null,
-          reorderPoint: null,
-          lastRestocked: new Date(),
-        });
-      }
-    }
-
     return created;
   },
 
   async updateEquipment(id, payload) {
     const table = tbl(db.Equipment, "Equipment");
-    const validationErrors = validateEquipmentPayload(payload, { isCreate: false });
-    if (validationErrors.length) {
-      throw new Error(validationErrors.join(" "));
-    }
-
     const clean = pickEquipmentPayload(payload);
 
     if (clean.name !== undefined && !String(clean.name || "").trim()) {
@@ -604,50 +480,6 @@ async getEquipments(query = {}) {
     );
     const after = await selectById(table, id);
     return after;
-  },
-
-  async deleteEquipment(id) {
-    const eqId = Number(id);
-    if (!eqId) throw new Error("Invalid equipment id");
-
-    const equipment = await db.Equipment.findByPk(eqId, { attributes: ["id", "name"] });
-    if (!equipment) throw new Error("Thiết bị không tồn tại");
-
-    const [stockCount, inventoryCount, unitCount, quotationItemCount, poItemCount, receiptItemCount, requestCount] =
-      await Promise.all([
-        db.EquipmentStock.count({ where: { equipmentId: eqId } }),
-        db.Inventory.count({ where: { equipmentId: eqId } }),
-        db.EquipmentUnit ? db.EquipmentUnit.count({ where: { equipmentId: eqId } }) : 0,
-        db.QuotationItem ? db.QuotationItem.count({ where: { equipmentId: eqId } }) : 0,
-        db.PurchaseOrderItem ? db.PurchaseOrderItem.count({ where: { equipmentId: eqId } }) : 0,
-        db.ReceiptItem ? db.ReceiptItem.count({ where: { equipmentId: eqId } }) : 0,
-        db.PurchaseRequest ? db.PurchaseRequest.count({ where: { equipmentId: eqId } }) : 0,
-      ]);
-
-    if (stockCount > 0 || inventoryCount > 0 || unitCount > 0 || quotationItemCount > 0 || poItemCount > 0 || receiptItemCount > 0 || requestCount > 0) {
-      throw new Error(
-        "Không thể xóa thiết bị vì đã phát sinh dữ liệu kho/chứng từ. Hãy dùng 'Ẩn thiết bị' thay vì xóa cứng."
-      );
-    }
-
-    const images = db.EquipmentImage
-      ? await db.EquipmentImage.findAll({ where: { equipmentId: eqId } })
-      : [];
-
-    await db.sequelize.transaction(async (t) => {
-      if (db.EquipmentImage) {
-        await db.EquipmentImage.destroy({ where: { equipmentId: eqId }, transaction: t });
-      }
-      await db.Equipment.destroy({ where: { id: eqId }, transaction: t });
-    });
-
-    for (const img of images) {
-      try {
-        if (img.publicId) await cloudinaryService.destroy(img.publicId, "image");
-      } catch (_) {}
-    }
-
-    return { message: `Đã xóa thiết bị "${equipment.name}"` };
   },
 
   // ================== SUPPLIER (C/R/U) ==================
@@ -1132,9 +964,8 @@ async getEquipmentImages(equipmentId) {
     // ✅ Upload to Cloudinary (do NOT store on local disk)
     const uploaded = [];
     for (const f of files) {
-      const buffer = normalizeUploadBuffer(f);
-      if (!buffer) throw new Error("Invalid uploaded file");
-      const r = await cloudinaryService.uploadImageBuffer(buffer, {
+      if (!f?.buffer) throw new Error("Invalid uploaded file (missing buffer)");
+      const r = await cloudinaryService.uploadImageBuffer(f.buffer, {
         folder: "gfms/equipments",
         filename: f.originalname,
       });

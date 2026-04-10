@@ -568,6 +568,60 @@ const inferIntentFromFollowUp = ({ message, history = [], isAuthed }) => {
   return null;
 };
 
+const isTimeSensitiveTopic = (message) => {
+  const lower = normalize(message);
+  if (!lower) return false;
+
+  const realtimeSignals = [
+    "hien tai",
+    "bay gio",
+    "hom nay",
+    "moi nhat",
+    "nam nay",
+    "vua moi",
+    "cap nhat",
+    "tin moi",
+    "latest",
+    "current",
+    "today",
+    "now",
+  ];
+
+  const volatileTopics = [
+    "tong thong",
+    "thu tuong",
+    "chu tich nuoc",
+    "bo truong",
+    "ceo",
+    "gia vang",
+    "ty gia",
+    "usd",
+    "bitcoin",
+    "btc",
+    "ethereum",
+    "gia xang",
+    "thoi tiet",
+    "du bao mua",
+    "bong da",
+    "ti so",
+    "ket qua",
+    "lich thi dau",
+    "chung khoan",
+    "co phieu",
+    "luat moi",
+    "quy dinh moi",
+  ];
+
+  return realtimeSignals.some((x) => lower.includes(x)) && volatileTopics.some((x) => lower.includes(x));
+};
+
+const buildTimeSensitiveReply = () => ({
+  reply:
+    "Mình không có tra cứu web thời gian thực trong chatbox này nên không dám xác nhận thông tin mới nhất ở thời điểm hiện tại. Với các câu hỏi như thời sự, chức danh hiện tại, giá cả, tỷ giá, thời tiết hoặc tỉ số, bạn nên kiểm tra từ nguồn cập nhật live.",
+  suggestions: [],
+  actions: [],
+});
+
 const detectNavigationIntent = (message, isAuthed) => {
   const lower = normalize(message);
   if (isAuthed && ["mo goi cua toi", "vao goi cua toi", "mo trang goi"].some((w) => lower.includes(w))) {
@@ -1090,9 +1144,15 @@ const buildAiContextSnapshot = ({ isAuthed, publicContext, privateContext, bmiCo
 };
 
 const answerGeneralConversation = async ({ message, history = [], isAuthed, bmiContext, pageContext }) => {
+  if (isTimeSensitiveTopic(message)) {
+    return buildTimeSensitiveReply();
+  }
+
   const contextParts = {
     isAuthed,
     pageType: pageContext?.pageType || "general",
+    currentDate: new Date().toISOString(),
+    hasRealtimeWebAccess: false,
     bmiSummary: bmiContext?.bmi ? buildBmiSummaryLine(bmiContext) : null,
   };
 
