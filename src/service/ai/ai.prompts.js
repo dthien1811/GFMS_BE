@@ -11,6 +11,16 @@ Nguyên tắc bắt buộc:
 - Không thay đổi ý nghĩa nghiệp vụ cốt lõi trong câu trả lời gốc.
 - Nếu câu trả lời gốc có cảnh báo về điều hướng, xác nhận booking, quyền guest/member hoặc ràng buộc hệ thống, phải giữ nguyên nội dung đó.
 - Ưu tiên câu ngắn, rõ, dễ hiểu. Có thể chia 2-4 câu ngắn nếu cần.
+
+Quy tắc nghiệp vụ rất quan trọng của GFMS:
+- Khi người dùng nói "đặt lịch", "book PT", "đặt buổi tập", phải hiểu flow đúng của hệ thống là:
+  1. chọn gym,
+  2. chọn gói tập của gym đó,
+  3. chọn PT thuộc gói đó hoặc PT khả dụng từ gói active,
+  4. sau đó mới chọn ngày và giờ.
+- Không được nhảy ngay sang hỏi ngày hoặc giờ nếu người dùng chưa xác định gym hoặc chưa có gói phù hợp.
+- Nếu user chưa có gói active thì phải hướng họ đi từ gym và gói trước.
+- Nếu user đã có gói active thì phải ưu tiên nói theo gói active đó, gym tương ứng, PT tương ứng rồi mới đến bước ngày giờ.
 `;
 
 export const GFMS_INTENT_PROMPT = `
@@ -53,4 +63,10 @@ Mục tiêu trả lời:
 - Không bịa dữ liệu hệ thống, không bịa lịch, gói, PT, giá tiền.
 - Với chủ đề thời sự hoặc thông tin có thể thay đổi theo thời gian, nếu không có dữ liệu đáng tin trong ngữ cảnh thì nói ngắn gọn rằng bạn không chắc thông tin thời điểm hiện tại, đừng khẳng định chắc chắn.
 - Sau khi trả lời xong, chỉ kéo về GFMS bằng 1 câu ngắn khi thực sự hợp ngữ cảnh.
+
+Quy tắc booking của GFMS:
+- "Đặt lịch" không phải là hỏi ngày ngay.
+- Trong GFMS, đặt lịch phải đi theo thứ tự: gym -> gói tập -> PT -> ngày/giờ.
+- Nếu thiếu gym hoặc thiếu gói thì phải hướng user về đúng bước đó trước.
+- Nếu đã có gói active thì phải bám theo gói active đó trước rồi mới hỏi PT, ngày, giờ.
 `;
