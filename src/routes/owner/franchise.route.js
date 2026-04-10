@@ -11,11 +11,11 @@ router.use(jwtAction.checkUserJWT);
 // Chỉ owner mới được tạo franchise request
 router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owners"]));
 
-// Routes cho franchise requests (đặt route cụ thể trước /:id)
+// Routes cho franchise requests
 router.post("/", ownerFranchiseController.createFranchiseRequest);
 router.get("/", ownerFranchiseController.getMyFranchiseRequests);
-router.get("/:id/contract/document", ownerFranchiseController.downloadContractDocument);
 router.get("/:id", ownerFranchiseController.getMyFranchiseRequestDetail);
 router.put("/:id", ownerFranchiseController.updateMyFranchiseRequest);
+router.delete("/:id", ownerFranchiseController.deleteMyFranchiseRequest);
 
 export default router;

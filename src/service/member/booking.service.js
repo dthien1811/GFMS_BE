@@ -4,6 +4,7 @@ import payosService from "../payment/payos.service";
 import realtimeService from "../realtime.service";
 
 const SLOT_MINUTES = 60;
+const SAME_DAY_BOOKING_LEAD_MINUTES = 120;
 
 const formatDateVN = (value) => {
   if (!value) return "ngày đã chọn";
@@ -43,6 +44,12 @@ const minutesToTime = (m) =>
   `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}:00`;
 
 const toHHMM = (t) => String(t || "").slice(0, 5);
+
+const buildSameDayBookingCutoff = (now = new Date()) => {
+  const cutoff = new Date(now);
+  cutoff.setMinutes(cutoff.getMinutes() + SAME_DAY_BOOKING_LEAD_MINUTES, 0, 0);
+  return cutoff;
+};
 
 const safeNotifyTrainerBooking = async ({ trainerId, title, message, relatedId = null }) => {
   try {
@@ -671,6 +678,7 @@ async function buildValidatedFixedPlan(userId, payload, transaction = null) {
   }
 
   const now = new Date();
+  const sameDayCutoff = buildSameDayBookingCutoff(now);
   const today00 = new Date();
   today00.setHours(0, 0, 0, 0);
 
@@ -748,7 +756,8 @@ async function buildValidatedFixedPlan(userId, payload, transaction = null) {
 
     for (const bookingDate of bookingDates) {
       const dateTime = new Date(`${bookingDate}T${startTime}`);
-      if (dateTime <= now) {
+      const comparePoint = bookingDate === toISODate(now) ? sameDayCutoff : now;
+      if (dateTime < comparePoint) {
         ok = false;
         break;
       }
@@ -843,10 +852,11 @@ const bookingService = {
     }));
 
     const now = new Date();
+    const sameDayCutoff = buildSameDayBookingCutoff(now);
     const todayLocal = new Date();
     todayLocal.setHours(0, 0, 0, 0);
     const isToday = new Date(`${date}T00:00:00`).getTime() === todayLocal.getTime();
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const cutoffMinutes = sameDayCutoff.getHours() * 60 + sameDayCutoff.getMinutes();
 
     const slots = [];
     for (const h of hours) {
@@ -856,7 +866,7 @@ const bookingService = {
       while (s + SLOT_MINUTES <= end) {
         const e = s + SLOT_MINUTES;
 
-        if (isToday && s <= nowMinutes) {
+        if (isToday && s < cutoffMinutes) {
           s += SLOT_MINUTES;
           continue;
         }

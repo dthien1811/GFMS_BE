@@ -39,38 +39,18 @@ const checkPrefixPermission = (allowedPrefixes = [], path = "") => {
   return allowedPrefixes.some((p) => path === p || path.startsWith(p + "/"));
 };
 
-const ACCESS_TOKEN_EXPIRES_IN = process.env.JWT_ACCESS_EXPIRES_IN || "30d";
-const REFRESH_TOKEN_EXPIRES_IN = process.env.JWT_REFRESH_EXPIRES_IN || "365d";
-const REFRESH_TOKEN_SECRET = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
-
-const createAccessToken = (payload) => {
-  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: ACCESS_TOKEN_EXPIRES_IN });
+const createToken = (payload) => {
+  return jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: "1d" });
 };
 
-const createRefreshToken = (payload) => {
-  return jwt.sign(payload, REFRESH_TOKEN_SECRET, { expiresIn: REFRESH_TOKEN_EXPIRES_IN });
-};
-
-const verifyAccessToken = (token) => {
+const verifyToken = (token) => {
   return jwt.verify(token, process.env.JWT_SECRET);
 };
-
-const verifyRefreshToken = (token) => {
-  return jwt.verify(token, REFRESH_TOKEN_SECRET);
-};
-
-// Backward-compatible aliases for old imports
-const createToken = (payload) => createAccessToken(payload);
-const verifyToken = (token) => verifyAccessToken(token);
 
 module.exports = {
   getGroupWithRoles,
   getAllowedPrefixesByGroupId,
   checkPrefixPermission,
-  createAccessToken,
-  createRefreshToken,
-  verifyAccessToken,
-  verifyRefreshToken,
   createToken,
   verifyToken,
 };

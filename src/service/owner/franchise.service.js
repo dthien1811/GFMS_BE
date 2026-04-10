@@ -51,20 +51,6 @@ const createFranchiseRequest = async (userId, data) => {
     status: "pending",
   });
 
-  try {
-    const u = await User.findByPk(userId, { attributes: ["username", "email"] });
-    const ownerLabel = u?.username || u?.email || `User #${userId}`;
-    await realtimeService.notifyAdministrators({
-      title: "Yêu cầu nhượng quyền mới",
-      message: `Mã #${franchiseRequest.id} · ${businessName} · ${contactPerson} · Owner: ${ownerLabel}`,
-      notificationType: "admin_franchise_request_submitted",
-      relatedType: "franchise_request",
-      relatedId: franchiseRequest.id,
-    });
-  } catch (e) {
-    console.error("[owner.franchise] notifyAdministrators:", e?.message || e);
-  }
-
   emitFranchiseChanged([userId], {
     requestId: franchiseRequest.id,
     status: franchiseRequest.status,
@@ -247,6 +233,7 @@ const deleteMyFranchiseRequest = async (userId, requestId) => {
 
   return { message: "Đã xóa franchise request thành công" };
 };
+
 export default {
   createFranchiseRequest,
   getMyFranchiseRequests,

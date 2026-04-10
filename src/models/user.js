@@ -36,10 +36,6 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'receiverId', 
         as: 'receivedMessages' 
       });
-      User.hasMany(models.RefreshTokenSession, {
-        foreignKey: 'userId',
-        as: 'refreshTokenSessions',
-      });
       // ==============================
     }
   };

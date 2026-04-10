@@ -3,7 +3,7 @@ import crypto from 'crypto'
 import db from '../models/index'
 import bcrypt from 'bcryptjs'
 import { OAuth2Client } from 'google-auth-library'
-import { getGroupWithRoles } from './JWTService'
+import { createToken, getGroupWithRoles } from './JWTService'
 
 const salt = bcrypt.genSaltSync(10)
 const hashPassword = (userPassword) => bcrypt.hashSync(userPassword, salt)
@@ -30,6 +30,13 @@ const pickAvatarFromPicture = (picture) => {
 
 const issueLoginSuccess = async (userRow) => {
   const roles = await getGroupWithRoles(userRow)
+  const payload = {
+    id: userRow.id,
+    email: userRow.email,
+    username: userRow.username,
+    groupId: userRow.groupId
+  }
+  const accessToken = createToken(payload)
   const user = { ...userRow }
   delete user.password
   return {
@@ -37,6 +44,7 @@ const issueLoginSuccess = async (userRow) => {
     EC: 0,
     DT: {
       user,
+      accessToken,
       roles
     }
   }
@@ -133,6 +141,14 @@ const loginUser = async (userData) => {
 
     const roles = await getGroupWithRoles(user)
 
+    const payload = {
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      groupId: user.groupId
+    }
+
+    const accessToken = createToken(payload)
     delete user.password
 
     return {
@@ -140,6 +156,7 @@ const loginUser = async (userData) => {
       EC: 0,
       DT: {
         user,
+        accessToken,
         roles
       }
     }

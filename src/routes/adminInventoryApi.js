@@ -16,7 +16,22 @@ const adminTrainerShareOverrideController = require("../controllers/adminTrainer
 const jwtAction = require("../middleware/JWTAction");
 const { checkUserPermission } = require("../middleware/permission");
 
-const { uploadEquipmentImages } = require("../middleware/uploadEquipmentImages");
+// ===== FIX UPLOAD MIDDLEWARE: normalize export =====
+const uploadModule = require("../middleware/uploadEquipmentImages");
+
+function resolveUploadMiddleware(mod) {
+  if (typeof mod === "function") return mod;
+  if (mod && typeof mod.uploadEquipmentImages === "function") return mod.uploadEquipmentImages;
+  if (mod && typeof mod.default === "function") return mod.default;
+
+  if (mod && typeof mod.array === "function") return mod.array("images", 10);
+  if (mod && typeof mod.single === "function") return mod.single("image");
+
+  console.warn("[WARN] uploadEquipmentImages is not a middleware function. Got:", typeof mod, mod && Object.keys(mod));
+  return (req, res, next) => next();
+}
+
+const uploadEquipmentImages = resolveUploadMiddleware(uploadModule);
 
 // ========================
 // PROTECT ALL ROUTES
@@ -38,10 +53,9 @@ router.get("/gyms", adminInventoryController.getGyms);
 router.get("/equipment-categories", adminInventoryController.getEquipmentCategories);
 router.get("/equipments", adminInventoryController.getEquipments);
 
-router.post("/equipments", adminInventoryController.createEquipment);
-router.put("/equipments/:id", adminInventoryController.updateEquipment);
+router.post("/equipments", uploadEquipmentImages, adminInventoryController.createEquipment);
+router.put("/equipments/:id", uploadEquipmentImages, adminInventoryController.updateEquipment);
 router.patch("/equipments/:id/discontinue", adminInventoryController.discontinueEquipment);
-router.delete("/equipments/:id", adminInventoryController.deleteEquipment);
 
 // Images
 router.get("/equipments/:id/images", adminInventoryController.getEquipmentImages);
@@ -65,11 +79,8 @@ router.get("/inventory-logs", adminInventoryController.getInventoryLogs);
 // MODULE 2: PURCHASE WORKFLOW
 // ========================
 router.get("/purchase-requests", adminPurchaseWorkflowController.getPurchaseRequests);
-router.get("/purchase-transactions", adminPurchaseWorkflowController.getEquipmentSalesTransactions);
 router.get("/purchase-requests/:id", adminPurchaseWorkflowController.getPurchaseRequestDetail);
 router.patch("/purchase-requests/:id/reject", adminPurchaseWorkflowController.rejectPurchaseRequest);
-router.patch("/purchase-requests/:id/approve", adminPurchaseWorkflowController.approvePurchaseRequest);
-router.patch("/purchase-requests/:id/confirm-payment-and-ship", adminPurchaseWorkflowController.confirmPurchaseRequestPaymentAndShip);
 router.post("/purchase-requests/:id/convert-to-quotation", adminPurchaseWorkflowController.convertPurchaseRequestToQuotation);
 
 router.get("/quotations", adminPurchaseWorkflowController.getQuotations);

@@ -1,81 +1,8 @@
 import authService from "../service/authService";
-import { createAccessToken, createRefreshToken, verifyRefreshToken, getGroupWithRoles } from "../service/JWTService";
-import refreshTokenSessionService from "../service/refreshTokenSession.service";
 const crypto = require("crypto");
 const { safeSend } = require("../utils/mailer");
 const db = require("../models/index");
 const bcrypt = require("bcryptjs");
-
-const REFRESH_COOKIE_NAME = "refreshToken";
-const REMEMBER_REFRESH_MAX_AGE_MS = Number(process.env.REFRESH_REMEMBER_MAX_AGE_MS || 365 * 24 * 60 * 60 * 1000);
-const SESSION_REFRESH_MAX_AGE_MS = Number(process.env.REFRESH_SESSION_MAX_AGE_MS || 365 * 24 * 60 * 60 * 1000);
-
-const isLocalhostValue = (value) => /(^|\/\/)(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(String(value || ""));
-const shouldUseSecureCookie = (req) => {
-  const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
-  const host = String(req?.headers?.host || process.env.HOSTNAME || "").toLowerCase();
-  const frontendUrl = String(process.env.FRONTEND_URL || "");
-  const backendUrl = String(process.env.BACKEND_URL || "");
-
-  if (isLocalhostValue(frontendUrl) || isLocalhostValue(backendUrl) || /^(localhost|127\.0\.0\.1)(:\d+)?$/i.test(host)) {
-    return false;
-  }
-
-  // Only enable secure cookies when request is actually HTTPS.
-  // If we force secure=true on plain HTTP (common on local LAN/dev),
-  // browser will not store refresh cookie => session dies after access token expiry (~15m).
-  if (forwardedProto.includes("https")) return true;
-  if (req?.secure) return true;
-  return false;
-};
-const getRefreshCookieOptions = (req, rememberMe = false) => {
-  const secure = shouldUseSecureCookie(req);
-  return {
-    httpOnly: true,
-    secure,
-    sameSite: secure ? "none" : "lax",
-    path: "/",
-    maxAge: Math.max(REMEMBER_REFRESH_MAX_AGE_MS, SESSION_REFRESH_MAX_AGE_MS),
-  };
-};
-
-const buildTokenPayload = (user) => ({
-  id: user.id,
-  email: user.email,
-  username: user.username,
-  groupId: user.groupId,
-});
-
-const getClientIp = (req) =>
-  req.ip || req.headers["x-forwarded-for"] || req.connection?.remoteAddress || null;
-
-const getUserAgent = (req) => String(req.headers["user-agent"] || "").slice(0, 512) || null;
-
-const buildRefreshExpiryDate = () =>
-  new Date(Date.now() + Math.max(REMEMBER_REFRESH_MAX_AGE_MS, SESSION_REFRESH_MAX_AGE_MS));
-
-const issueRefreshSession = async ({ user, rememberMe, req, res }) => {
-  const sessionId = crypto.randomUUID();
-  const familyId = crypto.randomUUID();
-  const refreshToken = createRefreshToken({
-    ...buildTokenPayload(user),
-    typ: "refresh",
-    sid: sessionId,
-    fid: familyId,
-    jti: crypto.randomUUID(),
-  });
-  await refreshTokenSessionService.createSession({
-    userId: user.id,
-    sessionId,
-    familyId,
-    refreshToken,
-    expiresAt: buildRefreshExpiryDate(),
-    rememberMe,
-    ip: getClientIp(req),
-    userAgent: getUserAgent(req),
-  });
-  res.cookie(REFRESH_COOKIE_NAME, refreshToken, getRefreshCookieOptions(req, rememberMe));
-};
 
 // ==================== GLOBAL RATE LIMITING CONFIG ====================
 const RATE_LIMITS_CONFIG = {
@@ -343,17 +270,14 @@ const handleLogin = async (req, res) => {
       return res.status(400).json({ EM: "Missing required fields", EC: 1, DT: "" });
     }
 
-    const rememberMe = Boolean(req.body?.rememberMe);
     const data = await authService.loginUser(req.body);
-    if (data.EC === 0 && data?.DT?.user) {
-      const accessToken = createAccessToken(buildTokenPayload(data.DT.user));
-      await issueRefreshSession({ user: data.DT.user, rememberMe, req, res });
-      return res.status(200).json({
-        EM: data.EM,
-        EC: data.EC,
-        DT: { ...data.DT, accessToken },
-      });
+
+    const token = data?.DT?.accessToken;
+    if (data.EC === 0 && token) {
+      res.cookie("jwt", token, { httpOnly: true, maxAge: 60 * 60 * 1000 });
     }
+
+    if (data.EC === 0) return res.status(200).json({ EM: data.EM, EC: data.EC, DT: data.DT });
 
     return res.status(401).json({ EM: data.EM, EC: data.EC, DT: data.DT });
   } catch (e) {
@@ -365,16 +289,20 @@ const handleLogin = async (req, res) => {
 // 2.4) Login with Google (ID token từ @react-oauth/google)
 const handleGoogleLogin = async (req, res) => {
   try {
-    const { credential, rememberMe } = req.body || {};
+    const { credential } = req.body || {};
     if (!credential) {
       return res.status(400).json({ EM: "Missing Google credential", EC: 1, DT: "" });
     }
 
     const data = await authService.loginWithGoogle({ credential });
+
+    const token = data?.DT?.accessToken;
+    if (data.EC === 0 && token) {
+      res.cookie("jwt", token, { httpOnly: true, maxAge: 60 * 60 * 1000 });
+    }
+
     if (data.EC === 0) {
-      const accessToken = createAccessToken(buildTokenPayload(data.DT.user));
-      await issueRefreshSession({ user: data.DT.user, rememberMe: Boolean(rememberMe), req, res });
-      return res.status(200).json({ EM: data.EM, EC: data.EC, DT: { ...data.DT, accessToken } });
+      return res.status(200).json({ EM: data.EM, EC: data.EC, DT: data.DT });
     }
 
     if (data.EC === 2) {
@@ -391,102 +319,10 @@ const handleGoogleLogin = async (req, res) => {
 // 2.5) Logout
 const handleLogout = async (req, res) => {
   try {
-    const token = req.cookies?.[REFRESH_COOKIE_NAME];
-    if (token) {
-      try {
-        const decoded = verifyRefreshToken(token);
-        if (decoded?.sid) {
-          await refreshTokenSessionService.revokeBySessionId(decoded.sid);
-        }
-      } catch (_) {}
-    }
-    const cookieOptions = getRefreshCookieOptions(req, false);
-    res.clearCookie(REFRESH_COOKIE_NAME, {
-      httpOnly: true,
-      secure: cookieOptions.secure,
-      sameSite: cookieOptions.sameSite,
-      path: "/",
-    });
+    res.clearCookie("jwt", { httpOnly: true, path: "/" });
     return res.status(200).json({ EM: "Logout success", EC: 0, DT: "" });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ EM: "error from server", EC: -1, DT: "" });
-  }
-};
-
-const handleRefresh = async (req, res) => {
-  try {
-    const token = req.cookies?.[REFRESH_COOKIE_NAME];
-    if (!token) return res.status(401).json({ EM: "Missing refresh token", EC: 1, DT: "" });
-
-    const decoded = verifyRefreshToken(token);
-    if (!decoded?.sid) {
-      return res.status(401).json({ EM: "Invalid refresh session", EC: 1, DT: "" });
-    }
-
-    const activeSession = await refreshTokenSessionService.findActiveSession({
-      sessionId: decoded.sid,
-      refreshToken: token,
-    });
-    if (!activeSession) {
-      if (decoded?.fid) {
-        await refreshTokenSessionService.revokeFamily(decoded.fid);
-      }
-      return res.status(401).json({ EM: "Refresh session revoked", EC: 1, DT: "" });
-    }
-
-    const user = await db.User.findOne({
-      where: { id: decoded?.id },
-      attributes: ["id", "email", "username", "groupId", "status"],
-      raw: true,
-    });
-
-    if (!user || String(user.status || "active").toLowerCase() !== "active") {
-      return res.status(401).json({ EM: "Refresh token is invalid", EC: 1, DT: "" });
-    }
-
-    const roles = await getGroupWithRoles(user);
-    const accessToken = createAccessToken(buildTokenPayload(user));
-    const newRefreshToken = createRefreshToken({
-      ...buildTokenPayload(user),
-      typ: "refresh",
-      sid: crypto.randomUUID(),
-      fid: activeSession.familyId,
-      jti: crypto.randomUUID(),
-    });
-    const rotated = await refreshTokenSessionService.rotateSession({
-      session: activeSession,
-      newRefreshToken,
-      newExpiresAt: buildRefreshExpiryDate(),
-      ip: getClientIp(req),
-      userAgent: getUserAgent(req),
-    });
-    res.cookie(REFRESH_COOKIE_NAME, newRefreshToken, getRefreshCookieOptions(req, Boolean(rotated.rememberMe)));
-    return res.status(200).json({
-      EM: "Refresh success",
-      EC: 0,
-      DT: { accessToken, user, roles },
-    });
-  } catch (error) {
-    return res.status(401).json({ EM: "Refresh token expired or invalid", EC: 1, DT: "" });
-  }
-};
-
-const handleMe = async (req, res) => {
-  try {
-    const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ EM: "Unauthorized", EC: 1, DT: "" });
-
-    const user = await db.User.findOne({
-      where: { id: userId },
-      attributes: { exclude: ["password"] },
-      raw: true,
-    });
-    if (!user) return res.status(401).json({ EM: "User not found", EC: 1, DT: "" });
-
-    const roles = await getGroupWithRoles(user);
-    return res.status(200).json({ EM: "Get current user success", EC: 0, DT: { user, roles } });
-  } catch (error) {
     return res.status(500).json({ EM: "error from server", EC: -1, DT: "" });
   }
 };
@@ -739,8 +575,6 @@ module.exports = {
   handleLogin,
   handleGoogleLogin,
   handleLogout,
-  handleRefresh,
-  handleMe,
   handleForgotPassword,
   handleVerifyOTP,
   handleResetPassword,

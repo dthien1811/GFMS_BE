@@ -1,9 +1,5 @@
-const procurementStockHelper = require("./procurementStockHelper");
-const { computeFulfillmentPlan } = procurementStockHelper;
 // src/service/adminPurchaseWorkflowService.js
 const { Op } = require("sequelize");
-const realtimeServiceModule = require("./realtime.service");
-const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
 const {
   sequelize,
   Quotation,
@@ -25,6 +21,8 @@ const {
   PurchaseRequest,
   EquipmentUnit,
 } = require("../models");
+const realtimeServiceModule = require("./realtime.service");
+const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
 const notificationGymService = require("./notification-gym.service");
 const { attachGymIdsToNotifications } = notificationGymService;
 const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
@@ -37,12 +35,11 @@ async function createEquipmentUnits({ gymId, equipmentId, quantity, notes }, tra
   if (!qty) return [];
 
   const now = Date.now();
-  const seed = Math.floor(Math.random() * 1000000);
   return EquipmentUnit.bulkCreate(
     Array.from({ length: qty }, (_, index) => ({
       gymId: Number(gymId),
       equipmentId: Number(equipmentId),
-      assetCode: `EQ-${equipmentId}-GYM-${gymId}-${now}-${seed}-${index + 1}`,
+      assetCode: `EQ-${equipmentId}-GYM-${gymId}-${now}-${index + 1}`,
       status: "active",
       usageStatus: "in_stock",
       notes: notes || null,
@@ -220,17 +217,7 @@ class AdminPurchaseWorkflowService {
       ],
     });
 
-    return {
-      data: rows.map((row) => {
-        const json = row.toJSON ? row.toJSON() : row;
-        const snapshot = json.stockSnapshot || null;
-        return {
-          ...json,
-          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
-        };
-      }),
-      meta: { page, limit, total: count },
-    };
+    return { data: rows, meta: { page, limit, total: count } };
   }
 
   async getQuotationDetail(id) {
@@ -537,17 +524,7 @@ class AdminPurchaseWorkflowService {
       ],
     });
 
-    return {
-      data: rows.map((row) => {
-        const json = row.toJSON ? row.toJSON() : row;
-        const snapshot = json.stockSnapshot || null;
-        return {
-          ...json,
-          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
-        };
-      }),
-      meta: { page, limit, total: count },
-    };
+    return { data: rows, meta: { page, limit, total: count } };
   }
 
   async getPurchaseOrderDetail(id) {
@@ -727,17 +704,7 @@ class AdminPurchaseWorkflowService {
       ],
     });
 
-    return {
-      data: rows.map((row) => {
-        const json = row.toJSON ? row.toJSON() : row;
-        const snapshot = json.stockSnapshot || null;
-        return {
-          ...json,
-          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
-        };
-      }),
-      meta: { page, limit, total: count },
-    };
+    return { data: rows, meta: { page, limit, total: count } };
   }
 
   async getReceiptDetail(id) {
@@ -935,8 +902,6 @@ class AdminPurchaseWorkflowService {
 
   async completeReceipt(receiptId, adminId, req) {
     return sequelize.transaction(async (t) => {
-      let poAwaitingFinalPayment = null;
-
       const receipt = await Receipt.findByPk(receiptId, {
         include: [{ model: ReceiptItem, as: "items" }],
         transaction: t,
@@ -1090,14 +1055,6 @@ class AdminPurchaseWorkflowService {
             },
             t
           );
-
-          if (po.status === "received" && paid < totalAmt - EPS) {
-            poAwaitingFinalPayment = {
-              id: po.id,
-              code: po.code || String(po.id),
-              remaining: totalAmt - paid,
-            };
-          }
         }
       }
 
@@ -1113,23 +1070,6 @@ class AdminPurchaseWorkflowService {
         },
         t
       );
-
-      if (poAwaitingFinalPayment) {
-        const snap = poAwaitingFinalPayment;
-        t.afterCommit(async () => {
-          try {
-            await realtimeService.notifyAdministrators({
-              title: "Mua sắm — chờ thanh toán cuối",
-              message: `PO ${snap.code}: đã nhận đủ hàng, còn ${Number(snap.remaining).toLocaleString("vi-VN")}đ — ghi nhận thanh toán (tab Thanh toán).`,
-              notificationType: "admin_procurement_po_awaits_final_payment",
-              relatedType: "purchase_order",
-              relatedId: snap.id,
-            });
-          } catch (e) {
-            console.error("[adminPurchaseWorkflow] notify admins final payment:", e?.message || e);
-          }
-        });
-      }
 
       return receipt;
     });
@@ -1344,97 +1284,8 @@ class AdminPurchaseWorkflowService {
         { model: Quotation, as: "quotation", attributes: ["id", "code", "status"] },
       ],
     });
-    return {
-      data: rows.map((row) => {
-        const json = row.toJSON ? row.toJSON() : row;
-        const snapshot = json.stockSnapshot || null;
-        return {
-          ...json,
-          fulfillmentPlan: snapshot?.fulfillmentPlan || computeFulfillmentPlan(json.quantity, snapshot),
-        };
-      }),
-      meta: { page, limit, total: count },
-    };
-  }
 
-  async getEquipmentSalesTransactions(query) {
-    const { page, limit, offset } = paging(query || {});
-    const where = {
-      transactionType: "equipment_purchase",
-    };
-
-    const keyword = String(query?.q || "").trim();
-
-    const shouldLoadAll = Boolean(keyword);
-    const { rows, count } = await Transaction.findAndCountAll({
-      where,
-      order: [["createdAt", "DESC"]],
-      ...(shouldLoadAll ? {} : { limit, offset }),
-    });
-
-    const txRows = rows.map((row) => row.toJSON());
-    const prIds = Array.from(
-      new Set(
-        txRows
-          .map((row) => Number(row?.metadata?.purchaseRequestId || 0))
-          .filter((id) => Number.isFinite(id) && id > 0)
-      )
-    );
-
-    const requests = prIds.length
-      ? await PurchaseRequest.findAll({
-          where: { id: { [Op.in]: prIds } },
-          include: [
-            { model: User, as: "requester", attributes: ["id", "username", "email"] },
-            { model: Equipment, as: "equipment", attributes: ["id", "name", "code"] },
-            { model: Gym, as: "gym", attributes: ["id", "name"] },
-          ],
-        })
-      : [];
-    const requestById = new Map(requests.map((r) => [Number(r.id), r]));
-
-    let data = txRows.map((tx) => {
-      const prId = Number(tx?.metadata?.purchaseRequestId || 0);
-      const pr = requestById.get(prId) || null;
-      const ownerName = pr?.requester?.username || pr?.requester?.email || "-";
-      return {
-        id: tx.id,
-        transactionCode: tx.transactionCode,
-        amount: Number(tx.amount || 0),
-        paymentStatus: tx.paymentStatus,
-        paymentMethod: tx.paymentMethod,
-        transactionDate: tx.transactionDate || tx.createdAt,
-        createdAt: tx.createdAt,
-        purchaseRequestCode: pr?.code || tx?.metadata?.purchaseRequestCode || "-",
-        owner: ownerName,
-        equipmentName: pr?.equipment?.name || "-",
-        gymName: pr?.gym?.name || "-",
-        quantity: Number(pr?.quantity || 0),
-      };
-    });
-
-    if (keyword) {
-      const qLower = keyword.toLowerCase();
-      data = data.filter((item) =>
-        [
-          item.transactionCode,
-          item.purchaseRequestCode,
-          item.owner,
-          item.equipmentName,
-          item.gymName,
-          String(item.quantity || ""),
-          String(item.amount || ""),
-          String(item.paymentStatus || ""),
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(qLower)
-      );
-    }
-
-    const total = keyword ? data.length : count;
-    const paged = shouldLoadAll ? data.slice(offset, offset + limit) : data;
-    return { data: paged, meta: { page, limit, total } };
+    return { data: rows, meta: { page, limit, total: count } };
   }
 
   async getPurchaseRequestDetail(id) {
@@ -1448,197 +1299,7 @@ class AdminPurchaseWorkflowService {
       ],
     });
     if (!pr) throw new Error("Purchase request not found");
-    return {
-      ...pr.toJSON(),
-      fulfillmentPlan: pr.stockSnapshot?.fulfillmentPlan || computeFulfillmentPlan(pr.quantity, pr.stockSnapshot),
-    };
-  }
-
-  async approvePurchaseRequest(requestId, adminId, req) {
-    return sequelize.transaction(async (t) => {
-      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
-      if (!pr) throw new Error("Purchase request not found");
-      if (pr.status !== "submitted") throw new Error("Only submitted requests can be approved");
-
-      const old = pr.toJSON();
-      pr.status = "approved_waiting_payment";
-      await pr.save({ transaction: t });
-
-      const amount = Number(pr.quantity || 0) * Number(pr.expectedUnitPrice || 0);
-      await Transaction.create(
-        {
-          transactionCode: genCode("TX"),
-          gymId: pr.gymId,
-          amount,
-          transactionType: "equipment_purchase",
-          paymentMethod: "payos",
-          paymentStatus: "pending",
-          description: `Payment for purchase request ${pr.code}`,
-          metadata: {
-            purchaseRequestId: pr.id,
-            purchaseRequestCode: pr.code,
-            source: "direct_purchase_request",
-          },
-          transactionDate: new Date(),
-          processedBy: pr.requestedBy || null,
-        },
-        { transaction: t }
-      );
-
-      await createAudit(
-        {
-          userId: adminId,
-          action: "PURCHASE_REQUEST_APPROVED",
-          tableName: "purchaserequest",
-          recordId: pr.id,
-          oldValues: old,
-          newValues: pr.toJSON(),
-          req,
-        },
-        t
-      );
-
-      await createNotification(
-        {
-          userId: pr.requestedBy,
-          title: "Yêu cầu mua đã được duyệt",
-          message: `${pr.code} đã được duyệt. Vui lòng thanh toán để admin xử lý giao hàng.`,
-          notificationType: "purchase_request",
-          relatedType: "purchaserequest",
-          relatedId: pr.id,
-        },
-        t
-      );
-
-      return pr;
-    });
-  }
-
-  async confirmPurchaseRequestPaymentAndShip(requestId, adminId, req) {
-    return sequelize.transaction(async (t) => {
-      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
-      if (!pr) throw new Error("Purchase request not found");
-      if (pr.status !== "paid_waiting_admin_confirm") {
-        throw new Error("Request must be paid_waiting_admin_confirm");
-      }
-
-      const neededQty = Number(pr.quantity || 0);
-      if (neededQty <= 0) throw new Error("Invalid request quantity");
-
-      const stocks = await EquipmentStock.findAll({
-        where: { equipmentId: pr.equipmentId },
-        include: [
-          {
-            model: Gym,
-            as: "gym",
-            attributes: ["id", "ownerId"],
-            required: false,
-          },
-        ],
-        order: [["availableQuantity", "DESC"], ["id", "ASC"]],
-        transaction: t,
-        lock: t.LOCK.UPDATE,
-      });
-      // Chỉ trừ kho trung tâm/admin (ownerId IS NULL). Nếu hệ thống chưa có kho trung tâm
-      // thì fallback trừ các kho còn lại để không chặn flow.
-      const centralGyms = await Gym.findAll({
-        where: { ownerId: null },
-        attributes: ["id"],
-        raw: true,
-        transaction: t,
-        lock: t.LOCK.SHARE,
-      });
-      const centralGymIdSet = new Set(
-        (centralGyms || []).map((g) => Number(g.id)).filter((id) => Number.isFinite(id) && id > 0)
-      );
-      const centralStocks = stocks.filter((s) => centralGymIdSet.has(Number(s.gymId)));
-      // Fallback without central gyms: never deduct from the same owner gym receiving goods.
-      const nonOwnerStocks = stocks.filter((s) => Number(s.gymId) !== Number(pr.gymId));
-      const sourceStocks = centralStocks.length ? centralStocks : nonOwnerStocks;
-
-      if (!sourceStocks.length) {
-        throw new Error("Không tìm thấy kho nguồn để xuất hàng (đã loại trừ kho owner nhận hàng).");
-      }
-
-      const stockGymIds = Array.from(
-        new Set(sourceStocks.map((s) => Number(s.gymId)).filter((id) => Number.isFinite(id) && id > 0))
-      );
-      const validGyms = stockGymIds.length
-        ? await Gym.findAll({
-            where: { id: { [Op.in]: stockGymIds } },
-            attributes: ["id"],
-            transaction: t,
-            lock: t.LOCK.SHARE,
-          })
-        : [];
-      const validGymIdSet = new Set(validGyms.map((g) => Number(g.id)));
-      const fallbackLogGymId = Number(validGyms[0]?.id || 0);
-      let remaining = neededQty;
-      for (const st of sourceStocks) {
-        if (remaining <= 0) break;
-        const avail = Number(st.availableQuantity || 0);
-        if (avail <= 0) continue;
-        const take = Math.min(avail, remaining);
-        const before = Number(st.quantity || 0);
-        st.quantity = Math.max(0, before - take);
-        st.availableQuantity = Math.max(0, Number(st.availableQuantity || 0) - take);
-        await st.save({ transaction: t });
-        remaining -= take;
-
-        const stockGymId = validGymIdSet.has(Number(st.gymId)) ? Number(st.gymId) : fallbackLogGymId;
-        if (!stockGymId) continue;
-        await Inventory.create(
-          {
-            gymId: stockGymId,
-            equipmentId: pr.equipmentId,
-            transactionType: "sale",
-            transactionId: pr.id,
-            transactionCode: pr.code,
-            quantity: -take,
-            unitPrice: pr.expectedUnitPrice || 0,
-            totalValue: Number(pr.expectedUnitPrice || 0) * take,
-            stockBefore: before,
-            stockAfter: Number(st.quantity || 0),
-            notes: `Xuất kho bán cho yêu cầu ${pr.code}`,
-            recordedBy: adminId || null,
-            recordedAt: new Date(),
-          },
-          { transaction: t }
-        );
-      }
-      if (remaining > 0) throw new Error("Admin stock is not enough to ship this request");
-
-      const old = pr.toJSON();
-      pr.status = "shipping";
-      await pr.save({ transaction: t });
-
-      await createAudit(
-        {
-          userId: adminId,
-          action: "PURCHASE_REQUEST_SHIPPING",
-          tableName: "purchaserequest",
-          recordId: pr.id,
-          oldValues: old,
-          newValues: pr.toJSON(),
-          req,
-        },
-        t
-      );
-
-      await createNotification(
-        {
-          userId: pr.requestedBy,
-          title: "Admin đã nhận tiền, đang chuyển thiết bị",
-          message: `${pr.code} đã được xác nhận thanh toán và đang chuyển thiết bị cho bạn.`,
-          notificationType: "purchase_request",
-          relatedType: "purchaserequest",
-          relatedId: pr.id,
-        },
-        t
-      );
-
-      return pr;
-    });
+    return pr;
   }
 
   async rejectPurchaseRequest(requestId, body, adminId, req) {
@@ -1696,117 +1357,11 @@ class AdminPurchaseWorkflowService {
       const supplier = await Supplier.findByPk(supplierId, { transaction: t });
       if (!supplier) throw new Error("Supplier not found");
 
-      const unitPrice = Number(pr.expectedUnitPrice || 0);
-      const requestedQty = Number(pr.quantity || 0);
-      const availableQty = Math.max(
-        0,
-        Number(
-          pr.availableQty ??
-            pr.stockSnapshot?.availableQuantity ??
-            pr.stockSnapshot?.fulfillmentPlan?.availableQuantity ??
-            0
-        )
-      );
-      const issueQty = Math.min(requestedQty, availableQty);
-      const purchaseQty = Math.max(requestedQty - availableQty, 0);
-      const totalAmount = purchaseQty * unitPrice;
-      const payableAmount = totalAmount;
-      const depositAmount = payableAmount * 0.3;
-      const remainingAmount = payableAmount - depositAmount;
-
-      if (issueQty > 0) {
-        // IMPORTANT: "Cấp từ kho" phải trừ từ kho trung tâm/admin, không trừ kho của owner gym.
-        const adminStocks = await EquipmentStock.findAll({
-          where: { equipmentId: pr.equipmentId },
-          include: [
-            {
-              model: Gym,
-              as: "gym",
-              attributes: ["id", "ownerId"],
-              required: false,
-            },
-          ],
-          order: [["availableQuantity", "DESC"], ["id", "ASC"]],
-          transaction: t,
-          lock: t.LOCK.UPDATE,
-        });
-
-        // Ưu tiên kho trung tâm (ownerId IS NULL). Nếu hệ thống không có kho trung tâm
-        // thì fallback dùng tất cả kho hiện có để không chặn nghiệp vụ.
-        const centralStocks = adminStocks.filter((s) => s.gym && s.gym.ownerId == null);
-        const sourceStocks = centralStocks.length ? centralStocks : adminStocks;
-
-        let remainingIssue = issueQty;
-        for (const st of sourceStocks) {
-          if (remainingIssue <= 0) break;
-          const avail = Number(st.availableQuantity || 0);
-          if (avail <= 0) continue;
-
-          const take = Math.min(avail, remainingIssue);
-          const beforeQty = Number(st.quantity || 0);
-          const beforeAvail = Number(st.availableQuantity || 0);
-          const afterQty = Math.max(0, beforeQty - take);
-          const afterAvail = Math.max(0, beforeAvail - take);
-
-          st.quantity = afterQty;
-          st.availableQuantity = afterAvail;
-          await st.save({ transaction: t });
-
-          await Inventory.create(
-            {
-              gymId: st.gymId,
-              equipmentId: pr.equipmentId,
-              transactionType: "sale",
-              transactionId: pr.id,
-              transactionCode: pr.code,
-              quantity: -take,
-              unitPrice: null,
-              totalValue: null,
-              stockBefore: beforeAvail,
-              stockAfter: afterAvail,
-              notes: `Issued from admin stock for purchase request ${pr.code}`,
-              recordedBy: adminId || null,
-              recordedAt: new Date(),
-            },
-            { transaction: t }
-          );
-
-          remainingIssue -= take;
-        }
-
-        if (remainingIssue > 0) {
-          throw new Error(
-            `Admin stock is not enough to issue ${issueQty}. Missing ${remainingIssue}. Please refresh and try again.`
-          );
-        }
-      }
-
-      pr.availableQty = availableQty;
-      pr.issueQty = issueQty;
-      pr.purchaseQty = purchaseQty;
-      pr.payableAmount = payableAmount;
-      pr.depositAmount = depositAmount;
-      pr.remainingAmount = remainingAmount;
-
-      if (purchaseQty <= 0) {
-        pr.status = "fulfilled_from_stock";
-        await pr.save({ transaction: t });
-        return {
-          purchaseRequestId: pr.id,
-          status: pr.status,
-          requestedQty,
-          availableQty,
-          issueQty,
-          purchaseQty,
-          unitPrice,
-          payableAmount,
-          depositAmount,
-          remainingAmount,
-        };
-      }
-
       const count = await Quotation.count({ transaction: t });
       const code = `QUO-${Date.now()}-${count + 1}`;
+      const unitPrice = Number(pr.expectedUnitPrice || 0);
+      const qty = Number(pr.quantity || 0);
+      const totalAmount = qty * unitPrice;
 
       const quotation = await Quotation.create(
         {
@@ -1826,7 +1381,7 @@ class AdminPurchaseWorkflowService {
         {
           quotationId: quotation.id,
           equipmentId: pr.equipmentId,
-          quantity: purchaseQty,
+          quantity: qty,
           unitPrice,
           totalPrice: totalAmount,
         },

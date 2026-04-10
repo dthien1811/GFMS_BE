@@ -1,6 +1,6 @@
 const { Op } = require("sequelize");
 const db = require("../models");
-const { EquipmentStock, Equipment, PurchaseOrder, PurchaseOrderItem, Gym, sequelize } = db;
+const { EquipmentStock, Equipment, PurchaseOrder, PurchaseOrderItem, sequelize } = db;
 
 const EXPANSION_REASONS = new Set([
   "new_opening",
@@ -51,104 +51,27 @@ async function getGymEquipmentStockRow(gymId, equipmentId, transaction) {
   });
 }
 
-async function getCentralGymIds(transaction) {
-  const rows = await Gym.findAll({
-    where: { ownerId: null },
-    attributes: ["id"],
-    raw: true,
-    transaction,
-  });
-  return (rows || []).map((r) => Number(r.id)).filter((id) => Number.isFinite(id) && id > 0);
-}
-
 /**
  * Snapshot phục vụ owner preview + lưu vào purchase request.
  */
-function computeFulfillmentPlan(requestedQty, ctx) {
-  const requested = Math.max(0, Number(requestedQty || 0));
-  const available = Math.max(0, Number(ctx?.availableQuantity || 0));
-  const issueQty = Math.min(requested, available);
-  const purchaseQty = Math.max(requested - issueQty, 0);
-  return {
-    requestedQuantity: requested,
-    availableQuantity: available,
-    issueQty,
-    purchaseQty,
-    stockUsedQuantity: issueQty,
-    purchaseQuantity: purchaseQty,
-    canFulfillFromStock: purchaseQty === 0,
-  };
-}
-
-function computeStockStatus(ctx) {
-  const available = Math.max(0, Number(ctx?.availableQuantity || 0));
-  const minStock = Math.max(0, Number(ctx?.minStockLevel || 0));
-  if (available <= 0) return "out_of_stock";
-  if (available <= minStock) return "low_stock";
-  return "in_stock";
-}
-
 async function buildStockContext(gymId, equipmentId, transaction) {
-  const equipment = await Equipment.findByPk(Number(equipmentId), {
-    attributes: ["id", "name", "minStockLevel"],
-    transaction,
-  });
+  const equipment = await Equipment.findByPk(Number(equipmentId), { transaction });
   if (!equipment) return null;
 
-  // Procurement flow for owner should consume from admin/central stock first.
-  // If no central gym exists, fallback to request gym stock.
-  const centralGymIds = await getCentralGymIds(transaction);
-  let quantity = 0;
-  let availableQuantity = 0;
-
-  if (centralGymIds.length) {
-    const centralStocks = await EquipmentStock.findAll({
-      where: { equipmentId: Number(equipmentId), gymId: { [Op.in]: centralGymIds } },
-      attributes: ["quantity", "availableQuantity"],
-      raw: true,
-      transaction,
-    });
-    quantity = (centralStocks || []).reduce((sum, s) => sum + Number(s.quantity || 0), 0);
-    availableQuantity = (centralStocks || []).reduce(
-      (sum, s) => sum + Number(s.availableQuantity ?? s.quantity ?? 0),
-      0
-    );
-  } else {
-    // Fallback mode: no explicit central gym configured.
-    // Use all other gyms EXCEPT the requesting gym to avoid self-deduct/self-add no-op.
-    const fallbackStocks = await EquipmentStock.findAll({
-      where: {
-        equipmentId: Number(equipmentId),
-        gymId: { [Op.ne]: Number(gymId) },
-      },
-      attributes: ["quantity", "availableQuantity"],
-      raw: true,
-      transaction,
-    });
-    quantity = (fallbackStocks || []).reduce((sum, s) => sum + Number(s.quantity || 0), 0);
-    availableQuantity = (fallbackStocks || []).reduce(
-      (sum, s) => sum + Number(s.availableQuantity ?? s.quantity ?? 0),
-      0
-    );
-  }
+  const stockRow = await getGymEquipmentStockRow(gymId, equipmentId, transaction);
+  const quantity = stockRow ? Number(stockRow.quantity || 0) : 0;
+  const availableQuantity = stockRow ? Number(stockRow.availableQuantity ?? stockRow.quantity ?? 0) : 0;
   const minStock = Number(equipment.minStockLevel ?? 0);
   const pendingPurchaseQty = await getPendingOrderedQuantity(gymId, equipmentId, transaction);
-  const shortageToMin = Math.max(minStock - availableQuantity, 0);
 
-  const ctx = {
+  return {
     equipmentId: Number(equipmentId),
     equipmentName: equipment.name,
     quantityOnHand: quantity,
     availableQuantity,
     minStockLevel: minStock,
     pendingPurchaseQty,
-    shortageToMin,
     shouldReorder: availableQuantity <= minStock,
-  };
-
-  return {
-    ...ctx,
-    stockStatus: computeStockStatus(ctx),
   };
 }
 
@@ -185,7 +108,5 @@ module.exports = {
   getPendingOrderedQuantity,
   getGymEquipmentStockRow,
   buildStockContext,
-  computeFulfillmentPlan,
-  computeStockStatus,
   validateRequestReason,
 };
