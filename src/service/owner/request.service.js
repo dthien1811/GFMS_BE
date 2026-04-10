@@ -20,6 +20,72 @@ const emitOwnerRequestChanged = (userIds = [], payload = {}) => {
   });
 };
 
+const prettyType = (t) => {
+  const key = String(t || "").toLowerCase();
+  if (key === "leave") return "nghỉ phép";
+  if (key === "overtime") return "tăng ca";
+  if (key === "shift_change") return "đổi ca";
+  if (key === "transfer_branch") return "chuyển cơ sở";
+  return key || "yêu cầu";
+};
+
+const resolveGymIdsForAccess = async (request, { transaction } = {}) => {
+  const data = request?.data || {};
+  const type = String(request.requestType || "").trim().toUpperCase();
+  const ids = [];
+  const push = (v) => {
+    const n = Number(v);
+    if (Number.isInteger(n) && n > 0) ids.push(n);
+  };
+  push(data.gymId);
+  if (data.application) push(data.application.gymId);
+  push(data.fromGymId);
+  push(data.toGymId);
+  push(data.targetGymId);
+  if (type === "BUSY_SLOT" && data.bookingId) {
+    const booking = await Booking.findByPk(Number(data.bookingId), {
+      attributes: ["gymId"],
+      transaction,
+      lock: transaction ? transaction.LOCK.UPDATE : undefined,
+    });
+    push(booking?.gymId);
+  }
+  const trainer = await Trainer.findOne({
+    where: { userId: request.requesterId },
+    attributes: ["gymId"],
+    transaction,
+    lock: transaction ? transaction.LOCK.UPDATE : undefined,
+  });
+  push(trainer?.gymId);
+  return [...new Set(ids)];
+};
+
+const assertActorMayModerateRequest = async (actorUserId, actorGroupName, request, transaction) => {
+  if (!actorUserId) {
+    const err = new Error("Thiếu thông tin người duyệt");
+    err.statusCode = 401;
+    throw err;
+  }
+  const g = String(actorGroupName || "").toLowerCase();
+  if (g.includes("administrator")) return;
+  const gymIds = await resolveGymIdsForAccess(request, { transaction });
+  if (!gymIds.length) {
+    const err = new Error("Không xác định được chi nhánh liên quan yêu cầu");
+    err.statusCode = 400;
+    throw err;
+  }
+  const owned = await Gym.findAll({
+    where: { ownerId: actorUserId, id: { [Sequelize.Op.in]: gymIds } },
+    attributes: ["id"],
+    transaction,
+  });
+  if (!owned.length) {
+    const err = new Error("Bạn không có quyền xử lý yêu cầu này");
+    err.statusCode = 403;
+    throw err;
+  }
+};
+
 const getRequestNotificationTemplates = (requestType, rejectNote) => {
   const type = String(requestType || "").trim().toUpperCase();
   if (type === "BUSY_SLOT") {
@@ -31,6 +97,22 @@ const getRequestNotificationTemplates = (requestType, rejectNote) => {
       rejected: {
         title: "Yêu cầu báo bận bị từ chối",
         message: rejectNote || "Chủ phòng tập đã từ chối yêu cầu báo bận khung giờ dạy của bạn.",
+      },
+    };
+  }
+
+  if (["LEAVE", "SHIFT_CHANGE", "TRANSFER_BRANCH", "OVERTIME"].includes(type)) {
+    const label = prettyType(type);
+    return {
+      approved: {
+        title: "Yêu cầu đã được duyệt",
+        message: `Yêu cầu ${label} của bạn đã được chủ phòng tập duyệt.`,
+      },
+      rejected: {
+        title: "Yêu cầu bị từ chối",
+        message:
+          rejectNote ||
+          `Chủ phòng tập đã từ chối yêu cầu ${label} của bạn.`,
       },
     };
   }
@@ -285,23 +367,39 @@ const findInternalReplacementForBusyBooking = async ({ booking, transaction = nu
   };
 };
 
-const prettyType = (t) => {
-  const key = String(t || "").toLowerCase();
-  if (key === "leave") return "nghỉ phép";
-  if (key === "overtime") return "tăng ca";
-  if (key === "shift_change") return "đổi ca";
-  if (key === "transfer_branch") return "chuyển cơ sở";
-  return key || "yêu cầu";
-};
-
 module.exports = {
-  async getRequests({ page = 1, limit = 10, gymId } = {}) {
+  async getRequests({ page = 1, limit = 10, gymId, actorUserId = null, actorGroupName = null } = {}) {
     try {
       const safePage = Number.isInteger(Number(page)) && Number(page) > 0 ? Number(page) : 1;
       const safeLimit = Number.isInteger(Number(limit)) && Number(limit) > 0
         ? Math.min(Number(limit), 50)
         : 10;
       const scopedGymId = Number.isInteger(Number(gymId)) && Number(gymId) > 0 ? Number(gymId) : null;
+
+      const isAdmin = /administrator/i.test(String(actorGroupName || ""));
+      let ownedGymIdSet = new Set();
+      if (!isAdmin && actorUserId) {
+        const ownedRows = await Gym.findAll({
+          where: { ownerId: actorUserId },
+          attributes: ["id"],
+          raw: true,
+        });
+        ownedGymIdSet = new Set(
+          ownedRows.map((r) => Number(r.id)).filter((n) => Number.isInteger(n) && n > 0)
+        );
+        if (ownedGymIdSet.size === 0) {
+          return {
+            data: [],
+            pagination: { page: safePage, limit: safeLimit, total: 0, totalPages: 1 },
+          };
+        }
+      }
+      if (!isAdmin && scopedGymId && !ownedGymIdSet.has(scopedGymId)) {
+        return {
+          data: [],
+          pagination: { page: safePage, limit: safeLimit, total: 0, totalPages: 1 },
+        };
+      }
 
       const requests = await Request.findAll({
         where: {
@@ -324,10 +422,39 @@ module.exports = {
         ]
       });
 
+      const requesterUserIds = [...new Set(
+        requests.map((r) => Number(r.requesterId)).filter((n) => Number.isInteger(n) && n > 0)
+      )];
+      const trainerRows =
+        requesterUserIds.length > 0
+          ? await Trainer.findAll({
+              where: { userId: { [Sequelize.Op.in]: requesterUserIds } },
+              attributes: ["userId", "gymId"],
+              raw: true,
+            })
+          : [];
+      const trainerGymByUserId = new Map();
+      trainerRows.forEach((row) => {
+        const uid = Number(row.userId);
+        const gid = Number(row.gymId);
+        if (uid > 0 && gid > 0) trainerGymByUserId.set(uid, gid);
+      });
+
       const gymIds = [...new Set(
-        requests
-          .map((r) => Number(r?.data?.application?.gymId))
-          .filter((id) => Number.isInteger(id) && id > 0)
+        [
+          ...requests.flatMap((r) => {
+            const d = r?.data || {};
+            const app = d.application || {};
+            return [
+              Number(app.gymId),
+              Number(d.gymId),
+              Number(d.fromGymId),
+              Number(d.toGymId),
+              Number(d.targetGymId),
+            ].filter((n) => Number.isInteger(n) && n > 0);
+          }),
+          ...trainerGymByUserId.values(),
+        ]
       )];
 
       let gymMap = new Map();
@@ -364,6 +491,14 @@ module.exports = {
         const requestData = request?.data || null;
         const requestMemberId = Number(requestData?.memberId || 0);
         const requestGymId = Number(requestData?.gymId || 0);
+        const trainerGymId = trainerGymByUserId.get(Number(request.requesterId)) || null;
+        const dataWithTrainerGym =
+          requestData && typeof requestData === "object"
+            ? { ...requestData, ...(trainerGymId && !requestData.gymId ? { gymId: trainerGymId } : {}) }
+            : trainerGymId
+            ? { gymId: trainerGymId }
+            : null;
+        const resolvedGymIdForRow = Number(dataWithTrainerGym?.gymId || requestGymId || 0);
         const gymId = Number(application.gymId);
         const gymName = Number.isInteger(gymId) && gymId > 0
           ? gymMap.get(gymId) || null
@@ -394,13 +529,17 @@ module.exports = {
           requestType: request.requestType,
           status: request.status,
           reason: request.reason,
-          requestData: requestData
+          requestData: dataWithTrainerGym
             ? {
-                ...requestData,
-                memberName: requestData.memberName || (requestMemberId ? memberNameMap.get(requestMemberId) || null : null),
+                ...dataWithTrainerGym,
+                memberName:
+                  dataWithTrainerGym.memberName
+                  || (requestMemberId ? memberNameMap.get(requestMemberId) || null : null),
                 gymName:
-                  requestData.gymName
-                  || (requestGymId ? gymMap.get(requestGymId) || null : null),
+                  dataWithTrainerGym.gymName
+                  || (Number.isInteger(resolvedGymIdForRow) && resolvedGymIdForRow > 0
+                    ? gymMap.get(resolvedGymIdForRow) || null
+                    : null),
               }
             : null,
           requestContent: request?.data?.content || applicationSummary,
@@ -450,22 +589,28 @@ module.exports = {
         })
       );
 
-      const filtered = scopedGymId
-        ? enriched.filter((request) => {
-            const candidateGymIds = [
-              request?.requestApplication?.gymId,
-              request?.requestData?.gymId,
-              request?.requestData?.application?.gymId,
-              request?.requestData?.fromGymId,
-              request?.requestData?.toGymId,
-              request?.requestData?.targetGymId,
-            ]
-              .map((value) => Number(value))
-              .filter((value) => Number.isInteger(value) && value > 0);
+      const filtered = enriched.filter((request) => {
+        const candidateGymIds = [
+          request?.requestApplication?.gymId,
+          request?.requestData?.gymId,
+          request?.requestData?.application?.gymId,
+          request?.requestData?.fromGymId,
+          request?.requestData?.toGymId,
+          request?.requestData?.targetGymId,
+        ]
+          .map((value) => Number(value))
+          .filter((value) => Number.isInteger(value) && value > 0);
 
-            return candidateGymIds.includes(scopedGymId);
-          })
-        : enriched;
+        if (!isAdmin) {
+          const touchesOwned = candidateGymIds.some((id) => ownedGymIdSet.has(id));
+          if (!touchesOwned) return false;
+        }
+
+        if (scopedGymId) {
+          return candidateGymIds.includes(scopedGymId);
+        }
+        return true;
+      });
 
       const total = filtered.length;
       const offset = (safePage - 1) * safeLimit;
@@ -494,6 +639,8 @@ module.exports = {
         lock: t.LOCK.UPDATE,
       });
       if (!request) throw new Error('Request not found');
+
+      await assertActorMayModerateRequest(approverId, options?.actorGroupName, request, t);
 
       const assignmentMode = String(options?.assignmentMode || "internal_first").toLowerCase();
       const selectedTrainerId = Number(options?.selectedTrainerId || 0);
@@ -665,9 +812,11 @@ module.exports = {
     });
   },
 
-  async rejectRequest(requestId, approverId, rejectNote) {
+  async rejectRequest(requestId, approverId, rejectNote, options = {}) {
     const request = await Request.findByPk(requestId);
     if (!request) throw new Error('Request not found');
+
+    await assertActorMayModerateRequest(approverId, options?.actorGroupName, request, null);
 
     request.status = 'rejected';
     request.approverId = approverId;

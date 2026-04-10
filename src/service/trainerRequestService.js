@@ -26,13 +26,53 @@ class TrainerRequestService {
       throw new Error(`Invalid request type: "${requestType}"`);
     }
 
-    return Request.create({
+    const row = await Request.create({
       requesterId,
       requestType: normalizedType,
       status: "pending",
       reason: reason || null,
       data: data || null,
     });
+
+    try {
+      const realtimeServiceModule = require("./realtime.service");
+      const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
+      const { Trainer, Gym, User } = this.models;
+      const trainer = await Trainer.findOne({
+        where: { userId: requesterId },
+        attributes: ["id", "gymId"],
+      });
+      if (trainer?.gymId) {
+        const gym = await Gym.findByPk(trainer.gymId, { attributes: ["ownerId", "name"] });
+        const ownerId = gym?.ownerId ? Number(gym.ownerId) : null;
+        if (ownerId) {
+          const requester = await User.findByPk(requesterId, { attributes: ["username", "email"] });
+          const label = requester?.username || requester?.email || `PT #${trainer.id}`;
+          const typeVi =
+            {
+              leave: "nghỉ phép",
+              shift_change: "đổi ca",
+              transfer_branch: "chuyển chi nhánh",
+              overtime: "tăng ca",
+            }[normalizedType] || normalizedType;
+          await realtimeService.notifyUser(ownerId, {
+            title: "Yêu cầu mới từ huấn luyện viên",
+            message: `${label} gửi yêu cầu ${typeVi}.`,
+            notificationType: "trainer_request",
+            relatedType: "request",
+            relatedId: row.id,
+          });
+          realtimeService.emitUser(ownerId, "request:changed", {
+            requestId: row.id,
+            action: "created",
+          });
+        }
+      }
+    } catch (e) {
+      console.error("[trainerRequestService] notify owner:", e?.message || e);
+    }
+
+    return row;
   }
 
   // ===============================

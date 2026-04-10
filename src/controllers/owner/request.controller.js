@@ -8,7 +8,13 @@ module.exports = {
       const page = Number(req.query.page) || 1;
       const limit = Number(req.query.limit) || 10;
       const gymId = Number(req.query.gymId) || undefined;
-      const result = await requestService.getRequests({ page, limit, gymId }); // Gọi service để lấy yêu cầu
+      const result = await requestService.getRequests({
+        page,
+        limit,
+        gymId,
+        actorUserId: req.user.id,
+        actorGroupName: req.user.groupName,
+      });
       res.status(200).json({ data: result.data, pagination: result.pagination });
     } catch (error) {
       console.error("Error fetching requests:", error);  // Log chi tiết lỗi
@@ -26,6 +32,7 @@ module.exports = {
         {
           assignmentMode: req.body?.assignmentMode,
           selectedTrainerId: req.body?.selectedTrainerId,
+          actorGroupName: req.user.groupName,
         }
       );
       res.status(200).json({ message: "Request approved successfully", request });
@@ -40,7 +47,8 @@ module.exports = {
       const request = await requestService.rejectRequest(
         req.params.id,
         req.user.id,  // Lấy id từ req.user đã được xác thực
-        req.body.rejectNote
+        req.body.rejectNote,
+        { actorGroupName: req.user.groupName }
       );
       res.status(200).json({ message: "Request rejected successfully", request });
     } catch (e) {
