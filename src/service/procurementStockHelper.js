@@ -1,6 +1,7 @@
 const { Op } = require("sequelize");
 const db = require("../models");
-const { EquipmentStock, Equipment, PurchaseOrder, PurchaseOrderItem, Gym, sequelize } = db;
+const { EquipmentStock, Equipment, PurchaseOrder, PurchaseOrderItem, sequelize } = db;
+const { getAdminWarehouseGymIdSet } = require("./adminWarehouseGymScope");
 
 const EXPANSION_REASONS = new Set([
   "new_opening",
@@ -51,16 +52,6 @@ async function getGymEquipmentStockRow(gymId, equipmentId, transaction) {
   });
 }
 
-async function getCentralGymIds(transaction) {
-  const rows = await Gym.findAll({
-    where: { ownerId: null },
-    attributes: ["id"],
-    raw: true,
-    transaction,
-  });
-  return (rows || []).map((r) => Number(r.id)).filter((id) => Number.isFinite(id) && id > 0);
-}
-
 /**
  * Snapshot phục vụ owner preview + lưu vào purchase request.
  */
@@ -95,27 +86,24 @@ async function buildStockContext(gymId, equipmentId, transaction) {
   });
   if (!equipment) return null;
 
-  // Procurement flow for owner should consume from admin/central stock first.
-  // If no central gym exists, fallback to request gym stock.
-  const centralGymIds = await getCentralGymIds(transaction);
+  // Tồn khả dụng khi owner mua = tổng tại các gym được coi là kho admin (khớp chỗ admin ghi tồn).
+  const adminGymIdSet = await getAdminWarehouseGymIdSet({ transaction });
   let quantity = 0;
   let availableQuantity = 0;
 
-  if (centralGymIds.length) {
-    const centralStocks = await EquipmentStock.findAll({
-      where: { equipmentId: Number(equipmentId), gymId: { [Op.in]: centralGymIds } },
+  if (adminGymIdSet.size) {
+    const adminStocks = await EquipmentStock.findAll({
+      where: { equipmentId: Number(equipmentId), gymId: { [Op.in]: [...adminGymIdSet] } },
       attributes: ["quantity", "availableQuantity"],
       raw: true,
       transaction,
     });
-    quantity = (centralStocks || []).reduce((sum, s) => sum + Number(s.quantity || 0), 0);
-    availableQuantity = (centralStocks || []).reduce(
+    quantity = (adminStocks || []).reduce((sum, s) => sum + Number(s.quantity || 0), 0);
+    availableQuantity = (adminStocks || []).reduce(
       (sum, s) => sum + Number(s.availableQuantity ?? s.quantity ?? 0),
       0
     );
   } else {
-    // Fallback mode: no explicit central gym configured.
-    // Use all other gyms EXCEPT the requesting gym to avoid self-deduct/self-add no-op.
     const fallbackStocks = await EquipmentStock.findAll({
       where: {
         equipmentId: Number(equipmentId),
