@@ -644,7 +644,7 @@ async getTechnicians(req) {
     return sequelize.transaction(async (t) => {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
       ensure(m, "Maintenance not found", 404);
-      ensure(m.status === "assigned", "Only assigned maintenance can be started");
+      ensure(["approve", "assigned"].includes(m.status), "Only approved/assigned maintenance can be started");
 
       const oldValues = safeJson(m);
 
@@ -699,8 +699,7 @@ async getTechnicians(req) {
     const actorId = getActorId(req);
     ensure(actorId, "Missing actor (req.user)", 401);
 
-    const { actualCost, completionDate } = req.body || {};
-    ensure(actualCost !== undefined && actualCost !== null, "actualCost is required");
+    const { completionDate } = req.body || {};
 
     return sequelize.transaction(async (t) => {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
@@ -716,29 +715,12 @@ async getTechnicians(req) {
       await m.update(
         {
           status: "completed",
-          actualCost,
           completionDate: completionDate ? new Date(completionDate) : new Date(),
         },
         { transaction: t }
       );
 
       await restoreMaintenanceUnitAndStock(m, t);
-
-      const tx = await Transaction.create(
-        {
-          transactionCode: `MAINT-${m.id}-${Date.now()}`,
-          gymId: m.gymId,
-          amount: actualCost,
-          transactionType: "maintenance",
-          paymentMethod: "manual",
-          paymentStatus: "completed",
-          description: `Maintenance completed for maintenanceId=${m.id}`,
-          metadata: { maintenanceId: m.id },
-          transactionDate: new Date(),
-          processedBy: actorId,
-        },
-        { transaction: t }
-      );
 
       await createAudit({
         t,
@@ -747,7 +729,7 @@ async getTechnicians(req) {
         tableName: "maintenance",
         recordId: m.id,
         oldValues,
-        newValues: { ...safeJson(m), transactionId: tx.id },
+        newValues: safeJson(m),
       });
 
       await logMaintenanceUnitEvent({
@@ -757,9 +739,8 @@ async getTechnicians(req) {
         performedBy: actorId,
         eventAt: m.completionDate || m.updatedAt || new Date(),
         metadata: {
-          actualCost,
           completionDate: m.completionDate,
-          transactionId: tx.id,
+          transactionId: null,
         },
       });
 
@@ -767,7 +748,7 @@ async getTechnicians(req) {
         t,
         userId: m.requestedBy,
         title: "Bảo trì đã hoàn tất",
-        message: `Bảo trì #${m.id} đã hoàn tất. Chi phí thực tế: ${actualCost}.`,
+        message: `Bảo trì #${m.id} đã hoàn tất.`,
         notificationType: "MAINTENANCE",
         relatedType: "maintenance",
         relatedId: m.id,
@@ -794,7 +775,7 @@ async getTechnicians(req) {
         action: "completed",
       });
 
-      return { maintenance: m, transaction: tx };
+      return { maintenance: m };
     });
   }
 
