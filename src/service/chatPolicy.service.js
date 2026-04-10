@@ -44,6 +44,30 @@ const chatPolicyService = {
     for (const row of bookings) {
       if (row.trainerId) ids.add(Number(row.trainerId));
     }
+
+    const messageUserIds = new Set();
+    const messages = await db.Message.findAll({
+      where: {
+        [Op.or]: [{ senderId: Number(userId) }, { receiverId: Number(userId) }],
+      },
+      attributes: ["senderId", "receiverId"],
+    });
+    for (const row of messages) {
+      const senderId = Number(row.senderId);
+      const receiverId = Number(row.receiverId);
+      const peerUserId = senderId === Number(userId) ? receiverId : senderId;
+      if (peerUserId && peerUserId !== Number(userId)) messageUserIds.add(peerUserId);
+    }
+    if (messageUserIds.size) {
+      const trainersFromMessages = await db.Trainer.findAll({
+        where: { userId: [...messageUserIds] },
+        attributes: ["id"],
+      });
+      for (const trainer of trainersFromMessages) {
+        if (trainer?.id) ids.add(Number(trainer.id));
+      }
+    }
+
     return [...ids];
   },
 
@@ -80,6 +104,29 @@ const chatPolicyService = {
     }
     for (const row of bookings) {
       if (row.memberId) memberIds.add(Number(row.memberId));
+    }
+
+    const messageUserIds = new Set();
+    const messages = await db.Message.findAll({
+      where: {
+        [Op.or]: [{ senderId: Number(userId) }, { receiverId: Number(userId) }],
+      },
+      attributes: ["senderId", "receiverId"],
+    });
+    for (const row of messages) {
+      const senderId = Number(row.senderId);
+      const receiverId = Number(row.receiverId);
+      const peerUserId = senderId === Number(userId) ? receiverId : senderId;
+      if (peerUserId && peerUserId !== Number(userId)) messageUserIds.add(peerUserId);
+    }
+    if (messageUserIds.size) {
+      const membersFromMessages = await db.Member.findAll({
+        where: { userId: [...messageUserIds] },
+        attributes: ["id"],
+      });
+      for (const member of membersFromMessages) {
+        if (member?.id) memberIds.add(Number(member.id));
+      }
     }
     return [...memberIds];
   },
@@ -137,7 +184,11 @@ const chatPolicyService = {
     }
 
     const allowedMemberIds = await this.getAllowedMemberIdsForTrainer(userId);
-    if (!allowedMemberIds.includes(Number(member.id))) {
+    const allowedMembers = allowedMemberIds.length
+      ? await db.Member.findAll({ where: { id: allowedMemberIds }, attributes: ["id", "userId"] })
+      : [];
+    const allowedUserIds = allowedMembers.map((row) => Number(row.userId)).filter(Boolean);
+    if (!allowedUserIds.includes(Number(member.userId))) {
       const e = new Error("PT chỉ có thể chat với hội viên thuộc gói hoặc booking có liên quan.");
       e.statusCode = 403;
       throw e;

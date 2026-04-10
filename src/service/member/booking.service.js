@@ -4,6 +4,7 @@ import payosService from "../payment/payos.service";
 import realtimeService from "../realtime.service";
 
 const SLOT_MINUTES = 60;
+const MIN_BOOKING_LEAD_MINUTES = 120;
 
 const formatDateVN = (value) => {
   if (!value) return "ngày đã chọn";
@@ -748,7 +749,7 @@ async function buildValidatedFixedPlan(userId, payload, transaction = null) {
 
     for (const bookingDate of bookingDates) {
       const dateTime = new Date(`${bookingDate}T${startTime}`);
-      if (dateTime <= now) {
+      if (dateTime.getTime() - now.getTime() < MIN_BOOKING_LEAD_MINUTES * 60 * 1000) {
         ok = false;
         break;
       }
@@ -856,7 +857,7 @@ const bookingService = {
       while (s + SLOT_MINUTES <= end) {
         const e = s + SLOT_MINUTES;
 
-        if (isToday && s <= nowMinutes) {
+        if (isToday && s < nowMinutes + MIN_BOOKING_LEAD_MINUTES) {
           s += SLOT_MINUTES;
           continue;
         }
