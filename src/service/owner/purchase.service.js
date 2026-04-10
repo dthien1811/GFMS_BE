@@ -1,6 +1,7 @@
 import db from "../../models";
 import { Op, QueryTypes } from "sequelize";
 import procurementStockHelper from "../procurementStockHelper";
+import { getAdminWarehouseGymIdSet } from "../adminWarehouseGymScope";
 import realtimeService from "../realtime.service";
 import payosService from "../payment/payos.service";
 import equipmentUnitEventUtils from "../../utils/equipmentUnitEvent";
@@ -820,19 +821,10 @@ const ownerPurchaseService = {
           transaction: t,
           lock: t.LOCK.UPDATE,
         });
-        const centralGyms = await Gym.findAll({
-          where: { ownerId: null },
-          attributes: ["id"],
-          raw: true,
-          transaction: t,
-          lock: t.LOCK.SHARE,
-        });
-        const centralGymIdSet = new Set(
-          (centralGyms || []).map((g) => Number(g.id)).filter((id) => Number.isFinite(id) && id > 0)
-        );
-        const centralStocks = adminStocks.filter((s) => centralGymIdSet.has(Number(s.gymId)));
+        const adminGymIdSet = await getAdminWarehouseGymIdSet({ transaction: t });
+        const adminWarehouseStocks = adminStocks.filter((s) => adminGymIdSet.has(Number(s.gymId)));
         const nonOwnerStocks = adminStocks.filter((s) => Number(s.gymId) !== Number(pr.gymId));
-        const sourceStocks = centralStocks.length ? centralStocks : nonOwnerStocks;
+        const sourceStocks = adminWarehouseStocks.length ? adminWarehouseStocks : nonOwnerStocks;
         if (!sourceStocks.length) {
           throw { message: "Không tìm thấy kho nguồn để trừ bù khi xác nhận nhận hàng.", statusCode: 400 };
         }
@@ -954,6 +946,20 @@ const ownerPurchaseService = {
 
       pr.status = "completed";
       await pr.save({ transaction: t });
+
+      // Real-time: owner đã xác nhận nhận hàng -> báo ngay cho admin hệ thống.
+      try {
+        await realtimeService.notifyAdministrators({
+          title: "Owner đã nhận thiết bị",
+          message: `${pr.code} đã được owner xác nhận nhận hàng (${addQty} thiết bị).`,
+          notificationType: "purchase_request",
+          relatedType: "purchaserequest",
+          relatedId: pr.id,
+        });
+      } catch (notifyErr) {
+        // Không chặn nghiệp vụ chính nếu gửi thông báo lỗi.
+        console.error("[owner/purchase] notify admin on confirm-receive failed:", notifyErr?.message || notifyErr);
+      }
       return pr;
     });
   },

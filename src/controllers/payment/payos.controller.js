@@ -227,6 +227,15 @@ const payosController = {
             relatedId: syncedRequest.id,
           });
         }
+        await realtimeService.notifyAdministrators({
+          title: "Vừa nhận được giao dịch thanh toán",
+          message: requestId
+            ? `Yêu cầu ${syncedRequest?.code || requestId} vừa thanh toán thành công (${Number(tx.amount || amount || 0).toLocaleString("vi-VN")}đ).`
+            : `PO ${sync?.po?.code || poId || "-"} vừa thanh toán thành công (${Number(tx.amount || amount || 0).toLocaleString("vi-VN")}đ).`,
+          notificationType: "payment",
+          relatedType: requestId ? "purchaserequest" : "purchaseorder",
+          relatedId: requestId || poId || tx.id,
+        });
         return res.status(200).json({ message: "OK", purchaseOrderId: poId || null, purchaseRequestId: requestId || null });
       }
 
@@ -367,6 +376,15 @@ const payosController = {
             relatedId: syncedRequest.id,
           });
         }
+        await realtimeService.notifyAdministrators({
+          title: "Vừa nhận được giao dịch thanh toán",
+          message: requestId
+            ? `Yêu cầu ${syncedRequest?.code || requestId} vừa thanh toán thành công (${Number(tx.amount || amountPaid || amountTotal || 0).toLocaleString("vi-VN")}đ).`
+            : `PO ${sync?.po?.code || poId || "-"} vừa thanh toán thành công (${Number(tx.amount || amountPaid || amountTotal || 0).toLocaleString("vi-VN")}đ).`,
+          notificationType: "payment",
+          relatedType: requestId ? "purchaserequest" : "purchaseorder",
+          relatedId: requestId || poId || tx.id,
+        });
         return res.status(200).json({ message: "OK", purchaseOrderId: poId || null, purchaseRequestId: requestId || null });
       }
 
