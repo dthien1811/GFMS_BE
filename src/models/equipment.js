@@ -9,12 +9,6 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'categoryId',
         as: 'category',
       });
-      if (models.Supplier) {
-        Equipment.belongsTo(models.Supplier, {
-          foreignKey: 'preferredSupplierId',
-          as: 'preferredSupplier',
-        });
-      }
 
       // Maintenance (maintenance có equipmentId + gymId)
       if (models.Maintenance) {
@@ -73,7 +67,6 @@ module.exports = (sequelize, DataTypes) => {
       description: { type: DataTypes.TEXT, allowNull: true },
 
       categoryId: { type: DataTypes.INTEGER, allowNull: true },
-      preferredSupplierId: { type: DataTypes.INTEGER, allowNull: true },
 
       brand: { type: DataTypes.STRING, allowNull: true },
       model: { type: DataTypes.STRING, allowNull: true },

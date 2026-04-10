@@ -53,29 +53,6 @@ async function fetchPdfBuffer(url, { timeout = 60000 } = {}) {
   return Buffer.from(r.data);
 }
 
-/** Resolve path + fallback — dùng chung trước/sau ensure PDF. */
-async function resolvePublicFranchiseDoc(fr, rawType) {
-  const t = String(rawType || "original").toLowerCase();
-  let resolved = await docSvc.resolveDocumentPathByType(fr.id, rawType);
-  // Final: final → owner_signed → original (original chỉ khi không có bản đã ký — demo/mock thiếu final).
-  if (!resolved && t === "final") {
-    resolved = await docSvc.resolveDocumentPathByType(fr.id, "owner_signed");
-  }
-  if (!resolved && t === "final") {
-    resolved = await docSvc.resolveDocumentPathByType(fr.id, "original");
-  }
-  if (!resolved && t === "certificate" && fr.contractStatus === "completed") {
-    resolved = await docSvc.resolveDocumentPathByType(fr.id, "certificate");
-  }
-  if (!resolved && t === "certificate" && fr.contractStatus === "completed") {
-    resolved = await docSvc.resolveDocumentPathByType(fr.id, "final");
-  }
-  if (!resolved && t === "certificate" && fr.contractStatus === "completed") {
-    resolved = await docSvc.resolveDocumentPathByType(fr.id, "owner_signed");
-  }
-  return resolved;
-}
-
 module.exports = {
   // GET /api/public/franchise-contract/by-token?token=...
   getByToken: async (req, res) => {
@@ -154,26 +131,14 @@ module.exports = {
       if (["owner_signed", "owner"].includes(t) && !["signed", "completed"].includes(fr.contractStatus)) {
         return res.status(403).json({ message: "Owner signed document not available yet." });
       }
-      // Cho phép cả "signed" (đã ký owner, chờ countersign) nếu sau này đã có file final trên storage.
-      if (t === "final" && !["signed", "completed"].includes(fr.contractStatus)) {
+      if (t === "final" && fr.contractStatus !== "completed") {
         return res.status(403).json({ message: "Final document not available yet." });
       }
       if (t === "certificate" && fr.contractStatus !== "completed") {
         return res.status(403).json({ message: "Certificate not available yet." });
       }
 
-      let resolved = await resolvePublicFranchiseDoc(fr, type);
-
-      // Thiếu file trên DB → tạo bản gốc một lần (nếu được) rồi resolve lại.
-      if (!resolved && ["sent", "viewed", "signed", "completed"].includes(fr.contractStatus)) {
-        try {
-          await docSvc.ensureFranchiseContractHasPdf(fr);
-        } catch (e) {
-          console.error("[publicFranchiseContractController] ensureFranchiseContractHasPdf", e?.message || e);
-        }
-        resolved = await resolvePublicFranchiseDoc(fr, type);
-      }
-
+      const resolved = await docSvc.resolveDocumentPathByType(fr.id, type);
       if (!resolved) return res.status(404).json({ message: "Document not found" });
 
       const filenameMap = {
@@ -184,7 +149,6 @@ module.exports = {
       };
       const key = t;
       const filename = filenameMap[key] || `FranchiseContract_${fr.id}.pdf`;
-      const servedType = String(resolved.servedType || t).toLowerCase();
 
       // ====== IMPORTANT NOTE (enterprise hardening) ======
       // In practice, streaming a remote PDF through Node (axios -> res) can fail on some networks
@@ -237,7 +201,7 @@ module.exports = {
         final: assets.finalPublicId,
         certificate: assets.certificatePublicId,
       };
-      const publicId = publicIdMap[servedType] || publicIdMap[key] || null;
+      const publicId = publicIdMap[key] || null;
       try {
         // ✅ Enterprise fix: Chrome PDF viewer often sends multiple Range requests.
         // Proxy MUST forward Range to Cloudinary and stream the response, otherwise
@@ -295,8 +259,8 @@ module.exports = {
       } catch (e) {
         const status = e?.response?.status;
 
-        // Cloudinary: URL cũ có thể 401/403/404; dùng publicId tạo signed URL (gần với admin downloadDocument).
-        if ((status === 401 || status === 403 || status === 404) && publicId) {
+        // Cloudinary authenticated/private fallback (signed URL)
+        if ((status === 401 || status === 403) && publicId) {
           const tryFetchSigned = async (signedUrl) => {
             const clientRange2 = req.headers.range ? String(req.headers.range) : null;
             const r = await axios.get(signedUrl, {

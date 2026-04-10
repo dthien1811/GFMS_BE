@@ -125,9 +125,11 @@ module.exports = (sequelize, DataTypes) => {
     /**
      * ===== INVENTORY / MAINTENANCE (nếu có) =====
      */
-    // NOTE:
-    // Equipment is a global catalog entity and does not have gymId column.
-    // Stock per gym is tracked via EquipmentStock (gymId, equipmentId).
+    if (models.Equipment) {
+      Gym.hasMany(models.Equipment, {
+        foreignKey: 'gymId',
+      });
+    }
 
     if (models.MaintenanceRequest) {
       Gym.hasMany(models.MaintenanceRequest, {

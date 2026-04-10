@@ -23,10 +23,7 @@ module.exports = {
         req.params.id,
         req.user.id,  // Lấy id từ req.user đã được xác thực
         req.body.approveNote,
-        {
-          assignmentMode: req.body?.assignmentMode,
-          selectedTrainerId: req.body?.selectedTrainerId,
-        }
+        { assignmentMode: req.body?.assignmentMode }
       );
       res.status(200).json({ message: "Request approved successfully", request });
     } catch (e) {

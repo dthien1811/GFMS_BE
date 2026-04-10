@@ -26,7 +26,6 @@ async function hydrateActor(userId) {
 
   return {
     userId: user.id,
-    status: user.status,
     groupName: user.Group?.name || null,
     memberId: user.Member?.id || null,
     trainerId: user.Trainer?.id || null,
@@ -40,15 +39,6 @@ function joinActorRooms(socket, actor) {
   if (actor.memberId) socket.join(`member:${actor.memberId}`);
   if (actor.trainerId) socket.join(`trainer:${actor.trainerId}`);
   if (actor.gymId) socket.join(`gym:${actor.gymId}`);
-}
-
-function canJoinConversation(actorUserId, conversationKey) {
-  const key = String(conversationKey || "");
-  const m = key.match(/^(\d+)_(\d+)$/);
-  if (!m) return false;
-  const left = Number(m[1]);
-  const right = Number(m[2]);
-  return actorUserId === left || actorUserId === right;
 }
 
 export const initSocket = (httpServer) => {
@@ -65,9 +55,6 @@ export const initSocket = (httpServer) => {
       if (!decoded?.id) return next(new Error("Unauthorized"));
       const actor = await hydrateActor(decoded.id);
       if (!actor) return next(new Error("Unauthorized"));
-      if (String(actor.status || "active").toLowerCase() !== "active") {
-        return next(new Error("Unauthorized"));
-      }
       socket.data.user = decoded;
       socket.data.actor = actor;
       return next();
@@ -82,7 +69,6 @@ export const initSocket = (httpServer) => {
 
     socket.on("conversation:join", ({ conversationKey }) => {
       if (!conversationKey) return;
-      if (!canJoinConversation(socket.data?.actor?.userId, conversationKey)) return;
       socket.join(`conversation:${conversationKey}`);
     });
 

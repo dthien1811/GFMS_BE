@@ -350,8 +350,6 @@ exports.updateTrainer = async (req, res) => {
       return res.status(400).json({ message: normalized.error });
     }
     const payload = normalized.payload;
-    const userAddress = typeof rawPayload.userAddress === "string" ? rawPayload.userAddress.trim() : undefined;
-    delete payload.userAddress;
 
     if (payload.hourlyRate !== undefined && !isPositiveNumber(payload.hourlyRate)) {
       return res.status(400).json({ message: 'hourlyRate must be a non-negative number' });
@@ -361,14 +359,6 @@ exports.updateTrainer = async (req, res) => {
     }
 
     await trainer.update(payload);
-
-    if (userAddress !== undefined && UserModel && trainer.userId) {
-      const userRow = await UserModel.findByPk(trainer.userId);
-      if (userRow) {
-        userRow.address = userAddress;
-        await userRow.save();
-      }
-    }
 
     const updated = await TrainerModel.findByPk(id, { attributes: TRAINER_ATTRIBUTES, raw: true });
     return res.status(200).json(updated || trainer);

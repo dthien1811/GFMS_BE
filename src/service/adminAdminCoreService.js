@@ -826,11 +826,10 @@ async getTechnicians(req) {
 
   async getFranchiseRequests(req) {
   const { page, limit, offset } = parsePaging(req.query);
-  const { status, q, contractStatus } = req.query;
+  const { status, q } = req.query;
 
   const where = {};
   if (status) where.status = status;
-  if (contractStatus) where.contractStatus = contractStatus;
 
   if (q) {
     where[Op.or] = [
@@ -839,7 +838,6 @@ async getTechnicians(req) {
       { contactPerson: { [Op.like]: `%${q}%` } },
       { contactPhone: { [Op.like]: `%${q}%` } },
       { contactEmail: { [Op.like]: `%${q}%` } },
-      { contractUrl: { [Op.like]: `%${q}%` } },
     ];
   }
 
@@ -1669,13 +1667,6 @@ async rejectFranchiseRequest(req) {
     const whereCommon = {};
     if (gymId) whereCommon.gymId = gymId;
 
-    const txWhere = {
-      paymentStatus: "completed",
-      transactionType: "equipment_purchase",
-      transactionDate: { [Op.gte]: fromDt, [Op.lte]: nowDt },
-    };
-    if (gymId) txWhere.gymId = gymId;
-
     const [
       gyms,
       members,
@@ -1687,8 +1678,6 @@ async rejectFranchiseRequest(req) {
       trainerSharePending,
       lowStock,
       revenue30d,
-      revenueSeriesRaw,
-      salesTransactions,
     ] = await Promise.all([
       Gym.count().catch(() => 0),
       Member.count({ where: gymId ? { gymId } : {} }).catch(() => 0),
@@ -1699,47 +1688,14 @@ async rejectFranchiseRequest(req) {
       PurchaseOrder.count({ where: { ...(gymId ? { gymId } : {}), status: "pending" } }).catch(() => 0),
       TrainerShare.count({ where: { status: "pending" } }).catch(() => 0),
       EquipmentStock.count({ where: { ...(gymId ? { gymId } : {}), availableQuantity: { [Op.lte]: 10 } } }).catch(() => 0),
-      Transaction.sum("amount", { where: txWhere }).then((v) => Number(v || 0)).catch(() => 0),
-      Transaction.findAll({
-        where: txWhere,
-        attributes: [
-          [sequelize.fn("DATE", sequelize.col("transactionDate")), "date"],
-          [sequelize.fn("SUM", sequelize.col("amount")), "total"],
-        ],
-        group: [sequelize.fn("DATE", sequelize.col("transactionDate"))],
-        order: [[sequelize.fn("DATE", sequelize.col("transactionDate")), "ASC"]],
-        raw: true,
-      }).catch(() => []),
-      Transaction.findAll({
-        where: txWhere,
-        order: [["transactionDate", "DESC"], ["id", "DESC"]],
-        limit: 20,
-        include: [{ model: Gym, attributes: ["id", "name"], required: false }],
-      }).catch(() => []),
+      Transaction.sum("amount", {
+        where: {
+          ...(gymId ? { gymId } : {}),
+          paymentStatus: "completed",
+          transactionDate: { [Op.gte]: fromDt, [Op.lte]: nowDt },
+        },
+      }).then((v) => Number(v || 0)).catch(() => 0),
     ]);
-
-    const dayMap = new Map((revenueSeriesRaw || []).map((x) => [String(x.date), Number(x.total || 0)]));
-    const revenue30dSeries = [];
-    for (let i = days - 1; i >= 0; i -= 1) {
-      const d = new Date(nowDt.getTime() - i * 24 * 60 * 60 * 1000);
-      const key = d.toISOString().slice(0, 10);
-      revenue30dSeries.push({
-        date: key,
-        total: Number(dayMap.get(key) || 0),
-      });
-    }
-
-    const equipmentSalesTransactions = (salesTransactions || []).map((tx) => ({
-      id: tx.id,
-      transactionCode: tx.transactionCode,
-      amount: Number(tx.amount || 0),
-      paymentMethod: tx.paymentMethod,
-      paymentStatus: tx.paymentStatus,
-      description: tx.description,
-      transactionDate: tx.transactionDate,
-      gym: tx.Gym ? { id: tx.Gym.id, name: tx.Gym.name } : null,
-      metadata: tx.metadata || null,
-    }));
 
     return {
       asOf: nowDt.toISOString(),
@@ -1757,8 +1713,6 @@ async rejectFranchiseRequest(req) {
         lowStock,
         revenue30d,
       },
-      revenue30dSeries,
-      equipmentSalesTransactions,
     };
   }
 

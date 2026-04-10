@@ -23,48 +23,11 @@ class AdminPurchaseWorkflowController {
     }
   };
 
-  getEquipmentSalesTransactions = async (req, res) => {
-    try {
-      const result = await adminPurchaseWorkflowService.getEquipmentSalesTransactions(req.query);
-      return res.status(200).json(result);
-    } catch (e) {
-      return res.status(500).json({ message: e.message });
-    }
-  };
-
   rejectPurchaseRequest = async (req, res) => {
     try {
       const result = await adminPurchaseWorkflowService.rejectPurchaseRequest(
         req.params.id,
         req.body,
-        req.user?.id,
-        req
-      );
-      return res.status(200).json(result);
-    } catch (e) {
-      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
-      return res.status(code).json({ message: e.message });
-    }
-  };
-
-  approvePurchaseRequest = async (req, res) => {
-    try {
-      const result = await adminPurchaseWorkflowService.approvePurchaseRequest(
-        req.params.id,
-        req.user?.id,
-        req
-      );
-      return res.status(200).json(result);
-    } catch (e) {
-      const code = e.message?.toLowerCase().includes("not found") ? 404 : 400;
-      return res.status(code).json({ message: e.message });
-    }
-  };
-
-  confirmPurchaseRequestPaymentAndShip = async (req, res) => {
-    try {
-      const result = await adminPurchaseWorkflowService.confirmPurchaseRequestPaymentAndShip(
-        req.params.id,
         req.user?.id,
         req
       );

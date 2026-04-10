@@ -22,6 +22,62 @@ const emitOwnerRequestChanged = (userIds = [], payload = {}) => {
 
 const getRequestNotificationTemplates = (requestType, rejectNote) => {
   const type = String(requestType || "").trim().toUpperCase();
+  const reasonSuffix = String(rejectNote || "").trim()
+    ? ` Lý do: ${String(rejectNote || "").trim()}`
+    : "";
+
+  if (type === "LEAVE") {
+    return {
+      approved: {
+        title: "Yêu cầu nghỉ phép đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu nghỉ phép của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu nghỉ phép bị từ chối",
+        message: `Yêu cầu nghỉ phép của bạn đã bị từ chối.${reasonSuffix}`.trim(),
+      },
+    };
+  }
+
+  if (type === "OVERTIME") {
+    return {
+      approved: {
+        title: "Yêu cầu tăng ca đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu tăng ca của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu tăng ca bị từ chối",
+        message: `Yêu cầu tăng ca của bạn đã bị từ chối.${reasonSuffix}`.trim(),
+      },
+    };
+  }
+
+  if (type === "SHIFT_CHANGE") {
+    return {
+      approved: {
+        title: "Yêu cầu đổi ca đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu đổi ca của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu đổi ca bị từ chối",
+        message: `Yêu cầu đổi ca của bạn đã bị từ chối.${reasonSuffix}`.trim(),
+      },
+    };
+  }
+
+  if (type === "TRANSFER_BRANCH") {
+    return {
+      approved: {
+        title: "Yêu cầu chuyển cơ sở đã được duyệt",
+        message: "Chủ phòng tập đã duyệt yêu cầu chuyển cơ sở của bạn.",
+      },
+      rejected: {
+        title: "Yêu cầu chuyển cơ sở bị từ chối",
+        message: `Yêu cầu chuyển cơ sở của bạn đã bị từ chối.${reasonSuffix}`.trim(),
+      },
+    };
+  }
+
   if (type === "BUSY_SLOT") {
     return {
       approved: {
@@ -35,14 +91,27 @@ const getRequestNotificationTemplates = (requestType, rejectNote) => {
     };
   }
 
+  if (type === "BECOME_TRAINER") {
+    return {
+      approved: {
+        title: "Đơn đăng ký huấn luyện viên đã được duyệt",
+        message: "Chủ gym đã duyệt đơn đăng ký trở thành huấn luyện viên của bạn.",
+      },
+      rejected: {
+        title: "Đơn đăng ký huấn luyện viên bị từ chối",
+        message: rejectNote || "Chủ gym đã từ chối đơn đăng ký trở thành huấn luyện viên của bạn.",
+      },
+    };
+  }
+
   return {
     approved: {
-      title: "Đơn đăng ký huấn luyện viên đã được duyệt",
-      message: "Chủ gym đã duyệt đơn đăng ký trở thành huấn luyện viên của bạn.",
+      title: `Yêu cầu ${prettyType(type)} đã được duyệt`,
+      message: `Yêu cầu ${prettyType(type)} của bạn đã được duyệt.`,
     },
     rejected: {
-      title: "Đơn đăng ký huấn luyện viên bị từ chối",
-      message: rejectNote || "Chủ gym đã từ chối đơn đăng ký trở thành huấn luyện viên của bạn.",
+      title: `Yêu cầu ${prettyType(type)} bị từ chối`,
+      message: `Yêu cầu ${prettyType(type)} của bạn đã bị từ chối.${reasonSuffix}`.trim(),
     },
   };
 };
@@ -124,7 +193,7 @@ const isTrainerWorkingForSlot = (availableHoursRaw, bookingDate, startTime, endT
   });
 };
 
-const findInternalReplacementForBusyBooking = async ({ booking, transaction = null, preferredTrainerId = null, maxCandidates = 5 }) => {
+const findInternalReplacementForBusyBooking = async ({ booking, transaction = null }) => {
   const gymId = Number(booking?.gymId || 0);
   const currentTrainerId = Number(booking?.trainerId || 0);
   if (!gymId || !currentTrainerId) {
@@ -169,7 +238,6 @@ const findInternalReplacementForBusyBooking = async ({ booking, transaction = nu
     shareConflict: 0,
   };
 
-  const validCandidates = [];
   for (const candidate of candidates) {
     if (!hasSpecializationOverlap(candidate.specialization, currentTrainer.specialization)) {
       diagnostics.specializationMismatch += 1;
@@ -254,28 +322,14 @@ const findInternalReplacementForBusyBooking = async ({ booking, transaction = nu
       }
     }
 
-    validCandidates.push(candidate);
-    if (validCandidates.length >= Math.max(1, Number(maxCandidates) || 5)) break;
-  }
-
-  if (validCandidates.length > 0) {
-    const preferredId = Number(preferredTrainerId || 0);
-    const preferred = preferredId
-      ? validCandidates.find((item) => Number(item?.id) === preferredId) || null
-      : null;
-    return {
-      replacement: preferred || validCandidates[0],
-      candidates: validCandidates,
-      reason: "",
-    };
+    return { replacement: candidate, reason: "" };
   }
 
   if (!diagnostics.total) {
-    return { replacement: null, candidates: [], reason: "Không có huấn luyện viên nội bộ nào khác trong chi nhánh này." };
+    return { replacement: null, reason: "Không có huấn luyện viên nội bộ nào khác trong chi nhánh này." };
   }
   return {
     replacement: null,
-    candidates: [],
     reason:
       `Không có huấn luyện viên nội bộ phù hợp (` +
       `khác chuyên môn: ${diagnostics.specializationMismatch}, ` +
@@ -314,7 +368,7 @@ module.exports = {
           {
             model: User,
             as: 'requester',
-            attributes: ['id', 'username', 'avatar'],
+            attributes: ['id', 'username'],  // Lấy cột 'username' của người gửi
           },
           {
             model: User,
@@ -416,7 +470,6 @@ module.exports = {
             hourlyRate: Number.isFinite(hr) && hr > 0 ? hr : null,
           },
           requesterUsername: request.requester ? request.requester.username : null,
-          requesterAvatar: request.requester ? request.requester.avatar : null,
           approverUsername: request.approver ? request.approver.username : null,
         };
       });
@@ -430,9 +483,7 @@ module.exports = {
             attributes: ["id", "trainerId", "gymId", "bookingDate", "startTime", "endTime"],
           });
           if (!booking) return item;
-          const replacementResult = await findInternalReplacementForBusyBooking({ booking, maxCandidates: 5 });
-          const replacement = replacementResult?.replacement || null;
-          const candidates = Array.isArray(replacementResult?.candidates) ? replacementResult.candidates : [];
+          const replacement = await findInternalReplacementForBusyBooking({ booking });
           return {
             ...item,
             requestData: {
@@ -440,11 +491,6 @@ module.exports = {
               internalReplacementAvailable: Boolean(replacement),
               internalReplacementTrainerId: replacement?.id || null,
               internalReplacementTrainerName: replacement?.User?.username || null,
-              internalReplacementCandidates: candidates.map((candidate) => ({
-                id: candidate?.id || null,
-                name: candidate?.User?.username || null,
-                specialization: candidate?.specialization || "",
-              })),
             },
           };
         })
@@ -496,7 +542,6 @@ module.exports = {
       if (!request) throw new Error('Request not found');
 
       const assignmentMode = String(options?.assignmentMode || "internal_first").toLowerCase();
-      const selectedTrainerId = Number(options?.selectedTrainerId || 0);
       const normalizedType = String(request.requestType || '').trim().toUpperCase();
       if (normalizedType === 'BECOME_TRAINER') {
         const application = request?.data?.application || {};
@@ -580,24 +625,9 @@ module.exports = {
 
         const shouldAutoAssignInternal = assignmentMode !== "borrow_only";
         const replacementResult = shouldAutoAssignInternal
-          ? await findInternalReplacementForBusyBooking({
-              booking,
-              transaction: t,
-              preferredTrainerId: selectedTrainerId || null,
-              maxCandidates: 10,
-            })
+          ? await findInternalReplacementForBusyBooking({ booking, transaction: t })
           : { replacement: null, reason: "" };
         const replacement = replacementResult?.replacement || null;
-        const candidates = Array.isArray(replacementResult?.candidates) ? replacementResult.candidates : [];
-
-        if (shouldAutoAssignInternal && selectedTrainerId > 0) {
-          const isSelectedCandidateValid = candidates.some((candidate) => Number(candidate?.id) === selectedTrainerId);
-          if (!isSelectedCandidateValid) {
-            const err = new Error("Huấn luyện viên nội bộ đã chọn không còn phù hợp ở thời điểm duyệt. Vui lòng tải lại danh sách.");
-            err.statusCode = 409;
-            throw err;
-          }
-        }
 
         if (shouldAutoAssignInternal && !replacement) {
           const err = new Error(
@@ -627,11 +657,6 @@ module.exports = {
           internalReplacementAvailable: Boolean(replacement),
           internalReplacementTrainerId: replacement?.id || null,
           internalReplacementTrainerName: replacement?.User?.username || null,
-          internalReplacementCandidates: candidates.map((candidate) => ({
-            id: candidate?.id || null,
-            name: candidate?.User?.username || null,
-            specialization: candidate?.specialization || "",
-          })),
           assignmentMode,
           needsBorrowFlow: !replacement,
         };

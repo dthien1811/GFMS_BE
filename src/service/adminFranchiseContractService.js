@@ -140,71 +140,6 @@ async function lockRequest(id, t) {
 }
 
 /**
- * Liên kết ký lỗi thời (demo SignNow / mock host) — ví dụ http://mock-sign.local/contracts/10 → NXDOMAIN.
- * Không phải URL app GFMS /sign-contract?token=...
- */
-function needsSigningUrlRepair(contractUrl) {
-  if (!contractUrl || typeof contractUrl !== "string") return false;
-  const s = contractUrl.trim();
-  if (!s) return false;
-  if (/mock-sign\.|\/contracts\/\d+/i.test(s)) return true;
-  try {
-    const parsed = new URL(s);
-    const h = (parsed.hostname || "").toLowerCase();
-    if (h.endsWith(".local") && h !== "localhost") return true;
-    if (/\/sign-contract\b/i.test(parsed.pathname) && /[?&]token=/.test(s)) return false;
-    if (/\/sign-contract\b/i.test(parsed.pathname) && !/[?&]token=/.test(s)) return true;
-  } catch (_) {
-    return true;
-  }
-  return false;
-}
-
-/**
- * Ghi lại token + contractUrl chuẩn app (FRONTEND_URL/sign-contract?token=...), không tạo PDF mới.
- * Dùng khi owner mở danh sách / chi tiết — tự sửa bản ghi cũ từ enterprise demo.
- */
-async function repairOwnerSigningUrlIfStale(franchiseRequestId) {
-  if (getProvider() !== "mock") {
-    return FranchiseRequest.findByPk(franchiseRequestId);
-  }
-
-  return await sequelize.transaction(async (t) => {
-    const fr = await lockRequest(franchiseRequestId, t);
-    if (!needsSigningUrlRepair(fr.contractUrl)) return fr;
-    if (fr.status !== "approved") return fr;
-    if (fr.contractStatus === "not_sent" || fr.contractStatus === "void") return fr;
-
-    const raw = genRawToken(fr.id);
-    const tokenHash = hashToken(raw);
-    const expiresAt = new Date(Date.now() + ttlHours() * 60 * 60 * 1000);
-    const contractUrl = `${frontendBase()}/sign-contract?token=${encodeURIComponent(raw)}`;
-
-    await fr.update(
-      {
-        signProvider: "mock",
-        contractUrl,
-        ownerSignTokenHash: tokenHash,
-        ownerSignTokenExpiresAt: expiresAt,
-        ownerSignTokenUsedAt: null,
-      },
-      { transaction: t }
-    );
-
-    await auditSvc.logEvent({
-      franchiseRequestId: fr.id,
-      documentId: null,
-      eventType: "sign_link_repaired",
-      actorRole: "system",
-      transaction: t,
-      meta: { reason: "mock_or_non_app_signing_url" },
-    });
-
-    return fr;
-  });
-}
-
-/**
  * Admin: Send contract invite email (generate new token + contractUrl + ORIGINAL PDF)
  */
 async function sendContract(req) {
@@ -621,6 +556,4 @@ module.exports = {
   simulateEvent,
   markViewedByToken,
   ownerSignByToken,
-  needsSigningUrlRepair,
-  repairOwnerSigningUrlIfStale,
 };

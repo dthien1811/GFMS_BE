@@ -1,7 +1,6 @@
 // src/middleware/JWTAction.js
 require("dotenv").config();
 const jwt = require("jsonwebtoken");
-const jwtService = require("../service/JWTService");
 
 // cố load db theo kiểu an toàn (vì project bạn mix ESM/CJS)
 let db;
@@ -23,18 +22,26 @@ const createJWT = (payload) => {
 };
 
 const verifyToken = (token) => {
+  const key = process.env.JWT_SECRET;
   try {
-    return jwtService.verifyAccessToken(token);
+    return jwt.verify(token, key);
   } catch (err) {
     return null;
   }
 };
+
+// ✅ Nếu bạn muốn "KHÔNG login thì tuyệt đối không qua",
+// hãy để false để KHÔNG đọc cookie jwt nữa.
+const ALLOW_COOKIE_JWT = true;
 
 const getTokenFromReq = (req) => {
   // 1) Authorization: Bearer <token>
   const auth = req.headers?.authorization || "";
   const [type, token] = auth.split(" ");
   if (type === "Bearer" && token) return token;
+
+  // 2) Cookie jwt (tùy chọn)
+  if (ALLOW_COOKIE_JWT && req.cookies && req.cookies.jwt) return req.cookies.jwt;
 
   return null;
 };
@@ -55,7 +62,7 @@ const checkUserJWT = async (req, res, next) => {
   if (!decoded) {
     // token sai/hết hạn -> clear cookie nếu có
     try {
-      if (req.cookies?.refreshToken) res.clearCookie("refreshToken");
+      if (req.cookies?.jwt) res.clearCookie("jwt");
     } catch (e) {}
     return res.status(401).json({
       EC: -1,
@@ -77,7 +84,7 @@ const checkUserJWT = async (req, res, next) => {
   const userId = decoded?.id;
   if (!userId) {
     try {
-      if (req.cookies?.refreshToken) res.clearCookie("refreshToken");
+      if (req.cookies?.jwt) res.clearCookie("jwt");
     } catch (e) {}
     return res.status(401).json({
       EC: -1,
@@ -94,7 +101,7 @@ const checkUserJWT = async (req, res, next) => {
 
   if (!user) {
     try {
-      if (req.cookies?.refreshToken) res.clearCookie("refreshToken");
+      if (req.cookies?.jwt) res.clearCookie("jwt");
     } catch (e) {}
     return res.status(401).json({
       EC: -1,
@@ -106,7 +113,7 @@ const checkUserJWT = async (req, res, next) => {
   const status = (user.status || "active").toLowerCase();
   if (status !== "active") {
     try {
-      if (req.cookies?.refreshToken) res.clearCookie("refreshToken");
+      if (req.cookies?.jwt) res.clearCookie("jwt");
     } catch (e) {}
     return res.status(403).json({
       EC: -1,
