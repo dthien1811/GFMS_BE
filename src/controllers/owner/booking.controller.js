@@ -40,6 +40,21 @@ const ownerBookingController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+
+  /** GET /api/owner/bookings/:bookingId */
+  async getBookingDetail(req, res) {
+    try {
+      const userId = req.user.id;
+      const bookingId = Number.parseInt(String(req.params.bookingId || ""), 10);
+      if (!Number.isInteger(bookingId) || bookingId < 1) {
+        return res.status(400).json({ message: "ID booking không hợp lệ" });
+      }
+      const booking = await ownerBookingService.getBookingDetail(userId, bookingId);
+      return res.status(200).json({ data: booking });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerBookingController;

@@ -1,8 +1,20 @@
 import db from "../../models/index";
 import realtimeService from "../realtime.service";
 
-const { TrainerShare, Trainer, Gym, User, Policy, Member, Booking, PackageActivation, Package } = db;
+const {
+  TrainerShare,
+  Trainer,
+  Gym,
+  User,
+  Policy,
+  Member,
+  Booking,
+  PackageActivation,
+  Package,
+} = db;
 const OWNER_ACTIVE_SHARE_STATUSES = ["approved", "pending"];
+/** Trạng thái đang giữ slot / mượn (dùng khi check trùng lịch) */
+const SHARE_RESERVING_STATUSES = ["approved", "pending", "pending_trainer"];
 const TRAINER_SLOT_DURATION_MINUTES = 60;
 const DAY_KEYS_BY_INDEX = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 
@@ -167,7 +179,7 @@ const resolveActiveMemberPackageActivation = async ({ memberId, gymId, transacti
 const checkTrainerShareConflict = async ({ trainerId, date, timeStart, timeEnd, excludeShareId = null }) => {
   const whereClause = {
     trainerId,
-    status: { [db.Sequelize.Op.in]: OWNER_ACTIVE_SHARE_STATUSES },
+    status: { [db.Sequelize.Op.in]: SHARE_RESERVING_STATUSES },
     startDate: { [db.Sequelize.Op.lte]: date },
     [db.Sequelize.Op.or]: [
       { endDate: { [db.Sequelize.Op.gte]: date } },
@@ -221,6 +233,64 @@ const checkBookingConflict = async ({ trainerId, date, timeStart, timeEnd }) => 
   return existingBookings.some((booking) => timeStart < booking.endTime && timeEnd > booking.startTime);
 };
 
+const parseSpecializationTokens = (raw) =>
+  String(raw || "")
+    .split(/[\n,;|]+/)
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+const trainerMatchesBorrowSpecialization = (trainerSpecialization, borrowSpec) => {
+  const need = String(borrowSpec || "").trim();
+  if (!need) return true;
+  const tokens = parseSpecializationTokens(trainerSpecialization);
+  return tokens.some((t) => t === need || t.includes(need) || need.includes(t));
+};
+
+/** PT tại gym nguồn: khớp chuyên môn + slot rảnh cấu hình + không trùng booking/share */
+const listEligibleBorrowTrainersAtGym = async ({
+  fromGymIdNum,
+  borrowSpecialization,
+  date,
+  startTime,
+  endTime,
+}) => {
+  const trainersAtGym = await Trainer.findAll({
+    where: { gymId: fromGymIdNum },
+    attributes: ["id", "userId", "specialization", "availableHours", "gymId"],
+  });
+
+  const matched = [];
+  for (const tr of trainersAtGym) {
+    if (!trainerMatchesBorrowSpecialization(tr.specialization, borrowSpecialization)) continue;
+    try {
+      assertShareMatchesTrainerSlot({
+        trainer: tr,
+        date,
+        startTime,
+        endTime,
+      });
+    } catch {
+      continue;
+    }
+    const busy = await checkBookingConflict({
+      trainerId: tr.id,
+      date,
+      timeStart: startTime,
+      timeEnd: endTime,
+    });
+    if (busy) continue;
+    const shareBusy = await checkTrainerShareConflict({
+      trainerId: tr.id,
+      date,
+      timeStart: startTime,
+      timeEnd: endTime,
+    });
+    if (shareBusy) continue;
+    matched.push(tr);
+  }
+  return matched;
+};
+
 const forEachDateInRange = async (startDate, endDate, callback) => {
   const currentDate = new Date(startDate);
   const finalDate = new Date(endDate);
@@ -262,21 +332,27 @@ const emitTrainerShareChanged = (userIds = [], payload = {}) => {
  * Owner tạo yêu cầu chia sẻ trainer
  */
 const createTrainerShare = async (userId, data) => {
-  const { 
-    trainerId, 
-    fromGymId, 
+  const {
+    trainerId,
+    fromGymId,
     toGymId,
     memberId, // Hội viên tham chiếu tại gym nhận PT
-    shareType, 
+    shareType,
     scheduleMode,
-    startDate, 
-    endDate, 
-    startTime, 
-    endTime, 
+    startDate,
+    endDate,
+    startTime,
+    endTime,
     multipleDates,
-    commissionSplit, 
-    notes 
+    commissionSplit,
+    notes,
+    borrowSpecialization,
   } = data;
+
+  const borrowTrim =
+    borrowSpecialization !== undefined && borrowSpecialization !== null
+      ? String(borrowSpecialization).trim()
+      : "";
 
   // Validate required fields
   if (!fromGymId || !toGymId) {
@@ -332,6 +408,21 @@ const createTrainerShare = async (userId, data) => {
     error.statusCode = 400;
     throw error;
   }
+
+  if (
+    hasTrainerId &&
+    trainer &&
+    borrowTrim &&
+    !trainerMatchesBorrowSpecialization(trainer.specialization, borrowTrim)
+  ) {
+    const error = new Error(
+      "Huấn luyện viên đã chọn không có chuyên môn trùng với chuyên môn cần mượn",
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  let eligibleBorrowTrainers = [];
 
   await assertReferencedMemberBelongsToGym({
     memberId,
@@ -438,7 +529,31 @@ const createTrainerShare = async (userId, data) => {
     }
   }
 
-  if (!hasTrainerId && scheduleMode === "single" && startDate && startTime) {
+  if (!hasTrainerId && scheduleMode === "single" && startDate && startTime && endTime) {
+    if (!borrowTrim) {
+      const error = new Error("Vui lòng chọn chuyên môn cần mượn");
+      error.statusCode = 400;
+      throw error;
+    }
+    assertLeadTimeAtLeastFiveHours({
+      date: startDate,
+      startTime,
+    });
+    eligibleBorrowTrainers = await listEligibleBorrowTrainersAtGym({
+      fromGymIdNum,
+      borrowSpecialization: borrowTrim,
+      date: startDate,
+      startTime,
+      endTime,
+    });
+    if (!eligibleBorrowTrainers.length) {
+      const error = new Error(
+        "Không có huấn luyện viên cùng chuyên môn còn rảnh khung giờ này tại phòng tập nguồn",
+      );
+      error.statusCode = 400;
+      throw error;
+    }
+  } else if (!hasTrainerId && scheduleMode === "single" && startDate && startTime) {
     assertLeadTimeAtLeastFiveHours({
       date: startDate,
       startTime,
@@ -474,37 +589,82 @@ const createTrainerShare = async (userId, data) => {
     specificSchedules: specificSchedules,
     weekdaySchedules: null,
     commissionSplit: commissionSplit || 0.7,
-    status: hasTrainerId ? "waiting_acceptance" : "open", // open: huấn luyện viên gym nguồn tự nhận khung giờ
+    // Có chỉ định PT: PT tự nhận lịch (pending_trainer). Không chỉ định: mở cho PT gym nguồn claim (open).
+    status: hasTrainerId ? "pending_trainer" : "open",
     requestedBy: userId,
     notes,
+    borrowSpecialization: borrowTrim || null,
   });
 
   let trainerName = "một huấn luyện viên phù hợp";
+  let namedTrainerUserId = null;
   if (hasTrainerId) {
     const trainerProfile = await Trainer.findByPk(trainerIdNum, {
       include: [{ model: User, attributes: ["username"] }],
-      attributes: ["id"],
+      attributes: ["id", "userId"],
     });
     trainerName = trainerProfile?.User?.username || `PT #${trainerIdNum}`;
+    namedTrainerUserId = trainerProfile?.userId || null;
   }
 
-  emitTrainerShareChanged([userId, fromGym.ownerId], {
-    shareId: trainerShare.id,
-    status: trainerShare.status,
-    action: "created",
-    trainerId: trainerIdNum,
-    fromGymId: fromGymIdNum,
-    toGymId: toGymIdNum,
-  });
+  const eligibleBorrowUserIds = !hasTrainerId
+    ? [...new Set(eligibleBorrowTrainers.map((t) => t.userId).filter(Boolean))]
+    : [];
+
+  emitTrainerShareChanged(
+    [...new Set([userId, fromGym.ownerId, namedTrainerUserId, ...eligibleBorrowUserIds])].filter(
+      Boolean,
+    ),
+    {
+      shareId: trainerShare.id,
+      status: trainerShare.status,
+      action: "created",
+      trainerId: trainerIdNum,
+      fromGymId: fromGymIdNum,
+      toGymId: toGymIdNum,
+    },
+  );
 
   if (fromGym.ownerId && Number(fromGym.ownerId) !== Number(userId)) {
+    const ownerMsg = hasTrainerId
+      ? `${toGym.name} xin mượn ${trainerName}. PT sẽ xác nhận nhận lịch trên ứng dụng; bạn có thể từ chối nếu không đồng ý.`
+      : `${toGym.name} vừa gửi yêu cầu mượn ${trainerName}. Bạn có thể chấp nhận hoặc từ chối trực tiếp.`;
     await realtimeService.notifyUser(fromGym.ownerId, {
       title: "Có yêu cầu mượn huấn luyện viên từ đối tác",
-      message: `${toGym.name} vừa gửi yêu cầu mượn ${trainerName}. Bạn có thể chấp nhận hoặc từ chối trực tiếp.`,
+      message: ownerMsg,
       notificationType: "trainer_share",
       relatedType: "trainerShare",
       relatedId: trainerShare.id,
     });
+  }
+
+  if (
+    namedTrainerUserId &&
+    Number(namedTrainerUserId) !== Number(userId) &&
+    Number(namedTrainerUserId) !== Number(fromGym.ownerId)
+  ) {
+    await realtimeService.notifyUser(namedTrainerUserId, {
+      title: "Bạn được chỉ định trong yêu cầu mượn PT",
+      message: `${toGym.name} xin mượn bạn (${trainerName}). Vào mục Gửi yêu cầu → Khung giờ mượn PT để nhận lịch.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
+
+  if (!hasTrainerId && eligibleBorrowUserIds.length && borrowTrim) {
+    const st = normalizeTimeValue(startTime);
+    const et = normalizeTimeValue(endTime);
+    for (const ptUid of eligibleBorrowUserIds) {
+      if (Number(ptUid) === Number(userId)) continue;
+      await realtimeService.notifyUser(ptUid, {
+        title: "Có khung giờ mượn PT phù hợp chuyên môn của bạn",
+        message: `${toGym.name} xin mượn PT (${borrowTrim}) vào ${startDate} ${st}–${et}. Vào Khung giờ mượn PT để nhận lịch.`,
+        notificationType: "trainer_share",
+        relatedType: "trainerShare",
+        relatedId: trainerShare.id,
+      });
+    }
   }
 
   return serializeOwnerShare(trainerShare);
@@ -624,7 +784,6 @@ const getMyTrainerShareDetail = async (userId, shareId) => {
   const trainerShare = await TrainerShare.findOne({
     where: {
       id: shareId,
-      requestedBy: userId,
     },
     include: [
       {
@@ -640,12 +799,12 @@ const getMyTrainerShareDetail = async (userId, shareId) => {
       {
         model: Gym,
         as: "fromGym",
-        attributes: ["id", "name", "address"],
+        attributes: ["id", "name", "address", "ownerId"],
       },
       {
         model: Gym,
         as: "toGym",
-        attributes: ["id", "name", "address"],
+        attributes: ["id", "name", "address", "ownerId"],
       },
       {
         model: User,
@@ -665,6 +824,15 @@ const getMyTrainerShareDetail = async (userId, shareId) => {
   });
 
   if (!trainerShare) {
+    const error = new Error("Không tìm thấy trainer share hoặc bạn không có quyền xem");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const uid = Number(userId);
+  const toOwner = Number(trainerShare.requestedBy);
+  const fromOwner = Number(trainerShare.fromGym?.ownerId);
+  if (uid !== toOwner && uid !== fromOwner) {
     const error = new Error("Không tìm thấy trainer share hoặc bạn không có quyền xem");
     error.statusCode = 404;
     throw error;
@@ -690,8 +858,8 @@ const updateMyTrainerShare = async (userId, shareId, data) => {
     throw error;
   }
 
-  // Chỉ cho phép update khi status là waiting_acceptance
-  if (trainerShare.status !== "waiting_acceptance") {
+  const editableOutgoingStatuses = ["waiting_acceptance", "pending_trainer"];
+  if (!editableOutgoingStatuses.includes(trainerShare.status)) {
     const error = new Error(`Không thể cập nhật trainer share với status '${trainerShare.status}'`);
     error.statusCode = 400;
     throw error;
@@ -849,8 +1017,8 @@ const deleteMyTrainerShare = async (userId, shareId) => {
     throw error;
   }
 
-  // Chỉ cho phép xóa khi status là waiting_acceptance
-  if (trainerShare.status !== "waiting_acceptance") {
+  const deletableOutgoingStatuses = ["waiting_acceptance", "pending_trainer"];
+  if (!deletableOutgoingStatuses.includes(trainerShare.status)) {
     const error = new Error(`Không thể xóa trainer share với status '${trainerShare.status}'`);
     error.statusCode = 400;
     throw error;
@@ -933,7 +1101,7 @@ const getAvailableTrainers = async (userId, gymId, options = {}) => {
     where: {
       requestedBy: userId,
       toGymId: gymIdNum,
-      status: { [db.Sequelize.Op.in]: OWNER_ACTIVE_SHARE_STATUSES },
+      status: { [db.Sequelize.Op.in]: [...OWNER_ACTIVE_SHARE_STATUSES, "pending_trainer"] },
     },
     attributes: ['id', 'trainerId', 'fromGymId', 'toGymId', 'scheduleMode', 'specificSchedules', 'startDate', 'endDate'],
     raw: true,
@@ -1147,8 +1315,8 @@ const rejectTrainerShareRequest = async (userId, requestId, reason) => {
     throw error;
   }
 
-  // Chỉ cho phép từ chối nếu status = waiting_acceptance
-  if (request.status !== 'waiting_acceptance') {
+  const rejectableStatuses = ["waiting_acceptance", "pending_trainer"];
+  if (!rejectableStatuses.includes(request.status)) {
     const error = new Error("Yêu cầu này không thể từ chối");
     error.statusCode = 400;
     throw error;
@@ -1199,14 +1367,20 @@ const listAvailableTrainerShareRequestsForTrainer = async (userId, query = {}) =
 
   const { page = 1, limit = 20 } = query;
   const offset = (Number(page) - 1) * Number(limit);
+  const Op = db.Sequelize.Op;
 
+  // - open + trainerId null: khung giờ mở; nếu có borrowSpecialization chỉ PT khớp chuyên môn thấy được
+  // - pending_trainer / waiting_acceptance + trainerId = PT này: chỉ định PT — PT nhận lịch (claim)
   const whereClause = {
     fromGymId: trainer.gymId,
-    status: "open",
-    trainerId: null,
+    [Op.or]: [
+      { status: "open", trainerId: { [Op.is]: null } },
+      { status: "pending_trainer", trainerId: trainer.id },
+      { status: "waiting_acceptance", trainerId: trainer.id },
+    ],
   };
 
-  const { count, rows } = await TrainerShare.findAndCountAll({
+  const allRows = await TrainerShare.findAll({
     where: whereClause,
     include: [
       { model: Gym, as: "fromGym", attributes: ["id", "name", "address"] },
@@ -1214,17 +1388,25 @@ const listAvailableTrainerShareRequestsForTrainer = async (userId, query = {}) =
       { model: User, as: "requester", attributes: ["id", "username", "email"] },
     ],
     order: [["createdAt", "DESC"]],
-    limit: Number(limit),
-    offset,
+    limit: 400,
   });
+
+  const filtered = allRows.filter((request) => {
+    const spec = String(request.borrowSpecialization || "").trim();
+    if (String(request.status || "") !== "open" || !spec) return true;
+    return trainerMatchesBorrowSpecialization(trainer.specialization, spec);
+  });
+
+  const total = filtered.length;
+  const rows = filtered.slice(offset, offset + Number(limit));
 
   return {
     data: rows.map(serializeOwnerShare),
     pagination: {
-      total: count,
+      total,
       page: Number(page),
       limit: Number(limit),
-      totalPages: Math.ceil(count / Number(limit)),
+      totalPages: Math.max(1, Math.ceil(total / Number(limit))),
     },
   };
 };
@@ -1232,7 +1414,7 @@ const listAvailableTrainerShareRequestsForTrainer = async (userId, query = {}) =
 const claimTrainerShareRequest = async (userId, requestId) => {
   const trainer = await Trainer.findOne({
     where: { userId },
-    attributes: ["id", "gymId", "availableHours"],
+    attributes: ["id", "gymId", "availableHours", "specialization"],
   });
   if (!trainer) {
     const error = new Error("Không tìm thấy hồ sơ huấn luyện viên");
@@ -1262,7 +1444,26 @@ const claimTrainerShareRequest = async (userId, requestId) => {
       throw error;
     }
 
-    if (request.status !== "open" || request.trainerId) {
+    const isOpenPool =
+      String(request.status || "") === "open" &&
+      (request.trainerId == null || request.trainerId === "");
+    const isNamedPendingTrainer =
+      (String(request.status || "") === "pending_trainer" ||
+        String(request.status || "") === "waiting_acceptance") &&
+      Number(request.trainerId) === Number(trainer.id);
+
+    const borrowSpec = String(request.borrowSpecialization || "").trim();
+    if (
+      isOpenPool &&
+      borrowSpec &&
+      !trainerMatchesBorrowSpecialization(trainer.specialization, borrowSpec)
+    ) {
+      const error = new Error("Yêu cầu này dành cho chuyên môn khác với hồ sơ của bạn");
+      error.statusCode = 403;
+      throw error;
+    }
+
+    if (!isOpenPool && !isNamedPendingTrainer) {
       const error = new Error("Khung giờ đã được nhận hoặc không còn mở");
       error.statusCode = 409;
       throw error;
@@ -1306,6 +1507,7 @@ const claimTrainerShareRequest = async (userId, requestId) => {
         date: slot.date,
         timeStart: slot.startTime,
         timeEnd: slot.endTime,
+        excludeShareId: request.id,
       });
       if (hasShareConflict) {
         const error = new Error(`Bạn đã nhận khung giờ trùng vào ngày ${slot.date}`);

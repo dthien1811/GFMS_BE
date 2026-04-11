@@ -2,7 +2,7 @@ import db from "../../models/index";
 import realtimeService from "../realtime.service";
 
 const { Booking, Member, Trainer, Gym, Package, User, TrainerShare, Request } = db;
-const OWNER_ACTIVE_TRAINER_SHARE_STATUSES = ['approved', 'pending'];
+const OWNER_ACTIVE_TRAINER_SHARE_STATUSES = ['approved', 'pending', 'pending_trainer'];
 
 const ACTIVE_PT_PACKAGE_INCLUDE = [{
   model: db.Package,
@@ -534,6 +534,23 @@ const getBookingDetail = async (userId, bookingId) => {
     error.statusCode = 404;
     throw error;
   }
+
+  let busyRequested = false;
+  if (Request && booking.id) {
+    const busyRequests = await Request.findAll({
+      where: {
+        requestType: "BUSY_SLOT",
+        status: { [db.Sequelize.Op.in]: ["PENDING", "APPROVED"] },
+      },
+      attributes: ["id", "data"],
+      order: [["createdAt", "DESC"]],
+      limit: 400,
+    });
+    busyRequested = busyRequests.some(
+      (r) => Number(r?.data?.bookingId || 0) === Number(booking.id),
+    );
+  }
+  booking.setDataValue("busyRequested", busyRequested);
 
   return booking;
 };

@@ -10,5 +10,6 @@ router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owner
 
 router.get("/", ownerBookingController.getMyBookings);
 router.get("/trainer/:trainerId/schedule", ownerBookingController.getTrainerSchedule);
+router.get("/:bookingId", ownerBookingController.getBookingDetail);
 
 export default router;

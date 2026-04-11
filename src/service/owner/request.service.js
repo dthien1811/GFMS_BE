@@ -4,7 +4,7 @@ const { Sequelize } = require('sequelize');
 const realtimeServiceModule = require("../realtime.service");
 const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
 const BUSY_REQUEST_NOTE_MARKER = "[PT_BUSY_REQUEST]";
-const ACTIVE_TRAINER_SHARE_STATUSES = ["approved", "shared", "active"];
+const ACTIVE_TRAINER_SHARE_STATUSES = ["approved", "shared", "active", "pending_trainer"];
 const ACTIVE_TRAINER_SHARE_STATUSES_ANY_CASE = Array.from(
   new Set(
     ACTIVE_TRAINER_SHARE_STATUSES.flatMap((status) => [
@@ -18,6 +18,37 @@ const emitOwnerRequestChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
     realtimeService.emitUser(userId, "request:changed", payload);
   });
+};
+
+/** Trùng 5 chuyên môn chuẩn form mượn PT (GFMS_FE constants/trainerSpecializations) */
+const BORROW_SPECIALIZATION_CANONICAL = Object.freeze([
+  "Giảm mỡ & định hình toàn thân",
+  "Tăng khối cơ & phát triển toàn diện",
+  "Sức mạnh & phát triển thể hình",
+  "Thể lực & nâng cao thể trạng",
+  "Tư thế và vận động hỗ trợ chiều cao",
+]);
+
+const parseBorrowSpecTokens = (raw) =>
+  String(raw || "")
+    .split(/[\n,;|]+/)
+    .map((s) => s.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+const trainerSpecMatchesBorrowCanonical = (trainerSpecialization, borrowCanonical) => {
+  const need = String(borrowCanonical || "").trim();
+  if (!need) return true;
+  const tokens = parseBorrowSpecTokens(trainerSpecialization);
+  return tokens.some((t) => t === need || t.includes(need) || need.includes(t));
+};
+
+const resolveBorrowCanonicalFromTrainerSpecialization = (trainerSpecialization) => {
+  const raw = String(trainerSpecialization || "").trim();
+  if (!raw) return "";
+  for (const opt of BORROW_SPECIALIZATION_CANONICAL) {
+    if (trainerSpecMatchesBorrowCanonical(raw, opt)) return opt;
+  }
+  return "";
 };
 
 const prettyType = (t) => {
@@ -567,8 +598,18 @@ module.exports = {
           if (!bookingId) return item;
           const booking = await Booking.findByPk(bookingId, {
             attributes: ["id", "trainerId", "gymId", "bookingDate", "startTime", "endTime"],
+            include: [
+              {
+                model: Trainer,
+                attributes: ["id", "specialization"],
+                required: false,
+              },
+            ],
           });
           if (!booking) return item;
+          const busyTrainerSpec = booking?.Trainer?.specialization || "";
+          const borrowCanonical =
+            resolveBorrowCanonicalFromTrainerSpecialization(busyTrainerSpec);
           const replacementResult = await findInternalReplacementForBusyBooking({ booking, maxCandidates: 5 });
           const replacement = replacementResult?.replacement || null;
           const candidates = Array.isArray(replacementResult?.candidates) ? replacementResult.candidates : [];
@@ -576,6 +617,9 @@ module.exports = {
             ...item,
             requestData: {
               ...(item.requestData || {}),
+              busyTrainerId: booking.trainerId || null,
+              busyTrainerSpecialization: busyTrainerSpec,
+              ...(borrowCanonical ? { borrowSpecialization: borrowCanonical } : {}),
               internalReplacementAvailable: Boolean(replacement),
               internalReplacementTrainerId: replacement?.id || null,
               internalReplacementTrainerName: replacement?.User?.username || null,
