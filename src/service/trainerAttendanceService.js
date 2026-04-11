@@ -40,6 +40,54 @@ const formatBookingSlotLabel = (booking) => {
   return `${dateLabel}${start && end ? ` (${start}-${end})` : ""}`;
 };
 
+/** Owner phòng nhận (gym của booking) — khi PT bấm hoàn thành buổi, kể cả PT mượn. */
+const notifyGymOwnerTrainerCompletedSession = async ({
+  booking,
+  trainer,
+  previousBookingStatus,
+}) => {
+  if (String(previousBookingStatus || "").toLowerCase() === "completed") return;
+
+  const gymId = booking?.gymId;
+  if (!gymId) return;
+
+  const gym = await db.Gym.findByPk(gymId, { attributes: ["id", "name", "ownerId"] });
+  const ownerId = gym?.ownerId ? Number(gym.ownerId) : 0;
+  if (!ownerId) return;
+
+  let trainerName = "Huấn luyện viên";
+  if (trainer?.userId) {
+    const tu = await db.User.findByPk(trainer.userId, { attributes: ["username"] });
+    if (tu?.username) trainerName = tu.username;
+  }
+
+  let memberLabel = "buổi tập";
+  if (booking.memberId) {
+    const mem = await db.Member.findByPk(booking.memberId, {
+      attributes: ["id"],
+      include: [{ model: db.User, attributes: ["username"] }],
+    });
+    const un = mem?.User?.username;
+    memberLabel = un ? `hội viên ${un}` : `hội viên #${booking.memberId}`;
+  }
+
+  const slot = formatBookingSlotLabel(booking);
+  const isShare = String(booking.sessionType || "").toLowerCase() === "trainer_share";
+  const title = isShare ? "Buổi mượn PT đã hoàn thành" : "Buổi tập đã hoàn thành";
+  const lead = isShare
+    ? `${trainerName} (PT mượn) đã xác nhận hoàn thành ${memberLabel}.`
+    : `${trainerName} đã xác nhận hoàn thành ${memberLabel}.`;
+  const tail = [slot, gym?.name ? `Chi nhánh: ${gym.name}.` : ""].filter(Boolean).join(" ");
+
+  await realtimeService.notifyUser(ownerId, {
+    title,
+    message: `${lead} ${tail}`.trim(),
+    notificationType: "booking_update",
+    relatedType: "booking",
+    relatedId: booking.id,
+  });
+};
+
 const notifyMemberSessionCompletion = async (booking, activation) => {
   const member = booking?.memberId
     ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] })
@@ -314,7 +362,7 @@ const getTrainerByAuthId = async (authId) => {
   return trainer;
 };
 
-const emitBookingStatusRealtime = async ({ booking, trainer, attendanceStatus }) => {
+const emitBookingStatusRealtime = async ({ booking, trainer, attendanceStatus, source }) => {
   try {
     const gymId = booking?.gymId || trainer?.gymId || null;
     const payload = {
@@ -327,6 +375,8 @@ const emitBookingStatusRealtime = async ({ booking, trainer, attendanceStatus })
       bookingDate: booking?.bookingDate || null,
       startTime: booking?.startTime || null,
       endTime: booking?.endTime || null,
+      sessionType: booking?.sessionType || null,
+      source: source || null,
     };
 
     if (gymId) {
@@ -674,6 +724,9 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   }
 
   booking.status = "completed";
+  if (Booking.rawAttributes?.checkoutTime) {
+    booking.checkoutTime = t;
+  }
   await booking.save();
 
   let consumedActivation = null;
@@ -685,7 +738,22 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
     }
   }
 
-  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus });
+  await emitBookingStatusRealtime({
+    booking,
+    trainer,
+    attendanceStatus: normalizedStatus,
+    source: "trainer_checkout",
+  });
+
+  try {
+    await notifyGymOwnerTrainerCompletedSession({
+      booking,
+      trainer,
+      previousBookingStatus,
+    });
+  } catch (e) {
+    console.error("[trainerAttendanceService] notify owner error:", e.message);
+  }
 
   try {
     await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);

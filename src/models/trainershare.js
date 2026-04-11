@@ -35,7 +35,7 @@ module.exports = (sequelize, DataTypes) => {
     specificSchedules: DataTypes.JSON,
     weekdaySchedules: DataTypes.JSON,
     commissionSplit: DataTypes.FLOAT,
-    status: DataTypes.STRING, // owner flow uses waiting_acceptance -> approved / rejected_by_partner; pending is legacy
+    status: DataTypes.STRING, // open | pending_trainer (PT nhận lịch) | waiting_acceptance (legacy) | approved | rejected_by_partner; pending is legacy
     requestedBy: DataTypes.INTEGER,
     memberId: DataTypes.INTEGER, // Optional: hội viên gắn kèm để tham chiếu cho yêu cầu mượn PT
     approvedBy: DataTypes.INTEGER,
@@ -44,7 +44,9 @@ module.exports = (sequelize, DataTypes) => {
     rejectedBy: DataTypes.INTEGER,
     rejectedAt: DataTypes.DATE,
     notes: DataTypes.TEXT,
-    policyId: DataTypes.INTEGER
+    policyId: DataTypes.INTEGER,
+    /** Chuyên môn yêu cầu khi mượn mở (status open): chỉ PT khớp chuyên môn mới thấy / nhận lịch */
+    borrowSpecialization: DataTypes.STRING,
   }, {
     sequelize,
     modelName: 'TrainerShare',
