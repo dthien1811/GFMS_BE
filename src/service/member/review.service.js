@@ -223,16 +223,25 @@ const reviewService = {
       }
 
       if (latestBooking?.trainerId) {
-        const reviewed = await db.Review.findOne({ where: { memberId: member.id, reviewType: "trainer", packageActivationId: activation.id } }).then(Boolean);
-        courses.push({
-          activationId: activation.id,
-          packageName: activation?.Package?.name || latestBooking?.Package?.name || "Gói tập",
-          trainerId: latestBooking.trainerId,
-          trainerName: latestBooking?.Trainer?.User?.username || "PT",
-          totalSessions,
-          completedSessions: completedCount,
-          reviewed,
-        });
+        const reviewed = await db.Review.findOne({
+          where: {
+            memberId: member.id,
+            reviewType: "trainer",
+            packageActivationId: activation.id,
+          },
+        }).then(Boolean);
+
+        if (!reviewed) {
+          courses.push({
+            activationId: activation.id,
+            packageName: activation?.Package?.name || latestBooking?.Package?.name || "Gói tập",
+            trainerId: latestBooking.trainerId,
+            trainerName: latestBooking?.Trainer?.User?.username || "PT",
+            totalSessions,
+            completedSessions: completedCount,
+            reviewed: false,
+          });
+        }
       }
     }
 
@@ -322,9 +331,9 @@ const reviewService = {
       });
       const activation = booking?.PackageActivation || (packageActivationId
         ? await db.PackageActivation.findOne({
-            where: { id: packageActivationId, memberId: member.id },
-            include: [{ model: db.Package, attributes: ["id", "sessions", "gymId"] }],
-          })
+          where: { id: packageActivationId, memberId: member.id },
+          include: [{ model: db.Package, attributes: ["id", "sessions", "gymId"] }],
+        })
         : null);
 
       if (!booking || !activation || !(await isActivationCompleted(activation))) {
