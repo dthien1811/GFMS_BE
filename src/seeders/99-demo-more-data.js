@@ -49,7 +49,6 @@ module.exports = {
 
     const NUM_EXTRA_GYMS = 6;        // thêm gym
     const NUM_EXTRA_FR_REQUESTS = 12;
-    const NUM_EXTRA_POLICIES = 8;    // policy system + theo gym
     const NUM_EXTRA_TRAINERS = 18;   // trainer table rows
     const NUM_EXTRA_MEMBERS = 40;    // member table rows
     const NUM_EXTRA_MAINTENANCES = 40;
@@ -251,34 +250,7 @@ module.exports = {
     await insertIgnore(queryInterface, 'member', members);
 
     // =========================================================
-    // 6) POLICIES (append)
-    // =========================================================
-    const policies = [];
-    for (let i = 0; i < NUM_EXTRA_POLICIES; i++) {
-      const id = 600 + i;
-      const isGymPolicy = i % 2 === 1;
-      const gymId = isGymPolicy ? (100 + (i % NUM_EXTRA_GYMS)) : null;
-      const split = 0.6 + (i % 5) * 0.05; // 0.60..0.80
-      const maxHours = 8 + (i % 6) * 2;   // 8..18
-      policies.push({
-        id,
-        policyType: 'trainer_share',
-        name: `Trainer Share Policy ${id}`,
-        description: isGymPolicy ? `Gym policy for gym ${gymId}` : 'System policy',
-        value: JSON.stringify({ commissionSplit: split, maxHoursPerWeek: maxHours }),
-        isActive: i % 4 !== 0, // 75% active
-        appliesTo: isGymPolicy ? 'gym' : 'system',
-        gymId,
-        effectiveFrom: dt(120 - i * 3),
-        effectiveTo: null,
-        createdAt: now,
-        updatedAt: now,
-      });
-    }
-    await insertIgnore(queryInterface, 'policy', policies);
-
-    // =========================================================
-    // 7) TRAINER SHARES (append)
+    // 6) TRAINER SHARES (append) — không gắn policy trainer_share
     // =========================================================
     const shareStatuses = ['pending', 'approved', 'rejected'];
     const trainerShares = [];
@@ -288,7 +260,6 @@ module.exports = {
       const fromGymId = 100 + (i % NUM_EXTRA_GYMS);
       const toGymId = 100 + ((i + 2) % NUM_EXTRA_GYMS);
       const status = pick(shareStatuses, i);
-      const policyId = 600 + (i % NUM_EXTRA_POLICIES);
       const requestedBy = 2100 + (i % NUM_EXTRA_OWNERS);
       trainerShares.push({
         id,
@@ -303,7 +274,6 @@ module.exports = {
         requestedBy,
         approvedBy: status === 'approved' ? 1 : null,
         notes: status === 'rejected' ? 'Rejected: conflict schedule' : 'Demo share request',
-        policyId,
         createdAt: now,
         updatedAt: now,
       });
@@ -512,15 +482,12 @@ module.exports = {
       'MAINTENANCE_COMPLETED',
       'FRANCHISE_APPROVED',
       'FRANCHISE_REJECTED',
-      'POLICY_CREATED',
-      'POLICY_UPDATED',
-      'POLICY_TOGGLED',
       'TRAINERSHARE_APPROVED',
       'TRAINERSHARE_REJECTED',
       'TRAINERSHARE_OVERRIDDEN',
       'REPORT_VIEWED',
     ];
-    const tables = ['maintenance', 'franchiserequest', 'policy', 'trainershare', 'transaction', 'reports'];
+    const tables = ['maintenance', 'franchiserequest', 'trainershare', 'transaction', 'reports'];
 
     const auditLogs = [];
     for (let i = 0; i < NUM_EXTRA_AUDITLOGS; i++) {
@@ -532,7 +499,6 @@ module.exports = {
       let recordId = null;
       if (tableName === 'maintenance') recordId = 800 + (i % NUM_EXTRA_MAINTENANCES);
       if (tableName === 'franchiserequest') recordId = 300 + (i % NUM_EXTRA_FR_REQUESTS);
-      if (tableName === 'policy') recordId = 600 + (i % NUM_EXTRA_POLICIES);
       if (tableName === 'trainershare') recordId = 700 + (i % NUM_EXTRA_TRAINER_SHARES);
       if (tableName === 'transaction') recordId = 1100 + (i % NUM_EXTRA_TRANSACTIONS);
 

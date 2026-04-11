@@ -67,6 +67,12 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.TEXT,
         allowNull: true,
       },
+
+      /** Phần thuộc owner khi tính hoa hồng PT (0–1); null = mặc định 0.15 trong app */
+      ownerCommissionRate: {
+        type: DataTypes.DECIMAL(6, 5),
+        allowNull: true,
+      },
     },
     {
       tableName: 'gym',
@@ -135,16 +141,6 @@ module.exports = (sequelize, DataTypes) => {
       });
     }
 
-    /**
-     * ===== PT SHARING POLICY =====
-     * để include Policy từ Gym (và ngược lại)
-     */
-    if (models.Policy) {
-      Gym.hasMany(models.Policy, {
-        foreignKey: 'gymId',
-        as: 'policies',
-      });
-    }
   };
 
   return Gym;

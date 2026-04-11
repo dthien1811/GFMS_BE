@@ -6,7 +6,6 @@ const {
   Trainer,
   Gym,
   User,
-  Policy,
   Member,
   Booking,
   PackageActivation,
@@ -732,11 +731,6 @@ const getMyTrainerShares = async (userId, query = {}) => {
       as: "approver",
       attributes: ["id", "username", "email"],
     },
-    {
-      model: Policy,
-      attributes: ["id", "name"],
-      required: false,
-    },
   ];
 
   // Search by trainer name or gym name
@@ -815,10 +809,6 @@ const getMyTrainerShareDetail = async (userId, shareId) => {
         model: User,
         as: "approver",
         attributes: ["id", "username", "email"],
-      },
-      {
-        model: Policy,
-        attributes: ["id", "name"],
       },
     ],
   });

@@ -3,7 +3,6 @@ import useApiController from "../controllers/useApiController";
 
 import ownerDashboardRoute from "./owner/dashboard.route";
 import ownerPackageRoute from "./owner/package.route";
-import ownerPolicyRoute from "./owner/policy.route";
 import ownerGymRoute from "./owner/gym.route";
 import ownerMaintenanceRoute from "./owner/maintenance.route";
 import ownerEquipmentRoute from "./owner/equipment.route";
@@ -49,7 +48,6 @@ const useApi = (app) => {
   // ✅ mount business routes FIRST (owner/member tự check role)
   router.use("/owner/dashboard", ownerDashboardRoute);
   router.use("/owner/packages", ownerPackageRoute);
-  router.use("/owner/policies", ownerPolicyRoute);
   router.use("/owner/gyms", ownerGymRoute);
   router.use("/owner/maintenances", ownerMaintenanceRoute);
   router.use("/owner/equipment", ownerEquipmentRoute);

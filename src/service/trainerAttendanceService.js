@@ -227,7 +227,7 @@ const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus 
   const Commission = db.Commission || db.commission;
   const PackageActivation = db.PackageActivation || db.packageactivation;
   const Package = db.Package || db.package;
-  const Policy = db.Policy || db.policy;
+  const GymModel = db.Gym || db.gym;
 
   mustHaveModel(Commission, "Commission");
   mustHaveModel(PackageActivation, "PackageActivation");
@@ -296,31 +296,12 @@ const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus 
 
   if (!sessionValue || !Number.isFinite(sessionValue) || sessionValue <= 0) return;
 
-  // Lấy tỷ lệ hoa hồng theo policy commission của gym
   let ownerRate = 0.15;
-  if (Policy) {
-    const policy = await Policy.findOne({
-      where: {
-        policyType: "commission",
-        appliesTo: "gym",
-        gymId,
-        isActive: true,
-      },
-      order: [["createdAt", "DESC"]],
-    });
-    if (policy) {
-      let value = policy.value;
-      if (typeof value === "string") {
-        try {
-          value = JSON.parse(value);
-        } catch {
-          value = {};
-        }
-      }
-      if (value && typeof value.ownerRate === "number") {
-        ownerRate = value.ownerRate;
-      }
-    }
+  if (GymModel) {
+    const gymRow = await GymModel.findByPk(gymId, { attributes: ["ownerCommissionRate"] });
+    const raw = gymRow?.ownerCommissionRate;
+    const n = raw != null ? Number(raw) : NaN;
+    if (Number.isFinite(n) && n >= 0 && n <= 1) ownerRate = n;
   }
 
   if (ownerRate < 0 || ownerRate > 1) ownerRate = 0.15;

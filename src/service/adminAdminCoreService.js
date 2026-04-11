@@ -21,9 +21,6 @@ const {
   // Module 3
   FranchiseRequest,
 
-  // Module 4
-  Policy,
-
   // Module 5
   TrainerShare,
   Trainer,
@@ -1028,303 +1025,6 @@ async rejectFranchiseRequest(req) {
 }
 
   /* ======================================================
-   * MODULE 4: POLICIES
-   * ====================================================== */
-
-  /**
-   * ✅ Nghiệp vụ chuẩn:
-   * - appliesTo=system => gymId MUST be null
-   * - appliesTo=gym    => gymId MUST exist
-   * - value MUST be JSON object (không lưu string JSON bậy)
-   * - Khi CREATE/UPDATE/TOGGLE sang ACTIVE:
-   *   => tự động INACTIVE các policy ACTIVE khác cùng (policyType + appliesTo + gymId)
-   * - Effective policy (áp dụng thực tế):
-   *   ưu tiên Gym policy ACTIVE (đúng ngày hiệu lực) -> fallback System policy ACTIVE
-   */
-
-  _normalizePolicyInput(body = {}) {
-    const allowedTypes = new Set([
-      "trainer_share",
-      "commission",
-      "cancellation",
-      "refund",
-      "membership",
-    ]);
-    const allowedApplies = new Set(["system", "gym", "trainer"]);
-
-    const policyType = body.policyType;
-    const appliesTo = body.appliesTo;
-
-    ensure(policyType && allowedTypes.has(policyType), "Invalid policyType");
-    ensure(appliesTo && allowedApplies.has(appliesTo), "Invalid appliesTo");
-    ensure(body.name && String(body.name).trim(), "name is required");
-
-    // gymId rule
-    let gymId = body.gymId;
-    if (appliesTo === "system") {
-      gymId = null;
-    } else if (appliesTo === "gym") {
-      ensure(
-        gymId !== undefined && gymId !== null && String(gymId).trim() !== "",
-        "appliesTo=gym thì gymId bắt buộc"
-      );
-      gymId = Number(gymId);
-      ensure(Number.isInteger(gymId) && gymId > 0, "gymId phải là số nguyên dương");
-    } else {
-      // trainer scope: gymId optional (tuỳ bạn dùng)
-      gymId =
-        gymId === "" || gymId === undefined || gymId === null ? null : Number(gymId);
-      if (gymId !== null) {
-        ensure(Number.isInteger(gymId) && gymId > 0, "gymId phải là số nguyên dương");
-      }
-    }
-
-    // value rule
-    let value = body.value;
-    if (typeof value === "string") {
-      try {
-        value = JSON.parse(value);
-      } catch (e) {
-        ensure(false, "value phải là JSON hợp lệ (object)");
-      }
-    }
-    ensure(
-      value !== undefined &&
-        value !== null &&
-        typeof value === "object" &&
-        !Array.isArray(value),
-      "value phải là JSON object"
-    );
-
-    // dates
-    const effectiveFrom = body.effectiveFrom ? new Date(body.effectiveFrom) : null;
-    const effectiveTo = body.effectiveTo ? new Date(body.effectiveTo) : null;
-    if (effectiveFrom && Number.isNaN(effectiveFrom.getTime()))
-      ensure(false, "effectiveFrom không hợp lệ");
-    if (effectiveTo && Number.isNaN(effectiveTo.getTime()))
-      ensure(false, "effectiveTo không hợp lệ");
-    if (effectiveFrom && effectiveTo)
-      ensure(effectiveFrom.getTime() <= effectiveTo.getTime(), "effectiveFrom phải <= effectiveTo");
-
-    return {
-      policyType,
-      name: String(body.name).trim(),
-      description: body.description ?? null,
-      value,
-      isActive: body.isActive !== undefined ? Boolean(body.isActive) : true,
-      appliesTo,
-      gymId,
-      effectiveFrom,
-      effectiveTo,
-    };
-  }
-
-  async _deactivateOtherPolicies({ t, policyType, appliesTo, gymId, exceptId }) {
-    const where = {
-      policyType,
-      appliesTo,
-      gymId: gymId ?? null,
-      isActive: true,
-    };
-    if (exceptId) where.id = { [Op.ne]: exceptId };
-
-    await Policy.update({ isActive: false }, { where, transaction: t });
-  }
-
-  _buildEffectiveDateWhere(now = new Date()) {
-    return {
-      [Op.and]: [
-        {
-          [Op.or]: [{ effectiveFrom: null }, { effectiveFrom: { [Op.lte]: now } }],
-        },
-        {
-          [Op.or]: [{ effectiveTo: null }, { effectiveTo: { [Op.gte]: now } }],
-        },
-      ],
-    };
-  }
-
-  async getPolicies(req) {
-    const { policyType, gymId, isActive } = req.query;
-
-    const where = {};
-    if (policyType) where.policyType = policyType;
-
-    // gymId filter: cho phép "null"/"" để lấy system
-    if (gymId !== undefined && gymId !== "") {
-      if (String(gymId).toLowerCase() === "null") where.gymId = null;
-      else where.gymId = Number(gymId);
-    }
-
-    if (isActive !== undefined && isActive !== "") {
-      where.isActive = String(isActive) === "true";
-    }
-
-    const rows = await Policy.findAll({
-      where,
-      include: [{ model: Gym, as: "gym", required: false, attributes: ["id", "name"] }],
-      order: [["createdAt", "DESC"]],
-    });
-
-    return { data: rows };
-  }
-
-  // ✅ API dùng cho module khác: ưu tiên gym policy -> fallback system policy
-  async getEffectivePolicy(req) {
-    const { policyType, gymId } = req.query;
-    ensure(policyType, "policyType is required");
-    ensure(gymId, "gymId is required");
-
-    const now = new Date();
-    const dateWhere = this._buildEffectiveDateWhere(now);
-
-    const gymPolicy = await Policy.findOne({
-      where: {
-        policyType,
-        appliesTo: "gym",
-        gymId: Number(gymId),
-        isActive: true,
-        ...dateWhere,
-      },
-      order: [
-        ["effectiveFrom", "DESC"],
-        ["createdAt", "DESC"],
-      ],
-    });
-
-    if (gymPolicy) return { data: gymPolicy };
-
-    const systemPolicy = await Policy.findOne({
-      where: {
-        policyType,
-        appliesTo: "system",
-        gymId: null,
-        isActive: true,
-        ...dateWhere,
-      },
-      order: [
-        ["effectiveFrom", "DESC"],
-        ["createdAt", "DESC"],
-      ],
-    });
-
-    return { data: systemPolicy || null };
-  }
-
-  async createPolicy(req) {
-    const actorId = getActorId(req);
-    ensure(actorId, "Missing actor (req.user)", 401);
-
-    const payload = this._normalizePolicyInput(req.body || {});
-
-    return sequelize.transaction(async (t) => {
-      if (payload.isActive) {
-        await this._deactivateOtherPolicies({
-          t,
-          policyType: payload.policyType,
-          appliesTo: payload.appliesTo,
-          gymId: payload.gymId,
-          exceptId: null,
-        });
-      }
-
-      const p = await Policy.create(payload, { transaction: t });
-
-      await createAudit({
-        t,
-        req,
-        action: "POLICY_CREATED",
-        tableName: "policy",
-        recordId: p.id,
-        oldValues: null,
-        newValues: safeJson(p),
-      });
-
-      return p;
-    });
-  }
-
-  async updatePolicy(req) {
-    const id = Number(req.params.id);
-    const actorId = getActorId(req);
-    ensure(actorId, "Missing actor (req.user)", 401);
-
-    return sequelize.transaction(async (t) => {
-      const p = await Policy.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
-      ensure(p, "Policy not found", 404);
-
-      const oldValues = safeJson(p);
-
-      // merge data cũ + data mới để validate đầy đủ
-      const merged = { ...safeJson(p), ...req.body };
-      const payload = this._normalizePolicyInput(merged);
-
-      if (payload.isActive) {
-        await this._deactivateOtherPolicies({
-          t,
-          policyType: payload.policyType,
-          appliesTo: payload.appliesTo,
-          gymId: payload.gymId,
-          exceptId: p.id,
-        });
-      }
-
-      await p.update(payload, { transaction: t });
-
-      await createAudit({
-        t,
-        req,
-        action: "POLICY_UPDATED",
-        tableName: "policy",
-        recordId: p.id,
-        oldValues,
-        newValues: safeJson(p),
-      });
-
-      return p;
-    });
-  }
-
-  async togglePolicy(req) {
-    const id = Number(req.params.id);
-    const actorId = getActorId(req);
-    ensure(actorId, "Missing actor (req.user)", 401);
-
-    return sequelize.transaction(async (t) => {
-      const p = await Policy.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
-      ensure(p, "Policy not found", 404);
-
-      const oldValues = safeJson(p);
-
-      const nextActive = !p.isActive;
-
-      if (nextActive) {
-        await this._deactivateOtherPolicies({
-          t,
-          policyType: p.policyType,
-          appliesTo: p.appliesTo,
-          gymId: p.gymId,
-          exceptId: p.id,
-        });
-      }
-
-      await p.update({ isActive: nextActive }, { transaction: t });
-
-      await createAudit({
-        t,
-        req,
-        action: "POLICY_TOGGLED",
-        tableName: "policy",
-        recordId: p.id,
-        oldValues,
-        newValues: safeJson(p),
-      });
-
-      return p;
-    });
-  }
-
-  /* ======================================================
    * MODULE 5 + MODULE 6: giữ nguyên như bạn đang có
    * (nếu bạn muốn mình cũng có thể paste nốt, nhưng hiện bạn đang crash ở technicians)
    * ====================================================== */
@@ -1347,7 +1047,6 @@ async rejectFranchiseRequest(req) {
         { model: Gym, as: "toGym", required: false },
         { model: User, as: "requester", required: false },
         { model: User, as: "approver", required: false },
-        { model: Policy, required: false },
       ],
       order: [["createdAt", "DESC"]],
       limit,
@@ -1371,7 +1070,6 @@ async rejectFranchiseRequest(req) {
         { model: Gym, as: "toGym", required: false },
         { model: User, as: "requester", required: false },
         { model: User, as: "approver", required: false },
-        { model: Policy, required: false },
       ],
     });
     ensure(ts, "TrainerShare not found", 404);
@@ -1383,8 +1081,7 @@ async rejectFranchiseRequest(req) {
     const actorId = getActorId(req);
     ensure(actorId, "Missing actor (req.user)", 401);
 
-    const { policyId, commissionSplit } = req.body || {};
-    ensure(policyId, "policyId is required");
+    const { commissionSplit } = req.body || {};
     ensure(commissionSplit !== undefined && commissionSplit !== null, "commissionSplit is required");
 
     return sequelize.transaction(async (t) => {
@@ -1398,7 +1095,6 @@ async rejectFranchiseRequest(req) {
         {
           status: "approved",
           approvedBy: actorId,
-          policyId: Number(policyId),
           commissionSplit: Number(commissionSplit),
         },
         { transaction: t }
@@ -1494,8 +1190,11 @@ async rejectFranchiseRequest(req) {
     const actorId = getActorId(req);
     ensure(actorId, "Missing actor (req.user)", 401);
 
-    const { policyId, commissionSplit, notes } = req.body || {};
-    ensure(policyId || commissionSplit !== undefined, "policyId or commissionSplit is required");
+    const { commissionSplit, notes } = req.body || {};
+    ensure(
+      (commissionSplit !== undefined && commissionSplit !== null) || notes !== undefined,
+      "commissionSplit or notes is required",
+    );
 
     return sequelize.transaction(async (t) => {
       const ts = await TrainerShare.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
@@ -1506,7 +1205,6 @@ async rejectFranchiseRequest(req) {
 
       await ts.update(
         {
-          policyId: policyId ? Number(policyId) : ts.policyId,
           commissionSplit:
             commissionSplit !== undefined && commissionSplit !== null
               ? Number(commissionSplit)

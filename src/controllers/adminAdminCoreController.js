@@ -35,13 +35,6 @@ module.exports = {
   approveFranchiseRequest: wrap((req) => adminAdminCoreService.approveFranchiseRequest(req)),
   rejectFranchiseRequest: wrap((req) => adminAdminCoreService.rejectFranchiseRequest(req)),
 
-  // ========== MODULE 4: POLICIES ==========
-  getPolicies: wrap((req) => adminAdminCoreService.getPolicies(req)),
-  getEffectivePolicy: wrap((req) => adminAdminCoreService.getEffectivePolicy(req)),
-  createPolicy: wrap((req) => adminAdminCoreService.createPolicy(req)),
-  updatePolicy: wrap((req) => adminAdminCoreService.updatePolicy(req)),
-  togglePolicy: wrap((req) => adminAdminCoreService.togglePolicy(req)),
-
   // ========== MODULE 5: TRAINER SHARE ==========
   getTrainerShares: wrap((req) => adminAdminCoreService.getTrainerShares(req)),
   getTrainerShareDetail: wrap((req) => adminAdminCoreService.getTrainerShareDetail(req)),

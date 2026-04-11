@@ -14,7 +14,6 @@ module.exports = {
         requestedBy: 2,
         approvedBy: 1,
         notes: 'Temporary share for March month',
-        policyId: 1,
         createdAt: new Date(),
         updatedAt: new Date()
       }

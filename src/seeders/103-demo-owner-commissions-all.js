@@ -14,24 +14,8 @@ module.exports = {
     );
     const baseItemId = Number(itemRows?.[0]?.maxId || 0);
 
-    await queryInterface.bulkInsert(
-      "policy",
-      [
-        {
-          policyType: "commission",
-          name: "Gym 2 commission rate",
-          description: "Tỷ lệ hoa hồng owner theo gym",
-          value: JSON.stringify({ ownerRate: 0.2, trainerRate: 0.8 }),
-          isActive: true,
-          appliesTo: "gym",
-          gymId: 2,
-          effectiveFrom: new Date(),
-          effectiveTo: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ],
-      {}
+    await queryInterface.sequelize.query(
+      "UPDATE gym SET ownerCommissionRate = 0.20000 WHERE id = 2"
     );
 
     await queryInterface.bulkInsert(
@@ -221,6 +205,8 @@ module.exports = {
     await queryInterface.bulkDelete("commission", null, {});
     await queryInterface.bulkDelete("payrollitem", null, {});
     await queryInterface.bulkDelete("payrollperiod", null, {});
-    await queryInterface.bulkDelete("policy", { policyType: "commission", gymId: 2 }, {});
+    await queryInterface.sequelize.query(
+      "UPDATE gym SET ownerCommissionRate = NULL WHERE id = 2"
+    );
   },
 };

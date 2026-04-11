@@ -10,7 +10,6 @@ module.exports = (sequelize, DataTypes) => {
       TrainerShare.belongsTo(models.User, { foreignKey: 'approvedBy', as: 'approver' });
       TrainerShare.belongsTo(models.User, { foreignKey: 'acceptedBy', as: 'accepter' });
       TrainerShare.belongsTo(models.User, { foreignKey: 'rejectedBy', as: 'rejecter' });
-      TrainerShare.belongsTo(models.Policy, { foreignKey: 'policyId' });
       TrainerShare.belongsTo(models.Member, { foreignKey: 'memberId' });
 
       // ✅ NEW: overrides theo thời gian
@@ -44,7 +43,6 @@ module.exports = (sequelize, DataTypes) => {
     rejectedBy: DataTypes.INTEGER,
     rejectedAt: DataTypes.DATE,
     notes: DataTypes.TEXT,
-    policyId: DataTypes.INTEGER,
     /** Chuyên môn yêu cầu khi mượn mở (status open): chỉ PT khớp chuyên môn mới thấy / nhận lịch */
     borrowSpecialization: DataTypes.STRING,
   }, {

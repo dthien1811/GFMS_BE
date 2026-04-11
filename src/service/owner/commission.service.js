@@ -14,7 +14,6 @@ const {
   PayrollPeriod,
   PayrollItem,
   Withdrawal,
-  Policy,
 } = db;
 
 const emitCommissionChanged = (userIds = [], payload = {}) => {
@@ -28,17 +27,6 @@ const parsePaging = (query) => {
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 10));
   const offset = (page - 1) * limit;
   return { page, limit, offset };
-};
-
-const safeParseJSON = (value, fallback) => {
-  if (value == null) return fallback;
-  if (typeof value === "object") return value;
-  if (typeof value !== "string") return fallback;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return fallback;
-  }
 };
 
 const ensureGymOwned = async (ownerUserId, gymId) => {
@@ -130,23 +118,15 @@ const ownerCommissionService = {
   },
 
   async getGymCommissionRate(ownerUserId, gymId) {
-    await ensureGymOwned(ownerUserId, gymId);
-    const policy = await Policy.findOne({
-      where: {
-        policyType: "commission",
-        appliesTo: "gym",
-        gymId: Number(gymId),
-        isActive: true,
-      },
-      order: [["createdAt", "DESC"]],
-    });
-
-    const value = safeParseJSON(policy?.value, {});
+    const gym = await ensureGymOwned(ownerUserId, gymId);
+    const raw = gym.ownerCommissionRate;
+    const n = raw != null ? Number(raw) : NaN;
+    const ownerRate =
+      Number.isFinite(n) && n >= 0 && n <= 1 ? n : 0.15;
     return {
       gymId: Number(gymId),
-      ownerRate: Number(value?.ownerRate ?? 0.15),
-      trainerRate: Number(value?.trainerRate ?? 0.85),
-      policyId: policy?.id || null,
+      ownerRate,
+      trainerRate: 1 - ownerRate,
     };
   },
 
@@ -164,50 +144,18 @@ const ownerCommissionService = {
       throw err;
     }
 
-    await ensureGymOwned(ownerUserId, gymId);
-
-    const existing = await Policy.findOne({
-      where: {
-        policyType: "commission",
-        appliesTo: "gym",
-        gymId: Number(gymId),
-        isActive: true,
-      },
-      order: [["createdAt", "DESC"]],
-    });
-
-    const value = {
-      ownerRate: rate,
-      trainerRate: 1 - rate,
-    };
-
-    if (existing) {
-      await existing.update({ value });
-      emitCommissionChanged([ownerUserId], {
-        gymId: Number(gymId),
-        action: "rate_updated",
-      });
-      return existing;
-    }
-
-    const policy = await Policy.create({
-      policyType: "commission",
-      name: "Gym commission rate",
-      description: "Tỷ lệ hoa hồng của owner theo gym",
-      value,
-      isActive: true,
-      appliesTo: "gym",
-      gymId: Number(gymId),
-      effectiveFrom: new Date(),
-    });
+    const gym = await ensureGymOwned(ownerUserId, gymId);
+    await gym.update({ ownerCommissionRate: rate });
 
     emitCommissionChanged([ownerUserId], {
       gymId: Number(gymId),
-      policyId: Number(policy.id),
-      action: "rate_created",
+      action: "rate_updated",
     });
 
-    return policy;
+    return {
+      gymId: Number(gymId),
+      ownerCommissionRate: rate,
+    };
   },
 
   async getPayrollPeriods(ownerUserId, query = {}) {

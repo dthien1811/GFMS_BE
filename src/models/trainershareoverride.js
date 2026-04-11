@@ -9,14 +9,6 @@ module.exports = (sequelize, DataTypes) => {
         as: "trainerShare",
       });
 
-      // policy optional
-      if (models.Policy) {
-        TrainerShareOverride.belongsTo(models.Policy, {
-          foreignKey: "policyId",
-          as: "policy",
-        });
-      }
-
       if (models.User) {
         TrainerShareOverride.belongsTo(models.User, { foreignKey: "createdBy", as: "creator" });
         TrainerShareOverride.belongsTo(models.User, { foreignKey: "updatedBy", as: "updater" });
@@ -38,7 +30,6 @@ module.exports = (sequelize, DataTypes) => {
   TrainerShareOverride.init(
     {
       trainerShareId: DataTypes.INTEGER,
-      policyId: DataTypes.INTEGER,
       commissionSplit: DataTypes.FLOAT,
 
       effectiveFrom: DataTypes.DATE,

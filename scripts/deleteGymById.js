@@ -52,8 +52,6 @@ async function main() {
     console.log("purchaseorder:", n);
     n = await destroyIf(db.Receipt, { gymId: GYM_ID }, t);
     console.log("receipt:", n);
-    n = await destroyIf(db.Policy, { gymId: GYM_ID }, t);
-    console.log("policy:", n);
     n = await destroyIf(db.Commission, { gymId: GYM_ID }, t);
     console.log("commission:", n);
     n = await destroyIf(db.Transaction, { gymId: GYM_ID }, t);

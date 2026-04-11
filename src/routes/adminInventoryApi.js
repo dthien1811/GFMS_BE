@@ -136,17 +136,6 @@ router.patch("/franchise-contract/:id/mock/viewed", adminFranchiseContractContro
 router.patch("/franchise-contract/:id/mock/signed", adminFranchiseContractController.mockMarkSigned);
 router.patch("/franchise-contract/:id/mock/completed", adminFranchiseContractController.mockMarkCompleted);
 
-// Policies
-router.get("/policies", adminAdminCoreController.getPolicies);
-
-// ✅ NEW: effective policy (ưu tiên gym -> fallback system)
-// (đặt TRƯỚC /policies/:id để tránh bị nuốt param)
-router.get("/policies/effective", adminAdminCoreController.getEffectivePolicy);
-
-router.post("/policies", adminAdminCoreController.createPolicy);
-router.put("/policies/:id", adminAdminCoreController.updatePolicy);
-router.patch("/policies/:id/toggle", adminAdminCoreController.togglePolicy);
-
 // Trainer Shares
 router.get("/trainer-shares", adminAdminCoreController.getTrainerShares);
 router.get("/trainer-shares/:id", adminAdminCoreController.getTrainerShareDetail);
