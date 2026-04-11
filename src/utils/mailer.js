@@ -69,6 +69,7 @@ function isEnabled() {
 }
 
 let cachedTransporter = null;
+let cachedStartTlsTransporter = null;
 
 function getTransporter() {
   if (cachedTransporter) return cachedTransporter;
@@ -87,28 +88,88 @@ function getTransporter() {
     host,
     port,
     secure,
+    family: 4,
+    connectionTimeout: Number(process.env.MAIL_CONNECTION_TIMEOUT_MS || 10000),
+    greetingTimeout: Number(process.env.MAIL_GREETING_TIMEOUT_MS || 10000),
+    socketTimeout: Number(process.env.MAIL_SOCKET_TIMEOUT_MS || 20000),
+    tls: {
+      servername: host,
+      minVersion: "TLSv1.2",
+    },
     auth: { user, pass },
   });
 
   return cachedTransporter;
 }
 
+function isRetryableMailError(err) {
+  if (!err) return false;
+  const code = String(err.code || "").toUpperCase();
+  const msg = String(err.message || "");
+  return (
+    code === "ECONNRESET" ||
+    code === "ESOCKET" ||
+    code === "ETIMEDOUT" ||
+    code === "ECONNREFUSED" ||
+    /ECONNRESET/i.test(msg) ||
+    /Connection closed/i.test(msg)
+  );
+}
+
+function createStartTlsTransporterFromEnv() {
+  if (cachedStartTlsTransporter) return cachedStartTlsTransporter;
+  const host = process.env.MAIL_HOST || "smtp.gmail.com";
+  const user = (process.env.MAIL_USER || "").trim();
+  const pass = (process.env.MAIL_PASS || "").replace(/\s+/g, "");
+  if (!user || !pass) {
+    throw new Error("MAIL config missing. Set MAIL_USER/MAIL_PASS");
+  }
+
+  cachedStartTlsTransporter = nodemailer.createTransport({
+    host,
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    family: 4,
+    connectionTimeout: Number(process.env.MAIL_CONNECTION_TIMEOUT_MS || 10000),
+    greetingTimeout: Number(process.env.MAIL_GREETING_TIMEOUT_MS || 10000),
+    socketTimeout: Number(process.env.MAIL_SOCKET_TIMEOUT_MS || 20000),
+    tls: {
+      servername: host,
+      minVersion: "TLSv1.2",
+    },
+    auth: { user, pass },
+  });
+  return cachedStartTlsTransporter;
+}
+
 async function safeSend({ to, subject, html, text, attachments }) {
   if (!isEnabled()) return { ok: true, skipped: true };
+  _throttleOrThrow(to);
 
   const from = process.env.MAIL_FROM || `GFMS <${process.env.MAIL_USER || "no-reply@gfms.local"}>`;
   const transporter = getTransporter();
-
-  await transporter.sendMail({
+  const mailOptions = {
     from,
     to,
     subject,
     text,
     html,
     attachments: Array.isArray(attachments) ? attachments : undefined,
-  });
+  };
 
-  return { ok: true, skipped: false };
+  try {
+    await transporter.sendMail(mailOptions);
+    return { ok: true, skipped: false, transport: "primary" };
+  } catch (err) {
+    // Fallback cho môi trường reset kết nối ở SMTPS 465 (đã gặp read ECONNRESET).
+    if (!isRetryableMailError(err)) throw err;
+
+    const fallbackTransporter = createStartTlsTransporterFromEnv();
+    await fallbackTransporter.sendMail(mailOptions);
+    console.warn("[mailer] Primary SMTP failed, sent via STARTTLS fallback (587).");
+    return { ok: true, skipped: false, transport: "fallback_587" };
+  }
 }
 
 module.exports = { safeSend };
