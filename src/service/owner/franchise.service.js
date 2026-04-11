@@ -2,6 +2,7 @@ import db from "../../models/index";
 import realtimeService from "../realtime.service";
 
 const { FranchiseRequest, User } = db;
+const { Op } = db.Sequelize;
 
 const emitFranchiseChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
@@ -36,6 +37,51 @@ const createFranchiseRequest = async (userId, data) => {
     const error = new Error("User không tồn tại");
     error.statusCode = 404;
     throw error;
+  }
+
+  const normalize = (value) => String(value || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const dedupeWindowStart = new Date(Date.now() - 15 * 1000);
+
+  const existingDuplicate = await FranchiseRequest.findOne({
+    where: {
+      requesterId: userId,
+      status: "pending",
+      createdAt: { [Op.gte]: dedupeWindowStart },
+      businessName: businessName,
+      location: location,
+      contactPerson: contactPerson,
+      contactPhone: contactPhone || null,
+      contactEmail: contactEmail || null,
+      investmentAmount: investmentAmount || null,
+      businessPlan: businessPlan || null,
+    },
+    order: [["id", "DESC"]],
+  });
+
+  if (existingDuplicate) {
+    return existingDuplicate;
+  }
+
+  const existingNearDuplicate = await FranchiseRequest.findOne({
+    where: {
+      requesterId: userId,
+      status: "pending",
+      createdAt: { [Op.gte]: dedupeWindowStart },
+    },
+    order: [["id", "DESC"]],
+  });
+
+  if (existingNearDuplicate) {
+    const sameContent =
+      normalize(existingNearDuplicate.businessName) === normalize(businessName) &&
+      normalize(existingNearDuplicate.location) === normalize(location) &&
+      normalize(existingNearDuplicate.contactPerson) === normalize(contactPerson) &&
+      normalize(existingNearDuplicate.contactPhone) === normalize(contactPhone) &&
+      normalize(existingNearDuplicate.contactEmail) === normalize(contactEmail) &&
+      normalize(existingNearDuplicate.investmentAmount) === normalize(investmentAmount) &&
+      normalize(existingNearDuplicate.businessPlan) === normalize(businessPlan);
+
+    if (sameContent) return existingNearDuplicate;
   }
 
   // Tạo franchise request
@@ -211,46 +257,9 @@ const updateMyFranchiseRequest = async (userId, requestId, data) => {
   return franchiseRequest;
 };
 
-/**
- * Owner xóa franchise request của mình (chỉ khi còn pending)
- */
-const deleteMyFranchiseRequest = async (userId, requestId) => {
-  const franchiseRequest = await FranchiseRequest.findOne({
-    where: {
-      id: requestId,
-      requesterId: userId,
-    },
-  });
-
-  if (!franchiseRequest) {
-    const error = new Error("Không tìm thấy franchise request hoặc bạn không có quyền xóa");
-    error.statusCode = 404;
-    throw error;
-  }
-
-  // Chỉ cho phép xóa khi status là pending
-  if (franchiseRequest.status !== "pending") {
-    const error = new Error(
-      `Không thể xóa franchise request với status '${franchiseRequest.status}'`
-    );
-    error.statusCode = 400;
-    throw error;
-  }
-
-  emitFranchiseChanged([userId], {
-    requestId: franchiseRequest.id,
-    status: franchiseRequest.status,
-    action: "deleted",
-  });
-
-  await franchiseRequest.destroy();
-
-  return { message: "Đã xóa franchise request thành công" };
-};
 export default {
   createFranchiseRequest,
   getMyFranchiseRequests,
   getMyFranchiseRequestDetail,
   updateMyFranchiseRequest,
-  deleteMyFranchiseRequest,
 };
