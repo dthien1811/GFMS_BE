@@ -237,11 +237,36 @@ const isTrainerWorkingForSlot = (availableHoursRaw, bookingDate, startTime, endT
   });
 };
 
-const findInternalReplacementForBusyBooking = async ({ booking, transaction = null, preferredTrainerId = null, maxCandidates = 5 }) => {
+const findInternalReplacementForBusyBooking = async ({
+  booking,
+  transaction = null,
+  preferredTrainerId = null,
+  maxCandidates = 5,
+  busyTrainerIdFromRequest = null,
+  requesterUserId = null,
+}) => {
   const gymId = Number(booking?.gymId || 0);
-  const currentTrainerId = Number(booking?.trainerId || 0);
+  const bidBook = Number(booking?.trainerId || booking?.ptId || 0);
+  const bidReq = Number(busyTrainerIdFromRequest || 0);
+  let bidRequesterTrainer = 0;
+  if (requesterUserId) {
+    const tr = await Trainer.findOne({
+      where: { userId: Number(requesterUserId) },
+      attributes: ["id"],
+      transaction,
+      lock: transaction ? transaction.LOCK.UPDATE : undefined,
+    });
+    bidRequesterTrainer = Number(tr?.id || 0);
+  }
+  const excludeTrainerIds = [
+    ...new Set([bidBook, bidReq, bidRequesterTrainer].filter((id) => Number.isInteger(id) && id > 0)),
+  ];
+  const currentTrainerId = bidReq > 0 ? bidReq : bidBook > 0 ? bidBook : bidRequesterTrainer;
   if (!gymId || !currentTrainerId) {
     return { replacement: null, reason: "Thiếu dữ liệu gym hoặc huấn luyện viên hiện tại." };
+  }
+  if (!excludeTrainerIds.length) {
+    return { replacement: null, reason: "Thiếu dữ liệu huấn luyện viên cần loại trừ khỏi danh sách thay thế." };
   }
 
   const currentTrainer = await Trainer.findByPk(currentTrainerId, {
@@ -256,7 +281,7 @@ const findInternalReplacementForBusyBooking = async ({ booking, transaction = nu
   const candidates = await Trainer.findAll({
     where: {
       gymId,
-      id: { [Sequelize.Op.ne]: currentTrainerId },
+      id: { [Sequelize.Op.notIn]: excludeTrainerIds },
       isActive: { [Sequelize.Op.ne]: false },
     },
     attributes: ["id", "userId", "specialization", "availableHours"],
@@ -560,6 +585,7 @@ module.exports = {
           requestType: request.requestType,
           status: request.status,
           reason: request.reason,
+          requesterId: request.requesterId,
           requestData: dataWithTrainerGym
             ? {
                 ...dataWithTrainerGym,
@@ -610,7 +636,12 @@ module.exports = {
           const busyTrainerSpec = booking?.Trainer?.specialization || "";
           const borrowCanonical =
             resolveBorrowCanonicalFromTrainerSpecialization(busyTrainerSpec);
-          const replacementResult = await findInternalReplacementForBusyBooking({ booking, maxCandidates: 5 });
+          const replacementResult = await findInternalReplacementForBusyBooking({
+            booking,
+            maxCandidates: 5,
+            busyTrainerIdFromRequest: Number(item?.requestData?.trainerId || 0) || null,
+            requesterUserId: item?.requesterId || null,
+          });
           const replacement = replacementResult?.replacement || null;
           const candidates = Array.isArray(replacementResult?.candidates) ? replacementResult.candidates : [];
           return {
@@ -776,6 +807,8 @@ module.exports = {
               transaction: t,
               preferredTrainerId: selectedTrainerId || null,
               maxCandidates: 10,
+              busyTrainerIdFromRequest: Number(request?.data?.trainerId || 0) || null,
+              requesterUserId: request.requesterId || null,
             })
           : { replacement: null, reason: "" };
         const replacement = replacementResult?.replacement || null;
