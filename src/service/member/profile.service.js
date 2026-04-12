@@ -1,5 +1,9 @@
 import db from "../../models";
 import bcrypt from "bcryptjs";
+import {
+  normalizeTrainerSpecializationIds,
+  normalizeTrainerSpecializationsInput,
+} from "../../constants/trainerSpecializations.js";
 import realtimeService from "../realtime.service";
 
 const normalizeSex = (value) => {
@@ -18,24 +22,6 @@ const normalizeStatus = (value) => {
 const isValidEmail = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
 const isValidPhone = (value) => !value || /^(\+84|0)\d{9,10}$/.test(String(value || "").replace(/\s+/g, ""));
 const isStrongPassword = (value) => /^(?=.*[A-Za-z])(?=.*\d).{8,64}$/.test(String(value || ""));
-
-const ALLOWED_SPECIALIZATIONS = [
-  "Yoga",
-  "Pilates",
-  "HIIT",
-  "CrossFit",
-  "Thể hình",
-  "Tăng sức mạnh",
-  "Tập chức năng",
-  "Giảm mỡ",
-  "Huấn luyện dinh dưỡng",
-  "Phục hồi chức năng",
-  "Quyền anh",
-  "Tập cardio",
-  "Bơi lội",
-  "Chạy bộ",
-  "Đạp xe",
-];
 
 const normalizeCertificateLinks = (input) => {
   const raw = Array.isArray(input)
@@ -56,24 +42,6 @@ const normalizeCertificateLinks = (input) => {
       return { ok: false, message: `Link không hợp lệ: ${link}` };
     }
   }
-
-  return { ok: true, value: unique };
-};
-
-const normalizeSpecializations = (input) => {
-  const list = Array.isArray(input)
-    ? input
-    : String(input || "")
-        .split(/[\n,;|]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
-
-  const unique = [...new Set(list)];
-  if (!unique.length) return { ok: false, message: "Vui lòng chọn ít nhất 1 chuyên môn" };
-  if (unique.length > 6) return { ok: false, message: "Tối đa 6 chuyên môn" };
-
-  const invalid = unique.find((s) => !ALLOWED_SPECIALIZATIONS.includes(s));
-  if (invalid) return { ok: false, message: `Chuyên môn không hợp lệ: ${invalid}` };
 
   return { ok: true, value: unique };
 };
@@ -220,7 +188,10 @@ const memberProfileService = {
       throw err;
     }
 
-    const spec = normalizeSpecializations(application.specializations);
+    const idsRaw = application.specializationIds ?? application.specialization_ids;
+    const spec = Array.isArray(idsRaw) && idsRaw.length
+      ? normalizeTrainerSpecializationIds(idsRaw)
+      : normalizeTrainerSpecializationsInput(application.specializations);
     if (!spec.ok) {
       const err = new Error(spec.message);
       err.statusCode = 400;
@@ -234,12 +205,9 @@ const memberProfileService = {
       throw err;
     }
 
-    const hourlyRate = Number(application.hourlyRate);
-    if (!Number.isFinite(hourlyRate) || hourlyRate <= 0) {
-      const err = new Error("Giá/giờ phải lớn hơn 0");
-      err.statusCode = 400;
-      throw err;
-    }
+    const hourlyRateRaw = Number(application.hourlyRate);
+    const hourlyRate =
+      Number.isFinite(hourlyRateRaw) && hourlyRateRaw > 0 ? hourlyRateRaw : null;
 
     const gymId = Number(application.gymId);
     if (!Number.isInteger(gymId) || gymId <= 0) {
@@ -317,6 +285,7 @@ const memberProfileService = {
       reason,
       data: {
         source: "member_profile",
+        gymId,
         content: content || null,
         application: {
           gymId,

@@ -1,5 +1,6 @@
 
 const { Request, User, Trainer, Gym, Member, Booking, TrainerShare, Commission, sequelize } = require("../../models");
+const { CANONICAL_TRAINER_SPECIALIZATIONS } = require("../../constants/trainerSpecializations.js");
 const { Sequelize } = require('sequelize');
 const realtimeServiceModule = require("../realtime.service");
 const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
@@ -20,14 +21,38 @@ const emitOwnerRequestChanged = (userIds = [], payload = {}) => {
   });
 };
 
-/** Trùng 5 chuyên môn chuẩn form mượn PT (GFMS_FE constants/trainerSpecializations) */
-const BORROW_SPECIALIZATION_CANONICAL = Object.freeze([
-  "Giảm mỡ & định hình toàn thân",
-  "Tăng khối cơ & phát triển toàn diện",
-  "Sức mạnh & phát triển thể hình",
-  "Thể lực & nâng cao thể trạng",
-  "Tư thế và vận động hỗ trợ chiều cao",
-]);
+/** Log duyệt/từ chối đơn — tìm trong console theo prefix này */
+const REQ_LOG = "[GFMS_OWNER_REQUEST]";
+
+const safeJson = (obj) => {
+  try {
+    return JSON.stringify(obj, (_k, v) => (typeof v === "bigint" ? String(v) : v));
+  } catch (_e) {
+    return String(obj);
+  }
+};
+
+const logReq = (phase, payload) => {
+  if (payload !== undefined) console.log(`${REQ_LOG} ${phase}`, typeof payload === "object" ? safeJson(payload) : payload);
+  else console.log(`${REQ_LOG} ${phase}`);
+};
+
+const logReqError = (phase, err) => {
+  const detail = {
+    phase,
+    message: err?.message,
+    statusCode: err?.statusCode,
+    name: err?.name,
+    sql: err?.sql,
+    errno: err?.parent?.errno,
+    sqlMessage: err?.parent?.sqlMessage,
+    sqlState: err?.parent?.sqlState,
+    stack: err?.stack,
+  };
+  console.error(`${REQ_LOG} ERROR`, safeJson(detail));
+};
+
+const BORROW_SPECIALIZATION_CANONICAL = CANONICAL_TRAINER_SPECIALIZATIONS;
 
 const parseBorrowSpecTokens = (raw) =>
   String(raw || "")
@@ -92,17 +117,36 @@ const resolveGymIdsForAccess = async (request, { transaction } = {}) => {
 };
 
 const assertActorMayModerateRequest = async (actorUserId, actorGroupName, request, transaction) => {
+  const rid = request?.id;
+  const rtype = request?.requestType;
+  const rawData = request?.data;
+  logReq("assertActor:enter", {
+    requestId: rid,
+    requestType: rtype,
+    actorUserId,
+    actorGroupName: actorGroupName || null,
+    dataKeys: rawData && typeof rawData === "object" ? Object.keys(rawData) : [],
+    dataGymId: rawData?.gymId ?? null,
+    appGymId: rawData?.application?.gymId ?? null,
+  });
+
   if (!actorUserId) {
     const err = new Error("Thiếu thông tin người duyệt");
     err.statusCode = 401;
+    logReqError("assertActor:noActor", err);
     throw err;
   }
   const g = String(actorGroupName || "").toLowerCase();
-  if (g.includes("administrator")) return;
+  if (g.includes("administrator")) {
+    logReq("assertActor:skip (administrator)", { requestId: rid });
+    return;
+  }
   const gymIds = await resolveGymIdsForAccess(request, { transaction });
+  logReq("assertActor:resolvedGymIds", { requestId: rid, gymIds });
   if (!gymIds.length) {
     const err = new Error("Không xác định được chi nhánh liên quan yêu cầu");
     err.statusCode = 400;
+    logReqError("assertActor:noGymIds", err);
     throw err;
   }
   const owned = await Gym.findAll({
@@ -110,11 +154,15 @@ const assertActorMayModerateRequest = async (actorUserId, actorGroupName, reques
     attributes: ["id"],
     transaction,
   });
+  const ownedIds = owned.map((x) => x.id);
+  logReq("assertActor:ownedGyms", { requestId: rid, actorUserId, ownedIds, needAnyOf: gymIds });
   if (!owned.length) {
     const err = new Error("Bạn không có quyền xử lý yêu cầu này");
     err.statusCode = 403;
+    logReqError("assertActor:forbidden", err);
     throw err;
   }
+  logReq("assertActor:ok", { requestId: rid });
 };
 
 const getRequestNotificationTemplates = (requestType, rejectNote) => {
@@ -460,8 +508,8 @@ module.exports = {
       const requests = await Request.findAll({
         where: {
           status: {
-            [Sequelize.Op.ne]: 'cancelled',  // Lọc bỏ những yêu cầu có trạng thái 'cancelled'
-          }
+            [Sequelize.Op.ne]: "CANCELLED",
+          },
         },
         order: [['createdAt', 'DESC'], ['id', 'DESC']],
         include: [
@@ -708,12 +756,45 @@ module.exports = {
   },
 
   async approveRequest(requestId, approverId, approveNote, options = {}) {
-    return sequelize.transaction(async (t) => {
+    logReq("approve:begin", {
+      requestId,
+      approverId,
+      groupName: options?.actorGroupName ?? null,
+      approveNoteLen: String(approveNote || "").length,
+      assignmentMode: options?.assignmentMode ?? null,
+      selectedTrainerId: options?.selectedTrainerId ?? null,
+    });
+    let savedRequest;
+    try {
+      savedRequest = await sequelize.transaction(async (t) => {
       const request = await Request.findByPk(requestId, {
         transaction: t,
         lock: t.LOCK.UPDATE,
       });
-      if (!request) throw new Error('Request not found');
+      if (!request) {
+        const err = new Error("Request not found");
+        logReqError("approve:notFound", err);
+        throw err;
+      }
+
+      const d = request.data || {};
+      logReq("approve:loaded", {
+        id: request.id,
+        requestType: request.requestType,
+        status: request.status,
+        requesterId: request.requesterId,
+        dataGymId: d.gymId ?? null,
+        applicationGymId: d.application?.gymId ?? null,
+      });
+
+      const currentStatus = String(request.status || "").toUpperCase();
+      if (currentStatus !== "PENDING") {
+        const err = new Error("Yêu cầu không còn ở trạng thái chờ duyệt.");
+        err.statusCode = 409;
+        logReq("approve:badStatus", { currentStatus, expected: "PENDING" });
+        logReqError("approve:badStatus", err);
+        throw err;
+      }
 
       await assertActorMayModerateRequest(approverId, options?.actorGroupName, request, t);
 
@@ -722,6 +803,11 @@ module.exports = {
       const normalizedType = String(request.requestType || '').trim().toUpperCase();
       if (normalizedType === 'BECOME_TRAINER') {
         const application = request?.data?.application || {};
+        logReq("approve:becomeTrainer", {
+          gymId: application.gymId ?? null,
+          specsCount: Array.isArray(application.specializations) ? application.specializations.length : 0,
+          hasHourlyRate: Number(application.hourlyRate) > 0,
+        });
         const requester = await User.findByPk(request.requesterId, {
           transaction: t,
           lock: t.LOCK.UPDATE,
@@ -752,6 +838,7 @@ module.exports = {
         });
 
         if (existingTrainer) {
+          logReq("approve:trainerUpdate", { trainerId: existingTrainer.id, userId: request.requesterId });
           if (gymId) existingTrainer.gymId = gymId;
           if (specialization) existingTrainer.specialization = specialization;
           if (certification) existingTrainer.certification = certification;
@@ -763,6 +850,7 @@ module.exports = {
           if (existingTrainer.isActive === false) existingTrainer.isActive = true;
           await existingTrainer.save({ transaction: t });
         } else {
+          logReq("approve:trainerCreate", { userId: request.requesterId, gymId });
           await Trainer.create(
             {
               userId: request.requesterId,
@@ -779,6 +867,7 @@ module.exports = {
         }
 
         if (requester && Number(requester.groupId) !== 3) {
+          logReq("approve:userGroupToPt", { userId: requester.id, fromGroup: requester.groupId });
           requester.groupId = 3;
           await requester.save({ transaction: t });
         }
@@ -868,45 +957,85 @@ module.exports = {
         };
       }
 
-      request.status = 'approved';
+      request.status = "APPROVED";
       request.approverId = approverId;
       request.approveNote = approveNote || '';
       request.processedAt = new Date();
+      logReq("approve:saveRequest", { id: request.id, status: request.status });
       await request.save({ transaction: t });
+      logReq("approve:dbCommitted", { id: request.id });
+      return request;
+    });
+    } catch (err) {
+      logReqError("approve:transactionFailed", err);
+      throw err;
+    }
 
-      emitOwnerRequestChanged([approverId, request.requesterId], {
-        requestId: request.id,
-        status: request.status,
+    // Không gọi socket/notify trong transaction — lỗi realtime sẽ không rollback DB.
+    try {
+      emitOwnerRequestChanged([approverId, savedRequest.requesterId], {
+        requestId: savedRequest.id,
+        status: savedRequest.status,
         action: "approved",
-        requestType: request.requestType,
+        requestType: savedRequest.requestType,
       });
+      logReq("approve:emitOk", { id: savedRequest.id });
+    } catch (emitErr) {
+      logReqError("approve:emitFailed", emitErr);
+    }
 
-      const templates = getRequestNotificationTemplates(request.requestType);
-      if (request.requesterId) {
-        await realtimeService.notifyUser(request.requesterId, {
+    try {
+      const templates = getRequestNotificationTemplates(savedRequest.requestType);
+      if (savedRequest.requesterId) {
+        await realtimeService.notifyUser(savedRequest.requesterId, {
           title: templates.approved.title,
           message: templates.approved.message,
           notificationType: "request_update",
           relatedType: "request",
-          relatedId: request.id,
+          relatedId: savedRequest.id,
         });
       }
+      logReq("approve:notifyOk", { id: savedRequest.id });
+    } catch (notifyErr) {
+      logReqError("approve:notifyFailed", notifyErr);
+    }
 
-      return request;
-    });
+    logReq("approve:done", { id: savedRequest.id });
+    return savedRequest;
   },
 
   async rejectRequest(requestId, approverId, rejectNote, options = {}) {
+    logReq("reject:begin", {
+      requestId,
+      approverId,
+      groupName: options?.actorGroupName ?? null,
+      noteLen: String(rejectNote || "").length,
+    });
+    try {
     const request = await Request.findByPk(requestId);
-    if (!request) throw new Error('Request not found');
+    if (!request) {
+      const e = new Error("Request not found");
+      logReqError("reject:notFound", e);
+      throw e;
+    }
+
+    const currentStatus = String(request.status || "").toUpperCase();
+    if (currentStatus !== "PENDING") {
+      const err = new Error("Yêu cầu không còn ở trạng thái chờ duyệt.");
+      err.statusCode = 409;
+      logReq("reject:badStatus", { currentStatus, expected: "PENDING" });
+      logReqError("reject:badStatus", err);
+      throw err;
+    }
 
     await assertActorMayModerateRequest(approverId, options?.actorGroupName, request, null);
 
-    request.status = 'rejected';
+    request.status = "REJECTED";
     request.approverId = approverId;
     request.approveNote = rejectNote || '';
     request.processedAt = new Date();
 
+    logReq("reject:saveRequest", { id: request.id });
     await request.save();
 
     emitOwnerRequestChanged([approverId, request.requesterId], {
@@ -933,6 +1062,11 @@ module.exports = {
         relatedId: request.id,
       });
     }
+    logReq("reject:done", { id: request.id });
     return request;
+    } catch (err) {
+      logReqError("reject:failed", err);
+      throw err;
+    }
   },
 };

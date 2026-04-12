@@ -133,7 +133,7 @@ class TrainerRequestService {
       );
     }
 
-    request.status = "cancelled";
+    request.status = "CANCELLED";
     await request.save();
 
     return request;

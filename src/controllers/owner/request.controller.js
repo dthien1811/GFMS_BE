@@ -1,6 +1,8 @@
 
 const requestService = require("../../service/owner/request.service");
 
+const CLOG = "[GFMS_OWNER_REQUEST_CTRL]";
+
 module.exports = {
   // Lấy danh sách yêu cầu
   async getRequests(req, res, next) {
@@ -25,6 +27,12 @@ module.exports = {
   // Duyệt yêu cầu
   async approveRequest(req, res, next) {       
     try {
+      console.log(CLOG, "PATCH approve", {
+        paramId: req.params.id,
+        userId: req.user?.id,
+        groupName: req.user?.groupName ?? null,
+        bodyKeys: req.body && typeof req.body === "object" ? Object.keys(req.body) : [],
+      });
       const request = await requestService.approveRequest(
         req.params.id,
         req.user.id,  // Lấy id từ req.user đã được xác thực
@@ -37,13 +45,27 @@ module.exports = {
       );
       res.status(200).json({ message: "Request approved successfully", request });
     } catch (e) {
-      next(e);  // Gọi middleware tiếp theo để xử lý lỗi
+      console.error(CLOG, "approveRequest catch", e?.message, {
+        statusCode: e?.statusCode,
+        sqlMessage: e?.parent?.sqlMessage,
+        errno: e?.parent?.errno,
+      });
+      const code = Number(e?.statusCode) || 500;
+      if (code >= 400 && code < 500) {
+        return res.status(code).json({ message: e.message || "Không thể duyệt yêu cầu" });
+      }
+      next(e);
     }
   },
 
   // Từ chối yêu cầu
   async rejectRequest(req, res, next) {
     try {
+      console.log(CLOG, "PATCH reject", {
+        paramId: req.params.id,
+        userId: req.user?.id,
+        groupName: req.user?.groupName ?? null,
+      });
       const request = await requestService.rejectRequest(
         req.params.id,
         req.user.id,  // Lấy id từ req.user đã được xác thực
@@ -52,7 +74,16 @@ module.exports = {
       );
       res.status(200).json({ message: "Request rejected successfully", request });
     } catch (e) {
-      next(e);  // Gọi middleware tiếp theo để xử lý lỗi
+      console.error(CLOG, "rejectRequest catch", e?.message, {
+        statusCode: e?.statusCode,
+        sqlMessage: e?.parent?.sqlMessage,
+        errno: e?.parent?.errno,
+      });
+      const code = Number(e?.statusCode) || 500;
+      if (code >= 400 && code < 500) {
+        return res.status(code).json({ message: e.message || "Không thể từ chối yêu cầu" });
+      }
+      next(e);
     }
   },
 };
