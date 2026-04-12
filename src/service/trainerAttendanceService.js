@@ -257,8 +257,16 @@ const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus 
     return;
   }
 
-  // present/completed nhưng đã có commission rồi → không làm gì thêm
-  if (existing) return;
+  // present/completed: đã có commission paid/calculated → giữ nguyên
+  if (existing && existing.status !== "pending") {
+    return;
+  }
+  // pending nhưng gắn sai PT (vd. đổi trainer nội bộ sau khi PT cũ đã check-in) → xóa để ghi nhận đúng PT đang dạy
+  if (existing && Number(existing.trainerId) !== Number(trainer.id)) {
+    await existing.destroy();
+  } else if (existing) {
+    return;
+  }
 
   const activationId = booking.packageActivationId || booking.activationId || null;
   const bookingPackageId = booking.packageId || null;

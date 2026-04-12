@@ -1,5 +1,5 @@
 
-const { Request, User, Trainer, Gym, Member, Booking, TrainerShare, sequelize } = require("../../models");
+const { Request, User, Trainer, Gym, Member, Booking, TrainerShare, Commission, sequelize } = require("../../models");
 const { Sequelize } = require('sequelize');
 const realtimeServiceModule = require("../realtime.service");
 const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
@@ -833,6 +833,13 @@ module.exports = {
 
         if (replacement) {
           booking.trainerId = replacement.id;
+          // Xóa hoa hồng pending cũ của buổi (nếu có) để slot luôn gắn PT sau điều phối, không kẹt PT báo bận
+          if (Commission) {
+            await Commission.destroy({
+              where: { bookingId: booking.id, status: "pending" },
+              transaction: t,
+            });
+          }
         }
         const currentNotes = String(booking.notes || "");
         if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
