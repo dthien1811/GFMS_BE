@@ -1159,7 +1159,19 @@ const getTrainerSchedule = async (userId, trainerId, date, options = {}) => {
       status: { [db.Sequelize.Op.in]: OWNER_ACTIVE_TRAINER_SHARE_STATUSES }
       // Remove date filtering here - will filter in application logic
     },
-    attributes: ['id', 'startTime', 'endTime', 'scheduleMode', 'specificSchedules', 'fromGymId', 'toGymId', 'startDate', 'endDate'],
+    attributes: [
+      "id",
+      "startTime",
+      "endTime",
+      "scheduleMode",
+      "specificSchedules",
+      "fromGymId",
+      "toGymId",
+      "startDate",
+      "endDate",
+      "sharePaymentStatus",
+      "sharePaymentPtAcknowledgedAt",
+    ],
     include: [
       {
         model: Gym,
@@ -1226,24 +1238,30 @@ const getTrainerSchedule = async (userId, trainerId, date, options = {}) => {
         
         shareBlocks.push({
           id: `share-${share.id}`,
+          trainerShareId: share.id,
           startTime: startTime,
           endTime: endTime,
           status: 'shared',
           type: 'trainer_share',
           Member: null,
           toGym: share.toGym ? { id: share.toGym.id, name: share.toGym.name } : null,
+          sharePaymentStatus: share.sharePaymentStatus || null,
+          sharePaymentPtAcknowledgedAt: share.sharePaymentPtAcknowledgedAt || null,
         });
       }
     } else if (share.scheduleMode === 'all_days' && share.startTime && share.endTime) {
       // All days mode - block this time
       shareBlocks.push({
         id: `share-${share.id}`,
+        trainerShareId: share.id,
         startTime: share.startTime,
         endTime: share.endTime,
         status: 'shared',
         type: 'trainer_share',
         Member: null,
         toGym: share.toGym ? { id: share.toGym.id, name: share.toGym.name } : null,
+        sharePaymentStatus: share.sharePaymentStatus || null,
+        sharePaymentPtAcknowledgedAt: share.sharePaymentPtAcknowledgedAt || null,
       });
     }
   }

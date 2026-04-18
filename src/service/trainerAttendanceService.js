@@ -594,16 +594,40 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
     busyRequestedByBookingId = new Set();
   }
 
-  const rows = bookings.map((b) => {
-    const plainBooking = b.toJSON ? b.toJSON() : b;
-    return {
+  let shareSvc = null;
+  try {
+    const m = require("../service/owner/trainershare.service.js");
+    shareSvc = m.default || m;
+  } catch (_e) {
+    try {
+      const m = require("../service/owner/trainershare.service");
+      shareSvc = m.default || m;
+    } catch (_e2) {
+      shareSvc = null;
+    }
+  }
+
+  const plainList = bookings.map((b) => (b.toJSON ? b.toJSON() : b));
+  let shareSnapByBookingId = new Map();
+  if (shareSvc?.attachSharePaymentSnapshotsBatchForTrainerBookings && plainList.length) {
+    try {
+      shareSnapByBookingId = await shareSvc.attachSharePaymentSnapshotsBatchForTrainerBookings(plainList);
+    } catch (_err) {
+      shareSnapByBookingId = new Map();
+    }
+  }
+
+  const rows = plainList.map((plainBooking) => {
+    const base = {
       ...plainBooking,
       busyRequested:
-        busyRequestedByBookingId.has(Number(b.id)) ||
+        busyRequestedByBookingId.has(Number(plainBooking.id)) ||
         String(plainBooking?.notes || "").includes(BUSY_REQUEST_NOTE_MARKER),
-      trainerAttendance: attByBookingId.get(b.id) || null,
-      commissionStatus: commissionByBookingId.get(b.id) || null,
+      trainerAttendance: attByBookingId.get(plainBooking.id) || null,
+      commissionStatus: commissionByBookingId.get(plainBooking.id) || null,
     };
+    const sp = shareSnapByBookingId.get(plainBooking.id);
+    return sp ? { ...base, sharePayment: sp } : base;
   });
 
   return { trainer, bookingDate, rows };

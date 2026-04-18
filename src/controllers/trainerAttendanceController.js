@@ -135,4 +135,107 @@ module.exports = {
       });
     }
   },
+
+  /** POST /api/pt/bookings/:bookingId/share-payment-instruction — PT gửi NH + STK sau khi buổi mượn hoàn thành */
+  async sendSharePaymentByBooking(req, res, next) {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ EM: "Unauthorized" });
+      const bookingId = req.params.bookingId;
+      if (!bookingId) return res.status(400).json({ EM: "bookingId is required" });
+
+      let ownerTrainerShareService;
+      try {
+        ownerTrainerShareService = require("../service/owner/trainershare.service.js");
+      } catch (_e) {
+        ownerTrainerShareService = require("../service/owner/trainershare.service");
+      }
+      const svc = ownerTrainerShareService.default || ownerTrainerShareService;
+
+      const data = await svc.sendSharePaymentInstructionByBookingId(
+        userId,
+        Number(bookingId),
+        req.body || {},
+      );
+
+      res.status(200).json({
+        message: "Đã gửi thông tin chuyển khoản cho chủ phòng mượn",
+        data,
+      });
+    } catch (e) {
+      console.error(">>> SHARE PAYMENT INSTRUCTION ERROR:", e);
+      res.status(e.statusCode || 500).json({
+        EM: e.message || "Error",
+        message: e.message,
+        DT: e.message,
+      });
+    }
+  },
+
+  /** POST /api/pt/bookings/:bookingId/share-payment-dispute — PT khiếu nại chưa nhận tiền */
+  async submitSharePaymentDispute(req, res) {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ EM: "Unauthorized" });
+      const bookingId = req.params.bookingId;
+      if (!bookingId) return res.status(400).json({ EM: "bookingId is required" });
+
+      let ownerTrainerShareService;
+      try {
+        ownerTrainerShareService = require("../service/owner/trainershare.service.js");
+      } catch (_e) {
+        ownerTrainerShareService = require("../service/owner/trainershare.service");
+      }
+      const svc = ownerTrainerShareService.default || ownerTrainerShareService;
+
+      const data = await svc.submitSharePaymentDisputeByBookingId(userId, Number(bookingId), req.body || {});
+
+      res.status(200).json({
+        message: "Đã gửi khiếu nại",
+        data,
+      });
+    } catch (e) {
+      console.error(">>> SHARE PAYMENT DISPUTE ERROR:", e);
+      res.status(e.statusCode || 500).json({
+        EM: e.message || "Error",
+        message: e.message,
+        DT: e.message,
+      });
+    }
+  },
+
+  /** POST /api/pt/bookings/:bookingId/share-payment-ack — PT xác nhận đã nhận / đồng ý phản hồi chủ phòng */
+  async acknowledgeSharePaymentResponse(req, res) {
+    try {
+      const userId = getUserId(req);
+      if (!userId) return res.status(401).json({ EM: "Unauthorized" });
+      const bookingId = req.params.bookingId;
+      if (!bookingId) return res.status(400).json({ EM: "bookingId is required" });
+
+      let ownerTrainerShareService;
+      try {
+        ownerTrainerShareService = require("../service/owner/trainershare.service.js");
+      } catch (_e) {
+        ownerTrainerShareService = require("../service/owner/trainershare.service");
+      }
+      const svc = ownerTrainerShareService.default || ownerTrainerShareService;
+
+      const data = await svc.acknowledgeBorrowerSharePaymentResponseByBookingId(
+        userId,
+        Number(bookingId),
+      );
+
+      res.status(200).json({
+        message: "Đã xác nhận",
+        data,
+      });
+    } catch (e) {
+      console.error(">>> SHARE PAYMENT ACK ERROR:", e);
+      res.status(e.statusCode || 500).json({
+        EM: e.message || "Error",
+        message: e.message,
+        DT: e.message,
+      });
+    }
+  },
 };

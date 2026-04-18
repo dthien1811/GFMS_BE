@@ -665,54 +665,59 @@ module.exports = {
         };
       });
 
-      const enriched = await Promise.all(
-        mapped.map(async (item) => {
-          if (String(item?.requestType || "").toUpperCase() !== "BUSY_SLOT") return item;
-          const bookingId = Number(item?.requestData?.bookingId || 0);
-          if (!bookingId) return item;
-          const booking = await Booking.findByPk(bookingId, {
-            attributes: ["id", "trainerId", "gymId", "bookingDate", "startTime", "endTime"],
-            include: [
-              {
-                model: Trainer,
-                attributes: ["id", "specialization"],
-                required: false,
+      /**
+       * Trước đây: làm giàu BUSY_SLOT (booking + tìm PT thay thế) cho MỌI đơn rồi mới phân trang → rất chậm.
+       * Nay: chỉ làm giàu các dòng của trang hiện tại (sau lọc gym).
+       */
+      const enrichBusySlotPageRows = async (rows) =>
+        Promise.all(
+          rows.map(async (item) => {
+            if (String(item?.requestType || "").toUpperCase() !== "BUSY_SLOT") return item;
+            const bookingId = Number(item?.requestData?.bookingId || 0);
+            if (!bookingId) return item;
+            const booking = await Booking.findByPk(bookingId, {
+              attributes: ["id", "trainerId", "gymId", "bookingDate", "startTime", "endTime"],
+              include: [
+                {
+                  model: Trainer,
+                  attributes: ["id", "specialization"],
+                  required: false,
+                },
+              ],
+            });
+            if (!booking) return item;
+            const busyTrainerSpec = booking?.Trainer?.specialization || "";
+            const borrowCanonical =
+              resolveBorrowCanonicalFromTrainerSpecialization(busyTrainerSpec);
+            const replacementResult = await findInternalReplacementForBusyBooking({
+              booking,
+              maxCandidates: 5,
+              busyTrainerIdFromRequest: Number(item?.requestData?.trainerId || 0) || null,
+              requesterUserId: item?.requesterId || null,
+            });
+            const replacement = replacementResult?.replacement || null;
+            const candidates = Array.isArray(replacementResult?.candidates) ? replacementResult.candidates : [];
+            return {
+              ...item,
+              requestData: {
+                ...(item.requestData || {}),
+                busyTrainerId: booking.trainerId || null,
+                busyTrainerSpecialization: busyTrainerSpec,
+                ...(borrowCanonical ? { borrowSpecialization: borrowCanonical } : {}),
+                internalReplacementAvailable: Boolean(replacement),
+                internalReplacementTrainerId: replacement?.id || null,
+                internalReplacementTrainerName: replacement?.User?.username || null,
+                internalReplacementCandidates: candidates.map((candidate) => ({
+                  id: candidate?.id || null,
+                  name: candidate?.User?.username || null,
+                  specialization: candidate?.specialization || "",
+                })),
               },
-            ],
-          });
-          if (!booking) return item;
-          const busyTrainerSpec = booking?.Trainer?.specialization || "";
-          const borrowCanonical =
-            resolveBorrowCanonicalFromTrainerSpecialization(busyTrainerSpec);
-          const replacementResult = await findInternalReplacementForBusyBooking({
-            booking,
-            maxCandidates: 5,
-            busyTrainerIdFromRequest: Number(item?.requestData?.trainerId || 0) || null,
-            requesterUserId: item?.requesterId || null,
-          });
-          const replacement = replacementResult?.replacement || null;
-          const candidates = Array.isArray(replacementResult?.candidates) ? replacementResult.candidates : [];
-          return {
-            ...item,
-            requestData: {
-              ...(item.requestData || {}),
-              busyTrainerId: booking.trainerId || null,
-              busyTrainerSpecialization: busyTrainerSpec,
-              ...(borrowCanonical ? { borrowSpecialization: borrowCanonical } : {}),
-              internalReplacementAvailable: Boolean(replacement),
-              internalReplacementTrainerId: replacement?.id || null,
-              internalReplacementTrainerName: replacement?.User?.username || null,
-              internalReplacementCandidates: candidates.map((candidate) => ({
-                id: candidate?.id || null,
-                name: candidate?.User?.username || null,
-                specialization: candidate?.specialization || "",
-              })),
-            },
-          };
-        })
-      );
+            };
+          }),
+        );
 
-      const filtered = enriched.filter((request) => {
+      const filtered = mapped.filter((request) => {
         const candidateGymIds = [
           request?.requestApplication?.gymId,
           request?.requestData?.gymId,
@@ -737,11 +742,12 @@ module.exports = {
 
       const total = filtered.length;
       const offset = (safePage - 1) * safeLimit;
-      const pagedData = filtered.slice(offset, offset + safeLimit);
+      const pagedSlice = filtered.slice(offset, offset + safeLimit);
+      const data = await enrichBusySlotPageRows(pagedSlice);
 
       const totalPages = Math.max(1, Math.ceil(total / safeLimit));
       return {
-        data: pagedData,
+        data,
         pagination: {
           page: safePage,
           limit: safeLimit,
