@@ -86,5 +86,17 @@ router.post("/attendance/check-in", trainerAttendanceController.checkIn);
 router.post("/attendance/check-out", trainerAttendanceController.checkOut);
 router.post("/attendance/reset", trainerAttendanceController.reset);
 router.post("/attendance/request-busy-slot", trainerAttendanceController.requestBusySlot);
+router.post(
+  "/bookings/:bookingId/share-payment-instruction",
+  trainerAttendanceController.sendSharePaymentByBooking,
+);
+router.post(
+  "/bookings/:bookingId/share-payment-dispute",
+  trainerAttendanceController.submitSharePaymentDispute,
+);
+router.post(
+  "/bookings/:bookingId/share-payment-ack",
+  trainerAttendanceController.acknowledgeSharePaymentResponse,
+);
 
 module.exports = router;

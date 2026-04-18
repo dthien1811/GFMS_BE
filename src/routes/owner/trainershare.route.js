@@ -16,6 +16,9 @@ router.get("/available-trainers/:gymId", ownerTrainerShareController.getAvailabl
 router.get("/received", ownerTrainerShareController.getReceivedRequests); // Phải để trước /:id
 router.post("/:id/accept", ownerTrainerShareController.acceptRequest);
 router.post("/:id/reject", ownerTrainerShareController.rejectRequest);
+router.put("/:id/session-price", ownerTrainerShareController.updateSessionPrice);
+router.post("/:id/payment-confirm", ownerTrainerShareController.confirmPayment);
+router.post("/:id/payment-dispute-response", ownerTrainerShareController.respondPaymentDispute);
 router.post("/", ownerTrainerShareController.createTrainerShare);
 router.get("/", ownerTrainerShareController.getMyTrainerShares);
 router.get("/:id", ownerTrainerShareController.getMyTrainerShareDetail);

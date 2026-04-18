@@ -177,6 +177,59 @@ const ownerTrainerShareController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+
+  /** PUT /api/owner/trainer-shares/:id/session-price — owner mượn nhập giá buổi (phiếu đã approved) */
+  async updateSessionPrice(req, res) {
+    try {
+      const userId = req.user.id;
+      const shareId = req.params.id;
+      const data = await ownerTrainerShareService.updateBorrowerSessionPrice(userId, shareId, req.body);
+      return res.status(200).json({
+        message: "Đã cập nhật giá buổi",
+        data,
+      });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  /** POST /api/owner/trainer-shares/:id/payment-confirm — owner mượn xác nhận đã chuyển */
+  async confirmPayment(req, res) {
+    try {
+      const userId = req.user.id;
+      const shareId = req.params.id;
+      const data = await ownerTrainerShareService.confirmBorrowerSharePayment(
+        userId,
+        shareId,
+        req.body || {},
+      );
+      return res.status(200).json({
+        message: "Đã xác nhận thanh toán",
+        data,
+      });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  /** POST /api/owner/trainer-shares/:id/payment-dispute-response — phản hồi khiếu nại + URL ảnh CK */
+  async respondPaymentDispute(req, res) {
+    try {
+      const userId = req.user.id;
+      const shareId = req.params.id;
+      const data = await ownerTrainerShareService.respondBorrowerSharePaymentDispute(
+        userId,
+        shareId,
+        req.body || {},
+      );
+      return res.status(200).json({
+        message: "Đã gửi phản hồi",
+        data,
+      });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerTrainerShareController;

@@ -12,6 +12,9 @@ module.exports = (sequelize, DataTypes) => {
       TrainerShare.belongsTo(models.User, { foreignKey: 'rejectedBy', as: 'rejecter' });
       TrainerShare.belongsTo(models.Policy, { foreignKey: 'policyId' });
       TrainerShare.belongsTo(models.Member, { foreignKey: 'memberId' });
+      if (models.Booking) {
+        TrainerShare.hasMany(models.Booking, { foreignKey: "trainerShareId", as: "shareBookings" });
+      }
 
       // ✅ NEW: overrides theo thời gian
       if (models.TrainerShareOverride) {
@@ -47,6 +50,25 @@ module.exports = (sequelize, DataTypes) => {
     policyId: DataTypes.INTEGER,
     /** Chuyên môn yêu cầu khi mượn mở (status open): chỉ PT khớp chuyên môn mới thấy / nhận lịch */
     borrowSpecialization: DataTypes.STRING,
+    /** Giá một buổi (VND) — owner chi nhánh mượn (requestedBy) */
+    sessionPrice: DataTypes.DECIMAL(12, 2),
+    /** none | awaiting_transfer | paid */
+    sharePaymentStatus: DataTypes.STRING,
+    lenderBankName: DataTypes.STRING,
+    lenderBankAccountNumber: DataTypes.STRING,
+    lenderAccountHolderName: DataTypes.STRING,
+    paymentInstructionSentAt: DataTypes.DATE,
+    /** Bên mượn xác nhận đã chuyển */
+    paymentMarkedPaidAt: DataTypes.DATE,
+    /** PT khiếu nại chưa nhận tiền */
+    sharePaymentDisputeNote: DataTypes.TEXT,
+    sharePaymentDisputedAt: DataTypes.DATE,
+    /** Owner chi nhánh mượn phản hồi khiếu nại + ảnh CK */
+    borrowerDisputeResponseNote: DataTypes.TEXT,
+    borrowerDisputeResponseAt: DataTypes.DATE,
+    paymentProofImageUrls: DataTypes.JSON,
+    /** PT xác nhận đã nhận tiền / đồng ý phản hồi chủ phòng mượn */
+    sharePaymentPtAcknowledgedAt: DataTypes.DATE,
   }, {
     sequelize,
     modelName: 'TrainerShare',

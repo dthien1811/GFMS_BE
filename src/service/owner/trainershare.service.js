@@ -32,6 +32,14 @@ const serializeOwnerShare = (trainerShare) => {
   return data;
 };
 
+/** Giá buổi (VNĐ) — null nếu bỏ trống / không hợp lệ */
+const parseSessionPrice = (value) => {
+  if (value === undefined || value === null || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * 100) / 100;
+};
+
 const normalizeSpecificSchedules = (specificSchedules) => {
   if (!specificSchedules) return [];
 
@@ -291,6 +299,26 @@ const listEligibleBorrowTrainersAtGym = async ({
   return matched;
 };
 
+/**
+ * Mọi userId PT tại gym nguồn có thể **thấy** yêu cầu mở (open) — khớp filter trong listAvailableTrainerShareRequestsForTrainer:
+ * không trainerId; nếu có borrowSpecialization thì chỉ PT khớp chuyên môn; nếu không có thì mọi PT tại gym.
+ */
+const listOpenShareVisibleTrainerUserIds = async (fromGymIdNum, borrowSpecialization) => {
+  const trainersAtGym = await Trainer.findAll({
+    where: { gymId: fromGymIdNum },
+    attributes: ["id", "userId", "specialization"],
+  });
+  const spec = String(borrowSpecialization || "").trim();
+  const ids = [];
+  for (const tr of trainersAtGym) {
+    if (!tr.userId) continue;
+    if (!spec || trainerMatchesBorrowSpecialization(tr.specialization, spec)) {
+      ids.push(Number(tr.userId));
+    }
+  }
+  return [...new Set(ids.filter((n) => Number.isFinite(n)))];
+};
+
 const forEachDateInRange = async (startDate, endDate, callback) => {
   const currentDate = new Date(startDate);
   const finalDate = new Date(endDate);
@@ -347,6 +375,7 @@ const createTrainerShare = async (userId, data) => {
     commissionSplit,
     notes,
     borrowSpecialization,
+    sessionPrice,
   } = data;
 
   const borrowTrim =
@@ -594,6 +623,8 @@ const createTrainerShare = async (userId, data) => {
     requestedBy: userId,
     notes,
     borrowSpecialization: borrowTrim || null,
+    sessionPrice: parseSessionPrice(sessionPrice),
+    sharePaymentStatus: "none",
   });
 
   let trainerName = "một huấn luyện viên phù hợp";
@@ -607,12 +638,17 @@ const createTrainerShare = async (userId, data) => {
     namedTrainerUserId = trainerProfile?.userId || null;
   }
 
-  const eligibleBorrowUserIds = !hasTrainerId
-    ? [...new Set(eligibleBorrowTrainers.map((t) => t.userId).filter(Boolean))]
-    : [];
+  /** Mọi PT có thể thấy yêu cầu mở trên app — dùng cho socket + push (không chỉ PT “đủ slot” trong listEligibleBorrowTrainersAtGym) */
+  let notifyTrainerUserIds = [];
+  if (!hasTrainerId) {
+    notifyTrainerUserIds = await listOpenShareVisibleTrainerUserIds(
+      fromGymIdNum,
+      borrowTrim,
+    );
+  }
 
   emitTrainerShareChanged(
-    [...new Set([userId, fromGym.ownerId, namedTrainerUserId, ...eligibleBorrowUserIds])].filter(
+    [...new Set([userId, fromGym.ownerId, namedTrainerUserId, ...notifyTrainerUserIds])].filter(
       Boolean,
     ),
     {
@@ -643,23 +679,26 @@ const createTrainerShare = async (userId, data) => {
     Number(namedTrainerUserId) !== Number(userId) &&
     Number(namedTrainerUserId) !== Number(fromGym.ownerId)
   ) {
+    const st = normalizeTimeValue(startTime);
+    const et = normalizeTimeValue(endTime);
     await realtimeService.notifyUser(namedTrainerUserId, {
-      title: "Bạn được chỉ định trong yêu cầu mượn PT",
-      message: `${toGym.name} xin mượn bạn (${trainerName}). Vào mục Gửi yêu cầu → Khung giờ mượn PT để nhận lịch.`,
+      title: "Có yêu cầu mượn huấn luyện viên",
+      message: `${toGym.name} cần mượn bạn (${trainerName}) tại ${fromGym.name}, khung ${startDate} ${st}–${et}. Mở Khung giờ mượn PT để nhận lịch.`,
       notificationType: "trainer_share",
       relatedType: "trainerShare",
       relatedId: trainerShare.id,
     });
   }
 
-  if (!hasTrainerId && eligibleBorrowUserIds.length && borrowTrim) {
+  if (!hasTrainerId && notifyTrainerUserIds.length) {
     const st = normalizeTimeValue(startTime);
     const et = normalizeTimeValue(endTime);
-    for (const ptUid of eligibleBorrowUserIds) {
+    const specLine = borrowTrim ? ` Chuyên môn: ${borrowTrim}.` : "";
+    for (const ptUid of notifyTrainerUserIds) {
       if (Number(ptUid) === Number(userId)) continue;
       await realtimeService.notifyUser(ptUid, {
-        title: "Có khung giờ mượn PT phù hợp chuyên môn của bạn",
-        message: `${toGym.name} xin mượn PT (${borrowTrim}) vào ${startDate} ${st}–${et}. Vào Khung giờ mượn PT để nhận lịch.`,
+        title: "Có yêu cầu mượn huấn luyện viên",
+        message: `${toGym.name} cần mượn huấn luyện viên tại ${fromGym.name}, khung ${startDate} ${st}–${et}.${specLine} Mở Khung giờ mượn PT để xem và nhận lịch.`,
         notificationType: "trainer_share",
         relatedType: "trainerShare",
         relatedId: trainerShare.id,
@@ -956,11 +995,27 @@ const updateMyTrainerShare = async (userId, shareId, data) => {
   }
 
   // Update các trường được phép
-  const allowedFields = ["shareType", "startDate", "endDate", "startTime", "endTime", "commissionSplit", "notes", "memberId"];
+  const allowedFields = [
+    "shareType",
+    "startDate",
+    "endDate",
+    "startTime",
+    "endTime",
+    "commissionSplit",
+    "notes",
+    "memberId",
+  ];
 
   for (const field of allowedFields) {
     if (data[field] !== undefined) {
       trainerShare[field] = data[field];
+    }
+  }
+
+  if (data.sessionPrice !== undefined) {
+    const p = parseSessionPrice(data.sessionPrice);
+    if (p !== null) {
+      trainerShare.sessionPrice = p;
     }
   }
 
@@ -1545,6 +1600,7 @@ const claimTrainerShareRequest = async (userId, requestId) => {
         if (memberBooking) {
           const previousTrainerId = Number(memberBooking.trainerId || 0) || null;
           memberBooking.trainerId = trainer.id;
+          memberBooking.trainerShareId = request.id;
           if (!memberBooking.sessionType || String(memberBooking.sessionType).toLowerCase() !== "trainer_share") {
             memberBooking.sessionType = "trainer_share";
           }
@@ -1641,7 +1697,10 @@ const claimTrainerShareRequest = async (userId, requestId) => {
             startTime: slot.startTime,
             endTime: slot.endTime,
             sessionType: "trainer_share",
-            notes: request.notes || "Tự động tạo từ yêu cầu mượn huấn luyện viên",
+            trainerShareId: request.id,
+            notes: request.notes
+              ? `${request.notes}\nPhiếu mượn PT #${request.id}`
+              : `Tự động tạo từ yêu cầu mượn huấn luyện viên. Phiếu #${request.id}`,
             status: "confirmed",
             createdBy: request.requestedBy || null,
           },
@@ -1673,6 +1732,838 @@ const claimTrainerShareRequest = async (userId, requestId) => {
   });
 };
 
+/**
+ * Owner chi nhánh mượn (requestedBy) nhập/sửa giá buổi khi phiếu đã approved, trước khi đối tác gửi CK hoặc khi chưa thanh toán xong.
+ */
+const updateBorrowerSessionPrice = async (userId, shareId, data) => {
+  const trainerShare = await TrainerShare.findOne({
+    where: { id: shareId, requestedBy: userId },
+  });
+
+  if (!trainerShare) {
+    const error = new Error("Không tìm thấy phiếu hoặc bạn không có quyền");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (trainerShare.status !== "approved") {
+    const error = new Error("Chỉ cập nhật giá khi phiếu đã được đối tác chấp nhận");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const st = trainerShare.sharePaymentStatus || "none";
+  if (st === "awaiting_transfer" || st === "paid") {
+    const error = new Error("Không thể sửa giá sau khi đã gửi hoặc đã xác nhận thanh toán");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const p = parseSessionPrice(data?.sessionPrice);
+  if (p === null || p <= 0) {
+    const error = new Error("Nhập giá buổi hợp lệ (VNĐ, lớn hơn 0)");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  trainerShare.sessionPrice = p;
+  await trainerShare.save();
+
+  const fromGym = await Gym.findByPk(trainerShare.fromGymId, { attributes: ["ownerId"] });
+  emitTrainerShareChanged([userId, fromGym?.ownerId], {
+    shareId: trainerShare.id,
+    status: trainerShare.status,
+    action: "session_price_updated",
+    trainerId: trainerShare.trainerId,
+    fromGymId: trainerShare.fromGymId,
+    toGymId: trainerShare.toGymId,
+  });
+
+  return serializeOwnerShare(trainerShare);
+};
+
+const bookingDateOnlyStr = (bd) => {
+  if (!bd) return "";
+  if (bd instanceof Date) return bd.toISOString().slice(0, 10);
+  return String(bd).slice(0, 10);
+};
+
+/** Các khung giờ trên phiếu mượn — dùng khớp booking đã hoàn thành */
+const getShareSlotsForPaymentCheck = (trainerShare) => {
+  if (!trainerShare) return [];
+  if (trainerShare.scheduleMode === "specific_days" && trainerShare.specificSchedules) {
+    return normalizeSpecificSchedules(trainerShare.specificSchedules).map((s) => ({
+      date: String(s.date || "").slice(0, 10),
+      startTime: s.startTime,
+      endTime: s.endTime,
+    }));
+  }
+  if (trainerShare.startDate && trainerShare.startTime && trainerShare.endTime) {
+    return [
+      {
+        date: bookingDateOnlyStr(trainerShare.startDate),
+        startTime: trainerShare.startTime,
+        endTime: trainerShare.endTime,
+      },
+    ];
+  }
+  return [];
+};
+
+/**
+ * Tìm phiếu mượn PT khớp buổi đã dạy (cùng PT, chi nhánh mượn, ngày giờ).
+ * Dùng khi chưa có trainerShareId trên booking.
+ */
+const findTrainerShareForCompletedBooking = async (booking) => {
+  if (String(booking.sessionType || "").toLowerCase() !== "trainer_share") return null;
+  const dateStr = bookingDateOnlyStr(booking.bookingDate);
+  const shares = await TrainerShare.findAll({
+    where: {
+      trainerId: booking.trainerId,
+      toGymId: booking.gymId,
+      status: "approved",
+    },
+  });
+  for (const sh of shares) {
+    const slots = getShareSlotsForPaymentCheck(sh);
+    for (const sl of slots) {
+      if (
+        String(sl.date).slice(0, 10) === dateStr &&
+        normalizeTimeValue(sl.startTime) === normalizeTimeValue(booking.startTime) &&
+        normalizeTimeValue(sl.endTime) === normalizeTimeValue(booking.endTime)
+      ) {
+        return sh;
+      }
+    }
+  }
+  return null;
+};
+
+/** Parse id phiếu từ ghi chú khi PT nhận lịch (audit: "yêu cầu chia sẻ #123") */
+const extractTrainerShareIdFromNotes = (notes) => {
+  const s = String(notes || "");
+  const m =
+    s.match(/yêu cầu chia sẻ\s*#(\d+)/i) ||
+    s.match(/chia\s+sẻ\s*#(\d+)/i) ||
+    s.match(/phiếu mượn\s*PT\s*#(\d+)/i);
+  if (!m) return null;
+  const id = Number(m[1]);
+  return Number.isFinite(id) ? id : null;
+};
+
+const verifyShareMatchesBooking = (booking, sh) => {
+  if (!sh) return false;
+  const row = sh.toJSON ? sh.toJSON() : sh;
+  if (Number(row.trainerId) !== Number(booking.trainerId)) return false;
+  if (Number(row.toGymId) !== Number(booking.gymId)) return false;
+  return normalizeOwnerShareStatus(row.status) === "approved";
+};
+
+/**
+ * Ưu tiên trainerShareId trên booking → ghi chú → khớp ngày/giờ (legacy).
+ * Phiếu TrainerShare không bị xóa khi PT nhận lịch; cần liên kết rõ ràng để thanh toán ổn định.
+ */
+const resolveTrainerShareForPaymentBooking = async (booking) => {
+  if (booking.trainerShareId) {
+    const sh = await TrainerShare.findByPk(booking.trainerShareId);
+    if (verifyShareMatchesBooking(booking, sh)) return sh;
+  }
+
+  const fromNotes = extractTrainerShareIdFromNotes(booking.notes);
+  if (fromNotes) {
+    const sh = await TrainerShare.findByPk(fromNotes);
+    if (verifyShareMatchesBooking(booking, sh)) return sh;
+  }
+
+  return findTrainerShareForCompletedBooking(booking);
+};
+
+const parsePaymentProofImageUrls = (raw) => {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map(String).filter(Boolean);
+  if (typeof raw === "string") {
+    try {
+      const p = JSON.parse(raw);
+      return Array.isArray(p) ? p.map(String).filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+const buildSharePaymentSnapshotPayload = (j, borrowerGymName) => ({
+  shareId: j.id,
+  sharePaymentStatus: j.sharePaymentStatus || "none",
+  sessionPrice: j.sessionPrice,
+  paymentInstructionSentAt: j.paymentInstructionSentAt,
+  paymentMarkedPaidAt: j.paymentMarkedPaidAt,
+  sharePaymentDisputeNote: j.sharePaymentDisputeNote || null,
+  sharePaymentDisputedAt: j.sharePaymentDisputedAt || null,
+  borrowerGymName: borrowerGymName || null,
+  borrowerDisputeResponseNote: j.borrowerDisputeResponseNote || null,
+  borrowerDisputeResponseAt: j.borrowerDisputeResponseAt || null,
+  paymentProofImageUrls: parsePaymentProofImageUrls(j.paymentProofImageUrls),
+  sharePaymentPtAcknowledgedAt: j.sharePaymentPtAcknowledgedAt || null,
+});
+
+/** Một query Gym nhẹ thay vì load lại cả TrainerShare + join */
+const buildSharePaymentSnapshotFromResolvedShare = async (share) => {
+  const j = share.toJSON ? share.toJSON() : share;
+  let borrowerGymName = j.toGym?.name || null;
+  if (!borrowerGymName && j.toGymId) {
+    const g = await Gym.findByPk(j.toGymId, { attributes: ["name"] });
+    borrowerGymName = g?.name || null;
+  }
+  return buildSharePaymentSnapshotPayload(j, borrowerGymName);
+};
+
+/**
+ * Gắn sharePayment cho nhiều buổi trong một lần — tránh N× resolve + findByPk (lịch điểm danh PT).
+ */
+const attachSharePaymentSnapshotsBatchForTrainerBookings = async (plainBookings) => {
+  const out = new Map();
+  const shareBookings = plainBookings.filter(
+    (b) => String(b.sessionType || "").toLowerCase() === "trainer_share",
+  );
+  if (!shareBookings.length) return out;
+
+  const idsByBooking = new Map();
+  for (const b of shareBookings) {
+    let sid = b.trainerShareId ? Number(b.trainerShareId) : null;
+    if (!Number.isFinite(sid) || sid <= 0) sid = extractTrainerShareIdFromNotes(b.notes);
+    if (Number.isFinite(sid) && sid > 0) idsByBooking.set(b.id, sid);
+  }
+
+  const uniqueIds = [...new Set(idsByBooking.values())];
+  let byShareId = new Map();
+  if (uniqueIds.length) {
+    const rows = await TrainerShare.findAll({
+      where: { id: uniqueIds },
+      attributes: [
+        "id",
+        "trainerId",
+        "toGymId",
+        "status",
+        "sharePaymentStatus",
+        "sessionPrice",
+        "paymentInstructionSentAt",
+        "paymentMarkedPaidAt",
+        "sharePaymentDisputeNote",
+        "sharePaymentDisputedAt",
+        "borrowerDisputeResponseNote",
+        "borrowerDisputeResponseAt",
+        "paymentProofImageUrls",
+        "sharePaymentPtAcknowledgedAt",
+      ],
+      include: [{ model: Gym, as: "toGym", attributes: ["id", "name"] }],
+    });
+    for (const r of rows) byShareId.set(r.id, r);
+  }
+
+  const needLegacy = [];
+  for (const b of shareBookings) {
+    const sid = idsByBooking.get(b.id);
+    const sh = sid ? byShareId.get(sid) : null;
+    if (sh && verifyShareMatchesBooking(b, sh)) {
+      const j = sh.toJSON ? sh.toJSON() : sh;
+      out.set(b.id, buildSharePaymentSnapshotPayload(j, j.toGym?.name || null));
+    } else {
+      needLegacy.push(b);
+    }
+  }
+
+  await Promise.all(
+    needLegacy.map(async (b) => {
+      if (out.has(b.id)) return;
+      const sh = await findTrainerShareForCompletedBooking(b);
+      if (!sh) return;
+      const snap = await buildSharePaymentSnapshotFromResolvedShare(sh);
+      if (snap) out.set(b.id, snap);
+    }),
+  );
+
+  return out;
+};
+
+/**
+ * Thông tin thanh toán mượn PT gắn buổi — hiển thị cho PT (lịch điểm danh).
+ */
+const getSharePaymentSnapshotForTrainerBooking = async (booking) => {
+  if (String(booking.sessionType || "").toLowerCase() !== "trainer_share") return null;
+  const share = await resolveTrainerShareForPaymentBooking(booking);
+  if (!share) return null;
+  return buildSharePaymentSnapshotFromResolvedShare(share);
+};
+
+/**
+ * PT gửi khiếu nại chưa nhận được tiền (sau khi đã gửi STK, chờ CK).
+ */
+const submitSharePaymentDisputeByBookingId = async (userId, bookingId, body = {}) => {
+  const booking = await Booking.findOne({
+    where: { id: bookingId },
+    attributes: [
+      "id",
+      "trainerId",
+      "gymId",
+      "bookingDate",
+      "startTime",
+      "endTime",
+      "sessionType",
+      "status",
+      "notes",
+      "trainerShareId",
+    ],
+  });
+
+  if (!booking) {
+    const error = new Error("Không tìm thấy buổi tập");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const trainer = await Trainer.findOne({ where: { userId }, attributes: ["id", "userId"] });
+  if (!trainer || Number(booking.trainerId) !== Number(trainer.id)) {
+    const error = new Error("Bạn không phải huấn luyện viên của buổi này");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (String(booking.sessionType || "").toLowerCase() !== "trainer_share") {
+    const error = new Error("Buổi này không phải lịch mượn PT");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (String(booking.status || "").toLowerCase() !== "completed") {
+    const error = new Error("Chỉ khiếu nại sau khi buổi đã hoàn thành");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const shareRow = await resolveTrainerShareForPaymentBooking(booking);
+  if (!shareRow) {
+    const error = new Error("Không tìm thấy phiếu mượn PT tương ứng buổi này.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const trainerShare = await TrainerShare.findByPk(shareRow.id, {
+    include: [
+      { model: Gym, as: "fromGym", attributes: ["id", "ownerId", "name"] },
+      { model: Gym, as: "toGym", attributes: ["id", "name"] },
+      { model: Trainer, include: [{ model: User, attributes: ["username"] }] },
+    ],
+  });
+
+  const note = String(body.note || body.message || "").trim();
+  if (note.length < 8) {
+    const error = new Error("Vui lòng nhập nội dung khiếu nại (ít nhất 8 ký tự)");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const pst = trainerShare.sharePaymentStatus || "none";
+  const trainerName = trainerShare.Trainer?.User?.username || "Huấn luyện viên";
+
+  /** Đã xác nhận CK trên app nhưng PT báo thực tế chưa nhận — giữ trạng thái paid, chỉ lưu phản ánh */
+  if (pst === "paid") {
+    trainerShare.sharePaymentDisputeNote = note;
+    trainerShare.sharePaymentDisputedAt = new Date();
+    await trainerShare.save();
+
+    emitTrainerShareChanged(
+      [userId, trainerShare.requestedBy, trainerShare.fromGym?.ownerId].filter(Boolean),
+      {
+        shareId: trainerShare.id,
+        status: trainerShare.status,
+        action: "payment_dispute_after_paid",
+        trainerId: trainerShare.trainerId,
+        fromGymId: trainerShare.fromGymId,
+        toGymId: trainerShare.toGymId,
+      },
+    );
+
+    if (trainerShare.requestedBy && Number(trainerShare.requestedBy) !== Number(userId)) {
+      await realtimeService.notifyUser(trainerShare.requestedBy, {
+        title: "PT báo chưa nhận tiền (đã xác nhận CK)",
+        message: `${trainerName} báo thực tế chưa nhận được tiền dù đã xác nhận trên hệ thống — phiếu #${trainerShare.id} (${trainerShare.toGym?.name || ""}).`,
+        notificationType: "trainer_share",
+        relatedType: "trainerShare",
+        relatedId: trainerShare.id,
+      });
+    }
+
+    return serializeOwnerShare(trainerShare);
+  }
+
+  if (pst !== "awaiting_transfer" && pst !== "disputed") {
+    const error = new Error("Chỉ khiếu nại khi đã gửi thông tin nhận tiền và đang chờ chuyển khoản");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  trainerShare.sharePaymentDisputeNote = note;
+  trainerShare.sharePaymentDisputedAt = new Date();
+  trainerShare.sharePaymentStatus = "disputed";
+  await trainerShare.save();
+
+  emitTrainerShareChanged(
+    [userId, trainerShare.requestedBy, trainerShare.fromGym?.ownerId].filter(Boolean),
+    {
+      shareId: trainerShare.id,
+      status: trainerShare.status,
+      action: "payment_dispute",
+      trainerId: trainerShare.trainerId,
+      fromGymId: trainerShare.fromGymId,
+      toGymId: trainerShare.toGymId,
+    },
+  );
+
+  if (trainerShare.requestedBy && Number(trainerShare.requestedBy) !== Number(userId)) {
+    await realtimeService.notifyUser(trainerShare.requestedBy, {
+      title: "Khiếu nại thanh toán mượn PT",
+      message: `${trainerName} báo chưa nhận được tiền buổi mượn PT (#${trainerShare.id}) — ${trainerShare.toGym?.name || ""}.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
+
+  return serializeOwnerShare(trainerShare);
+};
+
+/**
+ * PT (người dạy) gửi NH + STK sau khi buổi mượn đã hoàn thành — owner chi nhánh mượn nhận thông báo và thanh toán.
+ */
+const sendSharePaymentInstructionByBookingId = async (userId, bookingId, body = {}) => {
+  const booking = await Booking.findOne({
+    where: { id: bookingId },
+    attributes: [
+      "id",
+      "trainerId",
+      "gymId",
+      "bookingDate",
+      "startTime",
+      "endTime",
+      "sessionType",
+      "status",
+      "notes",
+      "trainerShareId",
+    ],
+  });
+
+  if (!booking) {
+    const error = new Error("Không tìm thấy buổi tập");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const trainer = await Trainer.findOne({ where: { userId }, attributes: ["id", "userId"] });
+  if (!trainer || Number(booking.trainerId) !== Number(trainer.id)) {
+    const error = new Error("Bạn không phải huấn luyện viên của buổi này");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (String(booking.status || "").toLowerCase() !== "completed") {
+    const error = new Error(
+      "Chỉ gửi thông tin nhận tiền sau khi đã hoàn thành buổi dạy (điểm danh xong).",
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (String(booking.sessionType || "").toLowerCase() !== "trainer_share") {
+    const error = new Error("Buổi này không phải lịch mượn PT.");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const shareRow = await resolveTrainerShareForPaymentBooking(booking);
+  if (!shareRow) {
+    const error = new Error("Không tìm thấy phiếu mượn PT tương ứng buổi này.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const trainerShare = await TrainerShare.findByPk(shareRow.id, {
+    include: [
+      { model: Gym, as: "fromGym", attributes: ["id", "ownerId", "name"] },
+      { model: Gym, as: "toGym", attributes: ["id", "name"] },
+      { model: Trainer, include: [{ model: User, attributes: ["username"] }] },
+    ],
+  });
+
+  if (trainerShare.status !== "approved") {
+    const error = new Error("Phiếu mượn chưa được chấp nhận");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const price = Number(trainerShare.sessionPrice);
+  if (!Number.isFinite(price) || price <= 0) {
+    const error = new Error(
+      "Chủ phòng mượn chưa nhập giá buổi — không thể gửi thông tin chuyển khoản.",
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const pst = trainerShare.sharePaymentStatus || "none";
+  if (pst === "paid") {
+    const error = new Error("Buổi đã được xác nhận thanh toán");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const bankName = String(body.bankName || "").trim();
+  const bankAccountNumber = String(body.bankAccountNumber || "").trim();
+  const accountHolderName = String(body.accountHolderName || "").trim();
+
+  if (!bankName || !bankAccountNumber) {
+    const error = new Error("Vui lòng nhập tên ngân hàng và số tài khoản");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  trainerShare.lenderBankName = bankName;
+  trainerShare.lenderBankAccountNumber = bankAccountNumber;
+  trainerShare.lenderAccountHolderName = accountHolderName || null;
+  trainerShare.paymentInstructionSentAt = new Date();
+  if (pst !== "disputed") {
+    trainerShare.sharePaymentStatus = "awaiting_transfer";
+  }
+  await trainerShare.save();
+
+  const trainerName = trainerShare.Trainer?.User?.username || "Huấn luyện viên";
+
+  emitTrainerShareChanged(
+    [userId, trainerShare.requestedBy, trainerShare.fromGym?.ownerId].filter(Boolean),
+    {
+      shareId: trainerShare.id,
+      status: trainerShare.status,
+      action: "payment_instruction_sent",
+      trainerId: trainerShare.trainerId,
+      fromGymId: trainerShare.fromGymId,
+      toGymId: trainerShare.toGymId,
+    },
+  );
+
+  if (trainerShare.requestedBy && Number(trainerShare.requestedBy) !== Number(userId)) {
+    await realtimeService.notifyUser(trainerShare.requestedBy, {
+      title: "Thông tin chuyển khoản mượn PT",
+      message: `${trainerName} đã gửi tài khoản nhận tiền buổi mượn PT (#${trainerShare.id}) — ${trainerShare.toGym?.name || "chi nhánh mượn"}.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
+
+  return serializeOwnerShare(trainerShare);
+};
+
+/**
+ * Owner chi nhánh mượn xác nhận đã chuyển tiền (tuỳ chọn kèm URL ảnh chứng từ CK).
+ */
+const confirmBorrowerSharePayment = async (userId, shareId, body = {}) => {
+  const trainerShare = await TrainerShare.findByPk(shareId, {
+    include: [
+      { model: Gym, as: "fromGym", attributes: ["id", "ownerId", "name"] },
+      { model: Gym, as: "toGym", attributes: ["id", "name"] },
+    ],
+  });
+
+  if (!trainerShare) {
+    const error = new Error("Không tìm thấy phiếu");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (Number(trainerShare.requestedBy) !== Number(userId)) {
+    const error = new Error("Chỉ owner chi nhánh mượn mới xác nhận đã chuyển tiền");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const paySt = trainerShare.sharePaymentStatus || "none";
+  if (paySt !== "awaiting_transfer" && paySt !== "disputed") {
+    const error = new Error("Chưa có yêu cầu thanh toán đang chờ");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const imageUrls = Array.isArray(body.imageUrls)
+    ? body.imageUrls.map((u) => String(u).trim()).filter(Boolean)
+    : [];
+  const uniqueUrls = [...new Set(imageUrls)].slice(0, 8);
+  for (const u of uniqueUrls) {
+    if (!/^https?:\/\//i.test(u)) {
+      const error = new Error("URL ảnh chứng từ không hợp lệ");
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+  if (uniqueUrls.length) {
+    trainerShare.paymentProofImageUrls = uniqueUrls;
+  }
+
+  trainerShare.sharePaymentStatus = "paid";
+  trainerShare.paymentMarkedPaidAt = new Date();
+  await trainerShare.save();
+
+  const trainerRow = await Trainer.findByPk(trainerShare.trainerId, { attributes: ["userId"] });
+  const trainerUserId = trainerRow?.userId;
+
+  emitTrainerShareChanged(
+    [userId, trainerShare.fromGym?.ownerId, trainerUserId].filter(Boolean),
+    {
+      shareId: trainerShare.id,
+      status: trainerShare.status,
+      action: "payment_confirmed",
+      trainerId: trainerShare.trainerId,
+      fromGymId: trainerShare.fromGymId,
+      toGymId: trainerShare.toGymId,
+    },
+  );
+
+  const lenderOwnerId = trainerShare.fromGym?.ownerId;
+  if (lenderOwnerId && Number(lenderOwnerId) !== Number(userId)) {
+    await realtimeService.notifyUser(lenderOwnerId, {
+      title: "Đối tác đã xác nhận chuyển khoản mượn PT",
+      message: `${trainerShare.toGym?.name || "Đối tác"} đã xác nhận đã chuyển tiền buổi mượn PT (#${trainerShare.id}).`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
+
+  if (trainerUserId) {
+    await realtimeService.notifyUser(trainerUserId, {
+      title: "Đã xác nhận thanh toán mượn PT",
+      message: `${trainerShare.toGym?.name || "Chi nhánh mượn"} đã xác nhận đã chuyển khoản (phiếu #${trainerShare.id}).`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
+
+  return serializeOwnerShare(trainerShare);
+};
+
+/**
+ * Owner chi nhánh mượn phản hồi khiếu nại + ảnh chứng từ CK (PT xem trên lịch điểm danh).
+ */
+const respondBorrowerSharePaymentDispute = async (userId, shareId, body = {}) => {
+  const trainerShare = await TrainerShare.findByPk(shareId, {
+    include: [
+      { model: Gym, as: "fromGym", attributes: ["id", "ownerId", "name"] },
+      { model: Gym, as: "toGym", attributes: ["id", "name"] },
+      { model: Trainer, include: [{ model: User, attributes: ["username"] }] },
+    ],
+  });
+
+  if (!trainerShare) {
+    const error = new Error("Không tìm thấy phiếu");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  if (Number(trainerShare.requestedBy) !== Number(userId)) {
+    const error = new Error("Chỉ owner chi nhánh mượn mới gửi phản hồi");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  const hasPtComplaint =
+    String(trainerShare.sharePaymentDisputeNote || "").trim().length > 0 ||
+    (trainerShare.sharePaymentStatus || "") === "disputed";
+
+  if (!hasPtComplaint) {
+    const error = new Error("Chưa có khiếu nại từ PT để phản hồi");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const note = String(body.note || "").trim();
+  const imageUrls = Array.isArray(body.imageUrls)
+    ? body.imageUrls.map((u) => String(u).trim()).filter(Boolean)
+    : [];
+  const unique = [...new Set(imageUrls)].slice(0, 8);
+  for (const u of unique) {
+    if (!/^https?:\/\//i.test(u)) {
+      const error = new Error("URL ảnh không hợp lệ");
+      error.statusCode = 400;
+      throw error;
+    }
+  }
+
+  if (!note && unique.length === 0) {
+    const error = new Error("Nhập nội dung phản hồi hoặc tải ít nhất một ảnh chứng từ");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (note.length > 0 && note.length < 3) {
+    const error = new Error("Nội dung phản hồi quá ngắn");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  trainerShare.borrowerDisputeResponseNote = note || null;
+  trainerShare.borrowerDisputeResponseAt = new Date();
+  trainerShare.paymentProofImageUrls = unique.length ? unique : null;
+  await trainerShare.save();
+
+  const trainerRow = await Trainer.findByPk(trainerShare.trainerId, { attributes: ["userId"] });
+  const trainerUserId = trainerRow?.userId;
+
+  emitTrainerShareChanged(
+    [userId, trainerShare.fromGym?.ownerId, trainerUserId].filter(Boolean),
+    {
+      shareId: trainerShare.id,
+      status: trainerShare.status,
+      action: "borrower_payment_dispute_response",
+      trainerId: trainerShare.trainerId,
+      fromGymId: trainerShare.fromGymId,
+      toGymId: trainerShare.toGymId,
+    },
+  );
+
+  if (trainerUserId) {
+    await realtimeService.notifyUser(trainerUserId, {
+      title: "Phản hồi thanh toán mượn PT",
+      message: `${trainerShare.toGym?.name || "Chi nhánh mượn"} đã gửi phản hồi / ảnh chứng từ — phiếu #${trainerShare.id}.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
+
+  return serializeOwnerShare(trainerShare);
+};
+
+/**
+ * PT xác nhận đã nhận tiền / đồng ý phản hồi chủ phòng (sau khi chủ phòng đã gửi phản hồi hoặc ảnh CK).
+ */
+const acknowledgeBorrowerSharePaymentResponseByBookingId = async (userId, bookingId) => {
+  const booking = await Booking.findOne({
+    where: { id: bookingId },
+    attributes: [
+      "id",
+      "trainerId",
+      "gymId",
+      "bookingDate",
+      "startTime",
+      "endTime",
+      "sessionType",
+      "status",
+      "notes",
+      "trainerShareId",
+    ],
+  });
+
+  if (!booking) {
+    const error = new Error("Không tìm thấy buổi tập");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const trainer = await Trainer.findOne({ where: { userId }, attributes: ["id", "userId"] });
+  if (!trainer || Number(booking.trainerId) !== Number(trainer.id)) {
+    const error = new Error("Bạn không phải huấn luyện viên của buổi này");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (String(booking.sessionType || "").toLowerCase() !== "trainer_share") {
+    const error = new Error("Buổi này không phải lịch mượn PT");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (String(booking.status || "").toLowerCase() !== "completed") {
+    const error = new Error("Chỉ xác nhận sau khi buổi đã hoàn thành");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const shareRow = await resolveTrainerShareForPaymentBooking(booking);
+  if (!shareRow) {
+    const error = new Error("Không tìm thấy phiếu mượn PT tương ứng buổi này.");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const trainerShare = await TrainerShare.findByPk(shareRow.id, {
+    include: [
+      { model: Gym, as: "fromGym", attributes: ["id", "ownerId", "name"] },
+      { model: Gym, as: "toGym", attributes: ["id", "name"] },
+      { model: Trainer, include: [{ model: User, attributes: ["username"] }] },
+    ],
+  });
+
+  const pst = trainerShare.sharePaymentStatus || "none";
+  if (pst !== "paid") {
+    const error = new Error("Chỉ xác nhận khi chủ phòng đã xác nhận chuyển khoản trên hệ thống");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (trainerShare.sharePaymentPtAcknowledgedAt) {
+    const error = new Error("Bạn đã xác nhận trước đó");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const ptHadComplaint = String(trainerShare.sharePaymentDisputeNote || "").trim().length > 0;
+  const proofs = parsePaymentProofImageUrls(trainerShare.paymentProofImageUrls);
+  const hasBorrowerReply = !!trainerShare.borrowerDisputeResponseAt;
+
+  if (!ptHadComplaint) {
+    const error = new Error("Không có phản ánh từ phía bạn để đối chiếu — không cần xác nhận thêm");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  if (!hasBorrowerReply && proofs.length === 0) {
+    const error = new Error(
+      "Chủ phòng chưa gửi phản hồi hoặc ảnh chứng từ — vui lòng đợi hoặc cập nhật phản ánh",
+    );
+    error.statusCode = 400;
+    throw error;
+  }
+
+  trainerShare.sharePaymentPtAcknowledgedAt = new Date();
+  await trainerShare.save();
+
+  const trainerName = trainerShare.Trainer?.User?.username || "Huấn luyện viên";
+
+  emitTrainerShareChanged(
+    [userId, trainerShare.requestedBy, trainerShare.fromGym?.ownerId].filter(Boolean),
+    {
+      shareId: trainerShare.id,
+      status: trainerShare.status,
+      action: "pt_acknowledged_payment_response",
+      trainerId: trainerShare.trainerId,
+      fromGymId: trainerShare.fromGymId,
+      toGymId: trainerShare.toGymId,
+    },
+  );
+
+  if (trainerShare.requestedBy && Number(trainerShare.requestedBy) !== Number(userId)) {
+    await realtimeService.notifyUser(trainerShare.requestedBy, {
+      title: "PT đã xác nhận nhận tiền mượn PT",
+      message: `${trainerName} đã xác nhận đã nhận / đồng ý phản hồi thanh toán — phiếu #${trainerShare.id} (${trainerShare.toGym?.name || ""}).`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
+
+  return serializeOwnerShare(trainerShare);
+};
+
 export default {
   createTrainerShare,
   getMyTrainerShares,
@@ -1685,4 +2576,12 @@ export default {
   rejectTrainerShareRequest,
   listAvailableTrainerShareRequestsForTrainer,
   claimTrainerShareRequest,
+  updateBorrowerSessionPrice,
+  getSharePaymentSnapshotForTrainerBooking,
+  attachSharePaymentSnapshotsBatchForTrainerBookings,
+  sendSharePaymentInstructionByBookingId,
+  submitSharePaymentDisputeByBookingId,
+  confirmBorrowerSharePayment,
+  respondBorrowerSharePaymentDispute,
+  acknowledgeBorrowerSharePaymentResponseByBookingId,
 };
