@@ -34,12 +34,64 @@ const normalize = (v) =>
     .replace(/\s+/g, " ")
     .trim();
 
-const isCasualFollowUpMessage = (message) =>
-  /^(tat ca|ca tuan|full tuan|trong tuan|liet ke het|luon|het luon|ca ngay|all|hello|hi|alo|ok|oke|uhm|um)$/.test(
-    normalize(message)
-  );
+const isSameNormalizedText = (a, b) => {
+  const na = normalize(a);
+  const nb = normalize(b);
+  return !!na && !!nb && na === nb;
+};
 
-const getRecentHistoryText = (history = [], limit = 4) =>
+const getTrainerDisplayName = (trainer) =>
+  trainer?.User?.username || trainer?.name || trainer?.username || `PT #${trainer?.id || "?"}`;
+
+const findTrainerInCollection = (rows = [], matcher = {}) => {
+  const trainerId = Number(matcher?.trainerId || 0) || null;
+  const trainerName = safeText(matcher?.trainerName);
+
+  if (trainerId) {
+    const byId = safeArray(rows).find((row) => Number(row?.id) === trainerId);
+    if (byId) return byId;
+  }
+
+  if (trainerName) {
+    const byName = safeArray(rows).find((row) => isSameNormalizedText(getTrainerDisplayName(row), trainerName));
+    if (byName) return byName;
+  }
+
+  return null;
+};
+
+const findPackageInCollection = (rows = [], matcher = {}) => {
+  const packageId = Number(matcher?.packageId || 0) || null;
+  const packageName = safeText(matcher?.packageName);
+
+  if (packageId) {
+    const byId = safeArray(rows).find((row) => Number(row?.id) === packageId);
+    if (byId) return byId;
+  }
+
+  if (packageName) {
+    const byName = safeArray(rows).find((row) => isSameNormalizedText(row?.name, packageName));
+    if (byName) return byName;
+  }
+
+  return null;
+};
+
+const buildUserHabitSummary = (userPreferences = null) => {
+  if (!userPreferences || typeof userPreferences !== "object") return null;
+
+  return {
+    favoriteIntent: userPreferences?.favoriteIntent || null,
+    favoritePath: userPreferences?.favoritePath || null,
+    favoriteTrainerName: userPreferences?.favoriteTrainerName || null,
+    favoritePackageName: userPreferences?.favoritePackageName || null,
+    lastTrainerName: userPreferences?.lastTrainerName || null,
+    lastPackageName: userPreferences?.lastPackageName || null,
+    lastVisitedPath: userPreferences?.lastVisitedPath || null,
+  };
+};
+
+const getRecentHistoryText = (history = [], limit = 6) =>
   safeArray(history)
     .slice(-limit)
     .map((item) => normalize(item?.content))
@@ -50,6 +102,35 @@ const buildNavigateAction = (path, label) => ({
   type: "NAVIGATE_TO_PAGE",
   label,
   payload: { path },
+});
+
+const buildSelectTrainerAction = (trainer, extra = {}) => ({
+  type: "AI_SELECT_TRAINER",
+  label: "Chọn PT này",
+  payload: {
+    trainerId: trainer?.id || null,
+    trainerName: trainer?.name || null,
+    gymId: trainer?.gymId || extra?.gymId || null,
+    gymName: trainer?.gymName || extra?.gymName || null,
+    packageId: extra?.packageId || null,
+    packageName: extra?.packageName || null,
+    activationId: extra?.activationId || null,
+  },
+});
+
+const buildSelectPackageAction = (pkg, trainer = null, date = null, activationId = null) => ({
+  type: "AI_SELECT_PACKAGE",
+  label: "Chọn gói này",
+  payload: {
+    packageId: pkg?.id || null,
+    packageName: pkg?.name || null,
+    gymId: pkg?.gymId || null,
+    gymName: pkg?.gymName || null,
+    trainerId: trainer?.id || null,
+    trainerName: trainer?.name || null,
+    selectedDate: date || null,
+    activationId: activationId || null,
+  },
 });
 
 const pad2 = (v) => String(v).padStart(2, "0");
@@ -157,11 +238,10 @@ const getBookingsThisWeek = (bookings = [], date = new Date()) => {
   return filterBookingsInRange(bookings, start, end);
 };
 
-const formatBookingLine = (booking) => {
-  return `- ${formatDateVN(booking.bookingDate)} lúc ${formatTimeHHMM(booking.startTime)} với ${booking.trainerName}${
+const formatBookingLine = (booking) =>
+  `- ${formatDateVN(booking.bookingDate)} lúc ${formatTimeHHMM(booking.startTime)} với ${booking.trainerName}${
     booking.gymName ? ` tại ${booking.gymName}` : ""
   }`;
-};
 
 const pickImageUrl = (...values) => {
   for (const value of values) {
@@ -243,7 +323,6 @@ const parseGoal = (text) => {
   }
 
   if (["tang can", "len can"].some((w) => lower.includes(w))) return "Tăng cân";
-
   if (["tang co", "muscle", "suc manh", "co bap"].some((w) => lower.includes(w))) return "Tăng cơ";
 
   if (["suc khoe", "khoe", "fit", "nguoi moi", "bat dau", "cai thien suc khoe"].some((w) => lower.includes(w))) {
@@ -319,24 +398,24 @@ const nutritionAdvice = (bmiContext) => {
   if (goal === "Tăng cân" || code === "underweight") {
     return `${buildBmiSummaryLine(
       bmiContext
-    )} Bạn nên tăng cân sạch: 3 bữa chính + 2 bữa phụ, ưu tiên cơm, yến mạch, khoai, trứng, sữa, thịt nạc, cá, đậu và trái cây. Mỗi bữa nên có đạm và tăng calo từ từ.`;
+    )} Bạn nên tăng cân sạch: 3 bữa chính + 2 bữa phụ, ưu tiên cơm, yến mạch, khoai, trứng, sữa, thịt nạc, cá, đậu và trái cây.`;
   }
 
   if (goal === "Giảm mỡ" || code === "overweight" || code === "obese") {
     return `${buildBmiSummaryLine(
       bmiContext
-    )} Bạn nên kiểm soát calo hơn: giữ đạm cao, rau xanh nhiều, tinh bột vừa phải, hạn chế nước ngọt, đồ chiên và ăn khuya. Có thể chia khẩu phần theo 1/2 rau, 1/4 đạm, 1/4 tinh bột.`;
+    )} Bạn nên kiểm soát calo hơn: giữ đạm cao, rau xanh nhiều, tinh bột vừa phải, hạn chế nước ngọt, đồ chiên và ăn khuya.`;
   }
 
   if (goal === "Tăng cơ") {
     return `${buildBmiSummaryLine(
       bmiContext
-    )} Để tăng cơ, bạn nên giữ đạm ổn định mỗi ngày, thêm tinh bột tốt quanh buổi tập và ngủ đủ. Các thực phẩm dễ áp dụng là ức gà, bò nạc, cá, trứng, sữa chua, cơm, khoai và chuối.`;
+    )} Để tăng cơ, bạn nên giữ đạm ổn định mỗi ngày, thêm tinh bột tốt quanh buổi tập và ngủ đủ.`;
   }
 
   return `${buildBmiSummaryLine(
     bmiContext
-  )} Với thể trạng hiện tại, bạn nên ăn cân bằng: đủ protein, rau xanh, tinh bột tốt và nước. Nếu muốn, mình có thể gợi ý thực đơn 1 ngày phù hợp.`;
+  )} Với thể trạng hiện tại, bạn nên ăn cân bằng: đủ protein, rau xanh, tinh bột tốt và nước.`;
 };
 
 const workoutAdvice = (bmiContext) => {
@@ -356,18 +435,18 @@ const workoutAdvice = (bmiContext) => {
   if (goal === "Giảm mỡ" || code === "overweight" || code === "obese") {
     return `${buildBmiSummaryLine(
       bmiContext
-    )} Bạn nên kết hợp 3 buổi strength + 2 buổi cardio nhẹ mỗi tuần. Mục tiêu là đốt mỡ nhưng vẫn giữ cơ, nên đừng chỉ tập cardio.`;
+    )} Bạn nên kết hợp 3 buổi strength + 2 buổi cardio nhẹ mỗi tuần.`;
   }
 
   if (goal === "Tăng cơ") {
     return `${buildBmiSummaryLine(
       bmiContext
-    )} Bạn có thể bắt đầu 4 buổi mỗi tuần theo upper/lower hoặc ngực-lưng-chân-vai tay để tăng cơ rõ hơn.`;
+    )} Bạn có thể bắt đầu 4 buổi mỗi tuần theo upper/lower hoặc ngực-lưng-chân-vai tay.`;
   }
 
   return `${buildBmiSummaryLine(
     bmiContext
-  )} Bạn có thể bắt đầu 3 buổi mỗi tuần với full-body hoặc upper/lower nhẹ để duy trì thể lực và tăng nền tảng vận động.`;
+  )} Bạn có thể bắt đầu 3 buổi mỗi tuần với full-body hoặc upper/lower nhẹ.`;
 };
 
 const gymReason = (bmiContext) => {
@@ -507,17 +586,6 @@ const summarizeBookings = (rows) =>
       return da - db;
     });
 
-const getUpcomingBooking = (bookings = []) => {
-  const now = Date.now();
-
-  return (
-    safeArray(bookings).find((b) => {
-      const time = toDateTime(b.bookingDate, b.startTime)?.getTime() || 0;
-      return time >= now && !["cancelled"].includes(safeLower(b.status));
-    }) || null
-  );
-};
-
 const buildGymCards = (gyms, bmiContext) => ({
   type: "gym_list",
   title: "Gym phù hợp",
@@ -536,16 +604,6 @@ const buildGymCards = (gyms, bmiContext) => ({
     })),
 });
 
-const buildSelectPackageAction = (pkg, trainer, date = null) => ({
-  type: "AI_SET_PROMPT",
-  label: date ? "Chọn gói này để đặt lịch" : "Chọn gói này",
-  payload: {
-    prompt: date
-      ? `Tôi chọn gói ${pkg.name} để đặt lịch với PT ${trainer.name} ngày ${date}`
-      : `Tôi chọn gói ${pkg.name} để đặt lịch với PT ${trainer.name}`,
-  },
-});
-
 const buildPackageCards = (packages, bmiContext, preferredTrainer = null, selectedDate = null) => ({
   type: "package_list",
   title: "Gói tập phù hợp",
@@ -555,15 +613,19 @@ const buildPackageCards = (packages, bmiContext, preferredTrainer = null, select
       id: pkg.id,
       title: pkg.name,
       subtitle: pkg.gymName || "Gói tập",
-      meta: [pkg.sessions ? `${pkg.sessions} buổi` : null, formatMoney(pkg.price), pkg.durationDays ? `${pkg.durationDays} ngày` : null]
+      meta: [
+        pkg.sessions ? `${pkg.sessions} buổi` : null,
+        formatMoney(pkg.price),
+        pkg.durationDays ? `${pkg.durationDays} ngày` : null,
+      ]
         .filter(Boolean)
         .join(" • "),
       tags: [pkg.type || "Gói PT", bmiContext?.goal ? `Hợp ${bmiContext.goal.toLowerCase()}` : null].filter(Boolean),
       imageUrl: pkg.imageUrl || null,
       badge: pkg.type || "PT package",
-      actionLabel: preferredTrainer ? "Chọn gói này để đặt lịch" : "Xem gói",
+      actionLabel: preferredTrainer ? "Chọn gói này" : "Xem gói",
       action: preferredTrainer
-        ? buildSelectPackageAction(pkg, preferredTrainer, selectedDate)
+        ? buildSelectPackageAction(pkg, preferredTrainer, selectedDate, pkg?.activationId || null)
         : buildNavigateAction(`/marketplace/packages/${pkg.id}`, "Xem gói"),
     })),
 });
@@ -581,13 +643,23 @@ const buildTrainerCards = (rows) => ({
       tags: [row.gymName, row.packageName].filter(Boolean),
       imageUrl: row.imageUrl || null,
       badge: row.gymName || null,
-      actionLabel: row.activationId ? "Đặt lịch với PT này" : "Xem PT",
+      actionLabel: row.activationId ? "Chọn PT này" : "Xem PT",
       action: row.activationId
-        ? {
-            type: "AI_SET_PROMPT",
-            label: "Đặt lịch với PT này",
-            payload: { prompt: `Tôi muốn đặt lịch với PT ${row.name}` },
-          }
+        ? buildSelectTrainerAction(
+            {
+              id: row.id,
+              name: row.name,
+              gymId: row.gymId || null,
+              gymName: row.gymName || null,
+            },
+            {
+              packageId: row.packageId || null,
+              packageName: row.packageName || null,
+              gymId: row.gymId || null,
+              gymName: row.gymName || null,
+              activationId: row.activationId || null,
+            }
+          )
         : buildNavigateAction(`/marketplace/trainers/${row.id}`, "Xem PT"),
     })),
 });
@@ -667,13 +739,7 @@ const parseTimeFromMessage = (message) => {
 const scoreIntent = (lower, patterns) => patterns.reduce((acc, p) => acc + (p.test(lower) ? 1 : 0), 0);
 
 const INTENT_PATTERNS = {
-  member_package: [
-    /\bgoi cua toi\b/,
-    /\bgoi hien tai\b/,
-    /\bcon bao nhieu buoi\b/,
-    /\bcon bao nhieu session\b/,
-    /\bpackage cua toi\b/,
-  ],
+  member_package: [/\bgoi cua toi\b/, /\bgoi hien tai\b/, /\bcon bao nhieu buoi\b/, /\bcon bao nhieu session\b/, /\bpackage cua toi\b/],
   member_schedule: [/\blich sap toi\b/, /\blich cua toi\b/, /\bmai co lich\b/, /\bbuoi tiep theo\b/, /\bnhac lich\b/, /\btuan nay.*lich\b/],
   booking: [/\bdat lich\b/, /\bbooking\b/, /\bbook\b/, /\bslot\b/, /\bxac nhan dat lich\b/],
   bmi: [/\bbmi\b/, /\bchi so\b/, /\b\d{3}\s*cm\b/, /\b\d{2,3}\s*kg\b/, /\b1m\d{2}\b/],
@@ -702,23 +768,30 @@ const inferIntent = (message, isAuthed = false) => {
   return top.intent;
 };
 
-const inferIntentFromFollowUp = ({ message, history = [], isAuthed }) => {
+const inferIntentFromFollowUp = ({ message, history = [], isAuthed, bookingContextFromClient = null }) => {
   const normalizedMessage = normalize(message);
   const recentText = getRecentHistoryText(history);
 
   if (!normalizedMessage) return null;
 
+  const hasBookingMemory =
+    !!bookingContextFromClient?.trainerId ||
+    !!bookingContextFromClient?.trainerName ||
+    !!bookingContextFromClient?.packageId ||
+    !!bookingContextFromClient?.packageName ||
+    recentText.includes("dat lich") ||
+    recentText.includes("slot") ||
+    recentText.includes("goi phu hop") ||
+    recentText.includes("pt");
+
   if (
     isAuthed &&
+    hasBookingMemory &&
     (parseDateFromMessage(message) ||
       parseTimeFromMessage(message) ||
-      /(gio|luc|khung gio|ngay \d{1,2}\/\d{1,2}|\d{1,2}\/\d{1,2}|\d{1,2}-\d{1,2})/.test(normalizedMessage)) &&
-    (recentText.includes("dat lich") ||
-      recentText.includes("pt") ||
-      recentText.includes("slot") ||
-      recentText.includes("goi phu hop") ||
-      recentText.includes("goi hop nhat") ||
-      recentText.includes("kiem tra slot"))
+      /(gio|luc|khung gio|mai|ngay mai|hom nay|doi gio|doi ngay|gói này|goi nay|pt nay|pt kia|\d{1,2}\/\d{1,2}|\d{1,2}-\d{1,2})/.test(
+        normalizedMessage
+      ))
   ) {
     return "booking";
   }
@@ -923,10 +996,14 @@ const recommendTrainersByPackages = (publicContext, privateContext, bmiContext, 
         specialization: trainer.specialization || "PT cá nhân",
         rating: trainer.rating,
         packageName: pkg.name,
+        packageId: pkg.id,
+        gymId: pkg.gymId,
         gymName: pkg.gymName,
         activationId: activePkg && Number(activePkg.gymId) === Number(pkg.gymId) ? activePkg.activationId : null,
         helperText:
-          activePkg && Number(activePkg.gymId) === Number(pkg.gymId) ? "có thể đặt ngay từ gói đang dùng" : "đi kèm gói tập của gym này",
+          activePkg && Number(activePkg.gymId) === Number(pkg.gymId)
+            ? "có thể đi tiếp sang gym detail để đặt lịch"
+            : "đi kèm gói tập của gym này",
         imageUrl: trainer.imageUrl || null,
         score,
       };
@@ -942,8 +1019,10 @@ const recommendTrainersByPackages = (publicContext, privateContext, bmiContext, 
       name: trainer.name,
       specialization: trainer.specialization || "PT cá nhân",
       rating: trainer.rating,
+      gymId: trainer.gymId || null,
       gymName: null,
       packageName: null,
+      packageId: null,
       activationId: null,
       helperText: bmiContext?.goal ? `hợp mục tiêu ${bmiContext.goal.toLowerCase()}` : "cần chọn gym hoặc gói trước",
       imageUrl: trainer.imageUrl || null,
@@ -966,9 +1045,7 @@ const replyForMemberPackage = (privateContext) => {
   }
 
   return {
-    reply: `Bạn đang có gói ${first.packageName}${first.gymName ? ` tại ${first.gymName}` : ""}. Bạn còn ${first.sessionsRemaining} buổi, đã dùng ${
-      first.sessionsUsed
-    }/${first.totalSessions}. Hạn dùng đến ${formatDateVN(first.expiryDate)}.`,
+    reply: `Bạn đang có gói ${first.packageName}${first.gymName ? ` tại ${first.gymName}` : ""}. Bạn còn ${first.sessionsRemaining} buổi, đã dùng ${first.sessionsUsed}/${first.totalSessions}. Hạn dùng đến ${formatDateVN(first.expiryDate)}.`,
     suggestions: [],
     actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
   };
@@ -995,10 +1072,8 @@ const replyForMemberSchedule = (message, privateContext, history = []) => {
       };
     }
 
-    const reply = [`Tuần này bạn có ${weekBookings.length} buổi tập đã xác nhận:`, ...weekBookings.map(formatBookingLine)].join("\n");
-
     return {
-      reply,
+      reply: [`Tuần này bạn có ${weekBookings.length} buổi tập đã xác nhận:`, ...weekBookings.map(formatBookingLine)].join("\n"),
       suggestions: [],
       actions: [buildNavigateAction("/member/bookings", "Mở lịch của tôi")],
     };
@@ -1037,252 +1112,66 @@ const replyForMemberSchedule = (message, privateContext, history = []) => {
   }
 
   return {
-    reply: `Buổi gần nhất của bạn là ${formatDateVN(upcomingBooking.bookingDate)} lúc ${formatTimeHHMM(upcomingBooking.startTime)} với ${
-      upcomingBooking.trainerName
-    }${upcomingBooking.gymName ? ` tại ${upcomingBooking.gymName}` : ""}.`,
+    reply: `Buổi gần nhất của bạn là ${formatDateVN(upcomingBooking.bookingDate)} lúc ${formatTimeHHMM(upcomingBooking.startTime)} với ${upcomingBooking.trainerName}${upcomingBooking.gymName ? ` tại ${upcomingBooking.gymName}` : ""}.`,
     suggestions: [],
     actions: [buildNavigateAction("/member/bookings", "Mở lịch của tôi")],
   };
 };
 
-const resolveTrainerFromMessage = (message, trainerRows) => {
+const resolvePreferredTrainer = (message, publicContext) => {
+  const trainers = safeArray(publicContext?.trainers);
   const lower = normalize(message);
+
   return (
-    safeArray(trainerRows).find((t) => lower.includes(normalize(t?.User?.username || t?.name || t?.username || ""))) || null
+    trainers.find((trainer) => {
+      const name = normalize(trainer?.name || "");
+      return name && lower.includes(name);
+    }) || null
   );
 };
 
-const buildBookingReply = async ({ user, message, privateContext, pageContext, publicContext }) => {
+const resolveTrainerFromMessage = (message, trainerRows) => {
   const lower = normalize(message);
+  return safeArray(trainerRows).find((t) => lower.includes(normalize(t?.User?.username || t?.name || t?.username || ""))) || null;
+};
 
-  if (!user?.id) {
-    return {
-      reply: "Để đặt lịch trong GFMS, bạn cần đăng nhập trước. Sau đó hệ thống sẽ đi theo đúng flow: chọn gym, chọn gói tập, rồi mới chọn PT và lịch tập.",
-      suggestions: [],
-      actions: [
-        buildNavigateAction("/login", "Đăng nhập"),
-        buildNavigateAction("/register", "Đăng ký"),
-        buildNavigateAction("/marketplace/gyms", "Xem gym"),
-      ],
-    };
-  }
+const findPackageFromText = (text, publicContext) => {
+  const lower = normalize(text);
+  return safeArray(publicContext?.packages).find((pkg) => {
+    const name = normalize(pkg?.name || "");
+    return name && lower.includes(name);
+  }) || null;
+};
 
-  const myPackages = safeArray(privateContext?.myPackages);
-  const activePackages = myPackages.filter((x) => safeLower(x.status) === "active");
-  const activePackage = activePackages[0] || null;
+const extractBookingContextFromHistory = ({
+  message,
+  history = [],
+  publicContext,
+  bookingContextFromClient = null,
+}) => {
+  const texts = [...safeArray(history).map((x) => safeText(x?.content)), safeText(message)].filter(Boolean);
 
-  if (!activePackage) {
-    return {
-      reply:
-        "Để đặt lịch PT trong hệ thống này, bạn cần đi theo đúng flow: chọn gym trước, sau đó chọn gói tập của gym đó, rồi mới chọn PT và lịch tập. Hiện tại bạn chưa có gói active nên mình chưa thể hỏi ngày tập ngay được.",
-      suggestions: [],
-      actions: [
-        buildNavigateAction("/marketplace/gyms", "Chọn gym trước"),
-        buildNavigateAction("/marketplace/packages", "Xem gói tập"),
-      ],
-      cards: publicContext?.gyms?.length ? buildGymCards(publicContext.gyms.slice(0, 8), null) : null,
-    };
-  }
+  let trainer = findTrainerInCollection(publicContext?.trainers, bookingContextFromClient);
+  let packageMatch = findPackageInCollection(publicContext?.packages, bookingContextFromClient);
+  let date = bookingContextFromClient?.selectedDate || null;
+  let time = bookingContextFromClient?.selectedTime || null;
 
-  const selectedActivationId = Number(pageContext?.activationId) || Number(activePackage.activationId);
-  const currentPackage = activePackages.find((x) => Number(x.activationId) === selectedActivationId) || activePackage;
+  for (let i = texts.length - 1; i >= 0; i -= 1) {
+    const text = texts[i];
 
-  let trainerBundle = null;
-  try {
-    trainerBundle = await bookingService.getAvailableTrainers(user.id, currentPackage.activationId);
-  } catch {
-    trainerBundle = null;
-  }
+    if (!trainer) trainer = resolvePreferredTrainer(text, publicContext);
+    if (!packageMatch) packageMatch = findPackageFromText(text, publicContext);
+    if (!date) date = parseDateFromMessage(text);
+    if (!time) time = parseTimeFromMessage(text);
 
-  const trainers = safeArray(trainerBundle?.trainers);
-
-  const bookingOnlyMessage = [
-    "dat lich",
-    "book pt",
-    "booking",
-    "toi muon dat lich",
-    "toi muon book",
-    "dat buoi tap",
-    "dat lich tap",
-  ].some((kw) => lower.includes(kw));
-
-  const trainerMentioned = resolveTrainerFromMessage(message, trainers);
-  const selectedDate = parseDateFromMessage(message);
-  const selectedTime = parseTimeFromMessage(message);
-
-  if (!trainerMentioned && !selectedDate && !selectedTime && bookingOnlyMessage) {
-    const trainerCards = trainers.length
-      ? buildTrainerCards(
-          trainers.slice(0, 8).map((t) => ({
-            id: t.id,
-            name: t?.User?.username || t?.name || `PT #${t.id}`,
-            specialization: Array.isArray(t.specialization) ? t.specialization.join(", ") : safeText(t.specialization),
-            rating: t.rating,
-            gymName: currentPackage.gymName,
-            packageName: currentPackage.packageName,
-            helperText: "PT khả dụng từ gói active của bạn",
-            activationId: currentPackage.activationId,
-            imageUrl: t?.imageUrl || t?.avatar || t?.photo || t?.User?.image || t?.User?.avatar || null,
-          }))
-        )
-      : null;
-
-    return {
-      reply: `Trong GFMS, bạn đang đặt lịch từ gói active hiện tại là ${currentPackage.packageName}${
-        currentPackage.gymName ? ` tại ${currentPackage.gymName}` : ""
-      }. Bước tiếp theo là chọn PT phù hợp thuộc gói này trước, rồi mình mới lấy ngày và giờ cho bạn.`,
-      suggestions: trainers.slice(0, 3).map((t) => ({
-        type: "message",
-        label: `${t?.User?.username || t?.name || `PT #${t.id}`}`,
-        value: `Tôi muốn đặt lịch với PT ${t?.User?.username || t?.name || `PT #${t.id}`}`,
-      })),
-      cards: trainerCards,
-      actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
-    };
-  }
-
-  if (!trainerMentioned) {
-    const trainerCards = trainers.length
-      ? buildTrainerCards(
-          trainers.slice(0, 8).map((t) => ({
-            id: t.id,
-            name: t?.User?.username || t?.name || `PT #${t.id}`,
-            specialization: Array.isArray(t.specialization) ? t.specialization.join(", ") : safeText(t.specialization),
-            rating: t.rating,
-            gymName: currentPackage.gymName,
-            packageName: currentPackage.packageName,
-            helperText: "bạn cần chọn PT trước rồi mới chọn lịch",
-            activationId: currentPackage.activationId,
-            imageUrl: t?.imageUrl || t?.avatar || t?.photo || t?.User?.image || t?.User?.avatar || null,
-          }))
-        )
-      : null;
-
-    return {
-      reply: `Bạn đang đi từ gói ${currentPackage.packageName}${currentPackage.gymName ? ` tại ${currentPackage.gymName}` : ""}. Bạn chọn một PT thuộc gói này trước nhé, sau đó mình mới lấy ngày và giờ đặt lịch.`,
-      suggestions: trainers.slice(0, 3).map((t) => ({
-        type: "message",
-        label: `${t?.User?.username || t?.name || `PT #${t.id}`}`,
-        value: `Tôi muốn đặt lịch với PT ${t?.User?.username || t?.name || `PT #${t.id}`}`,
-      })),
-      cards: trainerCards,
-      actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
-    };
-  }
-
-  if (!selectedDate) {
-    const suggestedDate = toISODateLocal(addDaysLocal(new Date(), 1));
-    return {
-      reply: `Mình đã xác định PT ${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id} thuộc gói ${
-        currentPackage.packageName
-      }. Giờ bạn cho mình ngày muốn tập theo dạng YYYY-MM-DD hoặc kiểu 16/4 cũng được, ví dụ ${suggestedDate}.`,
-      suggestions: [
-        {
-          type: "message",
-          label: "Ngày mai",
-          value: `Đặt với PT ${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id} ngày ${suggestedDate}`,
-        },
-      ],
-      actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
-    };
-  }
-
-  let slots = [];
-  try {
-    slots = await bookingService.getAvailableSlots(user.id, {
-      trainerId: trainerMentioned.id,
-      date: selectedDate,
-      activationId: currentPackage.activationId,
-    });
-  } catch (e) {
-    return {
-      reply: e.message || "Không thể kiểm tra slot lúc này.",
-      suggestions: [],
-      actions: [buildNavigateAction("/member/bookings", "Mở lịch của tôi")],
-    };
-  }
-
-  if (!slots.length) {
-    return {
-      reply: `PT ${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id} hiện chưa có slot trống vào ngày ${formatDateVN(
-        selectedDate
-      )}. Bạn chọn ngày khác nhé.`,
-      suggestions: [
-        {
-          type: "message",
-          label: "Chọn ngày khác",
-          value: `Đặt với PT ${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id} ngày ${toISODateLocal(
-            addDaysLocal(new Date(), 2)
-          )}`,
-        },
-      ],
-    };
-  }
-
-  if (!selectedTime) {
-    return {
-      reply: `Mình đã xác định đúng flow rồi: gym ${currentPackage.gymName || "đã chọn"}, gói ${
-        currentPackage.packageName
-      }, PT ${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id}. Hiện có ${slots.length} slot trống vào ngày ${formatDateVN(
-        selectedDate
-      )}. Bạn chọn giờ giúp mình nhé.`,
-      suggestions: slots.slice(0, 5).map((s) => ({
-        type: "message",
-        label: formatTimeHHMM(s.startTime),
-        value: `Đặt với PT ${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id} ngày ${selectedDate} lúc ${formatTimeHHMM(
-          s.startTime
-        )}`,
-      })),
-    };
-  }
-
-  const matchedSlot = slots.find((s) => formatTimeHHMM(s.startTime) === selectedTime);
-
-  if (!matchedSlot) {
-    return {
-      reply: `Khung giờ ${selectedTime} hiện không còn trống. Bạn chọn một giờ còn lại bên dưới nhé.`,
-      suggestions: slots.slice(0, 5).map((s) => ({
-        type: "message",
-        label: formatTimeHHMM(s.startTime),
-        value: `Đặt với PT ${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id} ngày ${selectedDate} lúc ${formatTimeHHMM(
-          s.startTime
-        )}`,
-      })),
-    };
+    if (trainer && packageMatch && date && time) break;
   }
 
   return {
-    reply: `Mình đã sẵn sàng đặt lịch cho bạn theo đúng flow hệ thống: gym ${currentPackage.gymName || "đã chọn"}, gói ${
-      currentPackage.packageName
-    }, PT ${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id}, ngày ${formatDateVN(
-      selectedDate
-    )}, lúc ${selectedTime}. Bạn xác nhận là hệ thống sẽ tạo booking thật ngay.`,
-    suggestions: [],
-    actions: [buildNavigateAction("/member/bookings", "Mở lịch của tôi")],
-    cards: {
-      type: "booking_candidate",
-      title: "Xác nhận buổi tập",
-      items: [
-        {
-          id: `${trainerMentioned.id}-${selectedDate}-${selectedTime}`,
-          title: `${trainerMentioned?.User?.username || trainerMentioned?.name || trainerMentioned.id} • ${formatDateVN(selectedDate)}`,
-          subtitle: `${selectedTime} • ${currentPackage.packageName}`,
-          meta: currentPackage.gymName || "",
-          badge: "Booking thật",
-        },
-      ],
-    },
-    proposedAction: {
-      type: "CREATE_BOOKING",
-      label: "Xác nhận đặt lịch",
-      payload: {
-        activationId: currentPackage.activationId,
-        trainerId: trainerMentioned.id,
-        date: selectedDate,
-        startTime: selectedTime,
-      },
-    },
-    requiresConfirmation: true,
+    trainer,
+    packageMatch,
+    date,
+    time,
   };
 };
 
@@ -1306,10 +1195,11 @@ const buildGeneralReply = (isAuthed, bmiContext) => {
   };
 };
 
-const buildAiContextSnapshot = ({ isAuthed, publicContext, privateContext, bmiContext, pageContext, intent }) => {
+const buildAiContextSnapshot = ({ isAuthed, publicContext, privateContext, bmiContext, pageContext, intent, userPreferences }) => {
   const snapshot = {
     intent,
     pageType: pageContext?.pageType || "general",
+    habits: buildUserHabitSummary(userPreferences),
     bmi: bmiContext?.bmi
       ? {
           bmi: bmiContext.bmi,
@@ -1376,11 +1266,12 @@ const buildAiContextSnapshot = ({ isAuthed, publicContext, privateContext, bmiCo
   return snapshot;
 };
 
-const answerGeneralConversation = async ({ message, history = [], isAuthed, bmiContext, pageContext }) => {
+const answerGeneralConversation = async ({ message, history = [], isAuthed, bmiContext, pageContext, userPreferences }) => {
   const contextParts = {
     isAuthed,
     pageType: pageContext?.pageType || "general",
     bmiSummary: bmiContext?.bmi ? buildBmiSummaryLine(bmiContext) : null,
+    habits: buildUserHabitSummary(userPreferences),
   };
 
   const recentHistory = safeArray(history)
@@ -1437,6 +1328,7 @@ const finalizeAssistantResponse = async ({
   privateContext,
   bmiContext,
   pageContext,
+  userPreferences,
 }) => {
   const baseResponse = {
     suggestions: [],
@@ -1445,6 +1337,7 @@ const finalizeAssistantResponse = async ({
     proposedAction: null,
     requiresConfirmation: false,
     bmiSummary: bmiContext || null,
+    bookingContext: null,
     ...(response || {}),
   };
 
@@ -1470,6 +1363,7 @@ const finalizeAssistantResponse = async ({
       bmiContext,
       pageContext,
       intent,
+      userPreferences,
     }),
   });
 
@@ -1479,8 +1373,8 @@ const finalizeAssistantResponse = async ({
   };
 };
 
-const inferIntentHybrid = async ({ message, history = [], isAuthed }) => {
-  const followUpIntent = inferIntentFromFollowUp({ message, history, isAuthed });
+const inferIntentHybrid = async ({ message, history = [], isAuthed, bookingContextFromClient = null }) => {
+  const followUpIntent = inferIntentFromFollowUp({ message, history, isAuthed, bookingContextFromClient });
   if (followUpIntent) return followUpIntent;
 
   const ruleIntent = inferIntent(message, isAuthed);
@@ -1549,18 +1443,6 @@ const inferFitnessProfile = (bmiContext) => {
   };
 };
 
-const resolvePreferredTrainer = (message, publicContext) => {
-  const trainers = safeArray(publicContext?.trainers);
-  const lower = normalize(message);
-
-  return (
-    trainers.find((trainer) => {
-      const name = normalize(trainer?.name || "");
-      return name && lower.includes(name);
-    }) || null
-  );
-};
-
 const scorePackageForProfile = (pkg, fitnessProfile, preferredTrainer, bmiContext) => {
   let score = 0;
   const hay = normalize([pkg?.name, pkg?.description, pkg?.type, pkg?.gymName].filter(Boolean).join(" "));
@@ -1597,16 +1479,385 @@ const findBestPackagesForTrainerAndProfile = ({ publicContext, preferredTrainer,
     .slice(0, 5);
 };
 
-const buildSmartBookingRecommendation = async ({ user, message, publicContext, privateContext, bmiContext }) => {
-  const preferredTrainer = resolvePreferredTrainer(message, publicContext);
-  const selectedDate = parseDateFromMessage(message);
+const buildBookingNavigatePayload = ({
+  gymId,
+  gymName,
+  trainerId,
+  trainerName,
+  packageId,
+  packageName,
+  activationId,
+  selectedDate,
+  selectedTime,
+}) => ({
+  gymId: gymId || null,
+  gymName: gymName || null,
+  trainerId: trainerId || null,
+  trainerName: trainerName || null,
+  packageId: packageId || null,
+  packageName: packageName || null,
+  activationId: activationId || null,
+  selectedDate: selectedDate || null,
+  selectedTime: selectedTime || null,
+});
+
+const buildNavigateToGymDetailAction = (gymId, label = "Đi tới gym để đặt lịch") =>
+  buildNavigateAction(`/marketplace/gyms/${gymId}`, label);
+
+const buildBookingReply = async ({
+  user,
+  message,
+  privateContext,
+  pageContext,
+  publicContext,
+  bookingContextFromClient = null,
+  history = [],
+}) => {
+  const lower = normalize(message);
+
+  if (!user?.id) {
+    return {
+      reply: "Để đặt lịch trong GFMS, bạn cần đăng nhập trước. Sau đó hệ thống sẽ đi theo đúng flow: chọn gym, chọn gói tập, rồi mới chọn PT và lịch tập.",
+      suggestions: [],
+      actions: [
+        buildNavigateAction("/login", "Đăng nhập"),
+        buildNavigateAction("/register", "Đăng ký"),
+        buildNavigateAction("/marketplace/gyms", "Xem gym"),
+      ],
+      bookingContext: bookingContextFromClient || null,
+    };
+  }
+
+  const myPackages = safeArray(privateContext?.myPackages);
+  const activePackages = myPackages.filter((x) => safeLower(x.status) === "active");
+  const activePackage = activePackages[0] || null;
+
+  if (!activePackage) {
+    return {
+      reply:
+        "Để đặt lịch PT trong hệ thống này, bạn cần đi theo đúng flow: chọn gym trước, sau đó chọn gói tập của gym đó, rồi mới chọn PT và lịch tập. Hiện tại bạn chưa có gói active nên mình chưa thể hỏi ngày tập ngay được.",
+      suggestions: [],
+      actions: [
+        buildNavigateAction("/marketplace/gyms", "Chọn gym trước"),
+        buildNavigateAction("/marketplace/packages", "Xem gói tập"),
+      ],
+      cards: publicContext?.gyms?.length ? buildGymCards(publicContext.gyms.slice(0, 8), null) : null,
+      bookingContext: bookingContextFromClient || null,
+    };
+  }
+
+  const selectedActivationId =
+    Number(bookingContextFromClient?.activationId || 0) ||
+    Number(pageContext?.activationId || 0) ||
+    Number(activePackage.activationId);
+
+  const currentPackage = activePackages.find((x) => Number(x.activationId) === selectedActivationId) || activePackage;
+
+  let trainerBundle = null;
+  try {
+    trainerBundle = await bookingService.getAvailableTrainers(user.id, currentPackage.activationId);
+  } catch {
+    trainerBundle = null;
+  }
+
+  const trainers = safeArray(trainerBundle?.trainers);
+  const bookingOnlyMessage = [
+    "dat lich",
+    "book pt",
+    "booking",
+    "toi muon dat lich",
+    "toi muon book",
+    "dat buoi tap",
+    "dat lich tap",
+  ].some((kw) => lower.includes(kw));
+
+  const trainersForMemory = trainers.map((t) => ({
+    id: t.id,
+    name: getTrainerDisplayName(t),
+    gymId: t?.gymId || currentPackage.gymId || null,
+    gymName: currentPackage.gymName || null,
+  }));
+
+  const memory = extractBookingContextFromHistory({
+    message,
+    history,
+    publicContext: {
+      ...publicContext,
+      trainers: trainersForMemory.length ? trainersForMemory : safeArray(publicContext?.trainers),
+      packages: publicContext?.packages || [],
+    },
+    bookingContextFromClient,
+  });
+
+  let trainerMentioned =
+    findTrainerInCollection(trainers, bookingContextFromClient) ||
+    findTrainerInCollection(trainers, {
+      trainerId: memory?.trainer?.id,
+      trainerName: memory?.trainer?.name,
+    }) ||
+    resolveTrainerFromMessage(message, trainers);
+
+  const selectedDate = memory.date || parseDateFromMessage(message);
+  const selectedTime = memory.time || parseTimeFromMessage(message);
+
+  const nextBookingContextBase = {
+    ...(bookingContextFromClient || {}),
+    activationId: currentPackage.activationId,
+    packageId: currentPackage.packageId || bookingContextFromClient?.packageId || null,
+    packageName: currentPackage.packageName,
+    gymId: currentPackage.gymId,
+    gymName: currentPackage.gymName,
+  };
+
+  if (!trainerMentioned && bookingContextFromClient?.selectionSource === "trainer_card") {
+    return {
+      reply: `Mình đã nhận PT ${bookingContextFromClient?.trainerName || "bạn vừa chọn"}, nhưng PT này hiện không khả dụng trong gói active ${currentPackage.packageName}. Bạn chọn một PT khả dụng bên dưới nhé.`,
+      suggestions: trainers.slice(0, 3).map((t) => ({
+        type: "message",
+        label: getTrainerDisplayName(t),
+        value: `Tôi muốn đặt lịch với PT ${getTrainerDisplayName(t)}`,
+      })),
+      cards: trainers.length
+        ? buildTrainerCards(
+            trainers.slice(0, 8).map((t) => ({
+              id: t.id,
+              name: getTrainerDisplayName(t),
+              specialization: Array.isArray(t.specialization) ? t.specialization.join(", ") : safeText(t.specialization),
+              rating: t.rating,
+              gymId: currentPackage.gymId,
+              gymName: currentPackage.gymName,
+              packageId: currentPackage.packageId,
+              packageName: currentPackage.packageName,
+              helperText: "PT khả dụng từ gói active của bạn",
+              activationId: currentPackage.activationId,
+              imageUrl: t?.imageUrl || t?.avatar || t?.photo || t?.User?.image || t?.User?.avatar || null,
+            }))
+          )
+        : null,
+      actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
+      bookingContext: nextBookingContextBase,
+    };
+  }
+
+  if (!trainerMentioned && !selectedDate && !selectedTime && bookingOnlyMessage) {
+    const trainerCards = trainers.length
+      ? buildTrainerCards(
+          trainers.slice(0, 8).map((t) => ({
+            id: t.id,
+            name: getTrainerDisplayName(t),
+            specialization: Array.isArray(t.specialization) ? t.specialization.join(", ") : safeText(t.specialization),
+            rating: t.rating,
+            gymId: currentPackage.gymId,
+            gymName: currentPackage.gymName,
+            packageId: currentPackage.packageId,
+            packageName: currentPackage.packageName,
+            helperText: "PT khả dụng từ gói active của bạn",
+            activationId: currentPackage.activationId,
+            imageUrl: t?.imageUrl || t?.avatar || t?.photo || t?.User?.image || t?.User?.avatar || null,
+          }))
+        )
+      : null;
+
+    return {
+      reply: `Trong GFMS, bạn đang đặt lịch từ gói active hiện tại là ${currentPackage.packageName}${currentPackage.gymName ? ` tại ${currentPackage.gymName}` : ""}. Bước tiếp theo là chọn PT thuộc gói này trước, rồi mình mới kiểm tra ngày và giờ cho bạn.`,
+      suggestions: trainers.slice(0, 3).map((t) => ({
+        type: "message",
+        label: getTrainerDisplayName(t),
+        value: `Tôi muốn đặt lịch với PT ${getTrainerDisplayName(t)}`,
+      })),
+      cards: trainerCards,
+      actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
+      bookingContext: nextBookingContextBase,
+    };
+  }
+
+  if (!trainerMentioned) {
+    const trainerCards = trainers.length
+      ? buildTrainerCards(
+          trainers.slice(0, 8).map((t) => ({
+            id: t.id,
+            name: getTrainerDisplayName(t),
+            specialization: Array.isArray(t.specialization) ? t.specialization.join(", ") : safeText(t.specialization),
+            rating: t.rating,
+            gymId: currentPackage.gymId,
+            gymName: currentPackage.gymName,
+            packageId: currentPackage.packageId,
+            packageName: currentPackage.packageName,
+            helperText: "bạn cần chọn PT trước rồi mới chọn lịch",
+            activationId: currentPackage.activationId,
+            imageUrl: t?.imageUrl || t?.avatar || t?.photo || t?.User?.image || t?.User?.avatar || null,
+          }))
+        )
+      : null;
+
+    return {
+      reply: `Bạn đang đi từ gói ${currentPackage.packageName}${currentPackage.gymName ? ` tại ${currentPackage.gymName}` : ""}. Bạn chọn một PT thuộc gói này trước nhé, sau đó mình mới kiểm tra lịch rảnh.`,
+      suggestions: trainers.slice(0, 3).map((t) => ({
+        type: "message",
+        label: getTrainerDisplayName(t),
+        value: `Tôi muốn đặt lịch với PT ${getTrainerDisplayName(t)}`,
+      })),
+      cards: trainerCards,
+      actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
+      bookingContext: nextBookingContextBase,
+    };
+  }
+
+  const trainerName = getTrainerDisplayName(trainerMentioned);
+  const nextBookingContext = {
+    ...nextBookingContextBase,
+    trainerId: trainerMentioned.id,
+    trainerName,
+    selectedDate: selectedDate || null,
+    selectedTime: selectedTime || null,
+  };
+
+  if (!selectedDate) {
+    const suggestedDate = toISODateLocal(addDaysLocal(new Date(), 1));
+    return {
+      reply: `Mình đã nhớ PT ${trainerName} thuộc gói ${currentPackage.packageName}. Giờ bạn cho mình ngày muốn tập theo dạng YYYY-MM-DD hoặc kiểu 16/4 cũng được, ví dụ ${suggestedDate}.`,
+      suggestions: [
+        {
+          type: "message",
+          label: "Ngày mai",
+          value: `Đặt với PT ${trainerName} ngày ${suggestedDate}`,
+        },
+      ],
+      actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
+      bookingContext: nextBookingContext,
+    };
+  }
+
+  let slots = [];
+  try {
+    slots = await bookingService.getAvailableSlots(user.id, {
+      trainerId: trainerMentioned.id,
+      date: selectedDate,
+      activationId: currentPackage.activationId,
+    });
+  } catch (e) {
+    return {
+      reply: e.message || "Không thể kiểm tra slot lúc này.",
+      suggestions: [],
+      actions: [buildNavigateAction("/member/bookings", "Mở lịch của tôi")],
+      bookingContext: nextBookingContext,
+    };
+  }
+
+  if (!slots.length) {
+    return {
+      reply: `PT ${trainerName} hiện chưa có slot trống vào ngày ${formatDateVN(selectedDate)}. Bạn chọn ngày khác nhé.`,
+      suggestions: [
+        {
+          type: "message",
+          label: "Chọn ngày khác",
+          value: `Đặt với PT ${trainerName} ngày ${toISODateLocal(addDaysLocal(new Date(), 2))}`,
+        },
+      ],
+      bookingContext: nextBookingContext,
+    };
+  }
+
+  if (!selectedTime) {
+    return {
+      reply: `Mình đã nhớ PT ${trainerName}, gói ${currentPackage.packageName} và ngày ${formatDateVN(selectedDate)}. Hiện có ${slots.length} slot trống. Bạn chọn giờ giúp mình nhé.`,
+      suggestions: slots.slice(0, 5).map((s) => ({
+        type: "message",
+        label: formatTimeHHMM(s.startTime),
+        value: `Đặt với PT ${trainerName} ngày ${selectedDate} lúc ${formatTimeHHMM(s.startTime)}`,
+      })),
+      bookingContext: {
+        ...nextBookingContext,
+        selectedDate,
+      },
+    };
+  }
+
+  const matchedSlot = slots.find((s) => formatTimeHHMM(s.startTime) === selectedTime);
+
+  if (!matchedSlot) {
+    return {
+      reply: `Khung giờ ${selectedTime} hiện không còn trống. Bạn chọn một giờ còn lại bên dưới nhé.`,
+      suggestions: slots.slice(0, 5).map((s) => ({
+        type: "message",
+        label: formatTimeHHMM(s.startTime),
+        value: `Đặt với PT ${trainerName} ngày ${selectedDate} lúc ${formatTimeHHMM(s.startTime)}`,
+      })),
+      bookingContext: {
+        ...nextBookingContext,
+        selectedDate,
+      },
+    };
+  }
+
+  return {
+    reply: `Mình đã giữ sẵn thông tin cho bạn: gym ${currentPackage.gymName || "đã chọn"}, gói ${currentPackage.packageName}, PT ${trainerName}, ngày ${formatDateVN(selectedDate)}, lúc ${selectedTime}. Bây giờ bạn bấm sang trang gym detail để thực hiện booking tại đó nhé.`,
+    suggestions: [],
+    actions: [
+      buildNavigateToGymDetailAction(currentPackage.gymId, "Đi tới gym này để đặt lịch"),
+      buildNavigateAction("/member/my-packages", "Xem gói của tôi"),
+    ],
+    cards: {
+      type: "booking_candidate",
+      title: "Thông tin đã giữ sẵn",
+      items: [
+        {
+          id: `${trainerMentioned.id}-${selectedDate}-${selectedTime}`,
+          title: `${trainerName} • ${formatDateVN(selectedDate)}`,
+          subtitle: `${selectedTime} • ${currentPackage.packageName}`,
+          meta: currentPackage.gymName || "",
+          badge: "Đi tiếp tại Gym Detail",
+        },
+      ],
+    },
+    proposedAction: buildNavigateToGymDetailAction(currentPackage.gymId, "Đi tới gym này để đặt lịch"),
+    requiresConfirmation: false,
+    bookingContext: {
+      ...nextBookingContext,
+      ...buildBookingNavigatePayload({
+        gymId: currentPackage.gymId,
+        gymName: currentPackage.gymName,
+        trainerId: trainerMentioned.id,
+        trainerName,
+        packageId: currentPackage.packageId,
+        packageName: currentPackage.packageName,
+        activationId: currentPackage.activationId,
+        selectedDate,
+        selectedTime,
+      }),
+    },
+  };
+};
+
+const buildSmartBookingRecommendation = async ({
+  user,
+  message,
+  history = [],
+  publicContext,
+  privateContext,
+  bmiContext,
+  bookingContextFromClient = null,
+}) => {
   const fitnessProfile = inferFitnessProfile(bmiContext);
+
+  const memory = extractBookingContextFromHistory({
+    message,
+    history,
+    publicContext,
+    bookingContextFromClient,
+  });
+
+  const preferredTrainer = memory.trainer;
+  const selectedDate = memory.date;
+  const selectedTime = memory.time;
+  let selectedPackage = memory.packageMatch || null;
 
   if (!preferredTrainer) {
     return {
       reply: "Mình chưa xác định rõ PT bạn muốn. Bạn nói tên PT giúp mình, mình sẽ kiểm tra gym, gói phù hợp và slot trống cho bạn luôn.",
       suggestions: [],
       actions: [buildNavigateAction("/marketplace/trainers", "Xem PT")],
+      bookingContext: bookingContextFromClient || null,
     };
   }
 
@@ -1620,17 +1871,38 @@ const buildSmartBookingRecommendation = async ({ user, message, publicContext, p
     return {
       reply: `Mình đã xác định PT ${preferredTrainer.name}, nhưng hiện chưa thấy gói nào tại gym của PT này phù hợp với mục tiêu ${fitnessProfile.primaryGoal} của bạn. Mình có thể gợi ý PT khác hoặc gym khác hợp hơn.`,
       suggestions: [],
-      actions: [buildNavigateAction("/marketplace/trainers", "Xem PT"), buildNavigateAction("/marketplace/gyms", "Xem gym")],
+      actions: [
+        buildNavigateAction("/marketplace/trainers", "Xem PT"),
+        buildNavigateAction("/marketplace/gyms", "Xem gym"),
+      ],
+      bookingContext: {
+        ...(bookingContextFromClient || {}),
+        trainerId: preferredTrainer.id,
+        trainerName: preferredTrainer.name,
+        gymId: preferredTrainer.gymId || null,
+      },
     };
   }
 
-  const bestPackage = matchedPackages[0];
+  if (!selectedPackage) {
+    selectedPackage = matchedPackages[0];
+  }
+
+  const nextBookingContext = {
+    ...(bookingContextFromClient || {}),
+    trainerId: preferredTrainer.id,
+    trainerName: preferredTrainer.name,
+    gymId: selectedPackage?.gymId || preferredTrainer?.gymId || null,
+    gymName: selectedPackage?.gymName || bookingContextFromClient?.gymName || null,
+    packageId: selectedPackage?.id || null,
+    packageName: selectedPackage?.name || null,
+    selectedDate: selectedDate || null,
+    selectedTime: selectedTime || null,
+  };
 
   if (!selectedDate) {
     return {
-      reply: `Mình đã xác định PT ${preferredTrainer.name} đang làm tại ${bestPackage.gymName}. Với thể trạng hiện tại của bạn, gói phù hợp nhất là ${
-        bestPackage.name
-      }. Bạn xem gói này trước nhé, rồi chỉ cần nhắn ngày muốn tập là mình kiểm tra slot trống của PT này ngay.`,
+      reply: `Mình đã nhớ PT ${preferredTrainer.name} rồi. Với thể trạng hiện tại của bạn, gói phù hợp nhất là ${selectedPackage.name}${selectedPackage.gymName ? ` tại ${selectedPackage.gymName}` : ""}. Giờ bạn chỉ cần nhắn ngày muốn tập, ví dụ 16/4 hoặc 2026-04-16, mình sẽ kiểm tra slot ngay.`,
       suggestions: [
         {
           type: "message",
@@ -1638,8 +1910,9 @@ const buildSmartBookingRecommendation = async ({ user, message, publicContext, p
           value: `Tôi muốn đặt lịch với PT ${preferredTrainer.name} ngày ${toISODateLocal(addDaysLocal(new Date(), 1))}`,
         },
       ],
-      actions: [buildNavigateAction(`/marketplace/packages/${bestPackage.id}`, "Xem gói phù hợp")],
-      cards: buildPackageCards([bestPackage], bmiContext, preferredTrainer, selectedDate),
+      actions: [buildNavigateAction(`/marketplace/packages/${selectedPackage.id}`, "Xem gói phù hợp")],
+      cards: buildPackageCards([selectedPackage], bmiContext, preferredTrainer, null),
+      bookingContext: nextBookingContext,
     };
   }
 
@@ -1656,36 +1929,88 @@ const buildSmartBookingRecommendation = async ({ user, message, publicContext, p
 
   if (!slots.length) {
     return {
-      reply: `Mình đã kiểm tra PT ${preferredTrainer.name} vào ngày ${formatDateVN(
-        selectedDate
-      )} nhưng hiện chưa thấy slot trống. Tuy vậy, gói phù hợp nhất với bạn tại gym của PT này là ${bestPackage.name}. Bạn muốn xem gói này để đổi sang ngày khác và đặt tiếp không?`,
-      suggestions: [],
-      actions: [buildNavigateAction(`/marketplace/packages/${bestPackage.id}`, "Xem gói phù hợp")],
-      cards: buildPackageCards([bestPackage], bmiContext, preferredTrainer, selectedDate),
+      reply: `Mình đã kiểm tra PT ${preferredTrainer.name} vào ngày ${formatDateVN(selectedDate)} nhưng hiện chưa thấy slot trống. Gói phù hợp nhất với bạn tại gym của PT này vẫn là ${selectedPackage.name}. Bạn muốn đổi sang ngày khác để mình kiểm tra tiếp không?`,
+      suggestions: [
+        {
+          type: "message",
+          label: "Đổi sang ngày khác",
+          value: `Tôi muốn đặt lịch với PT ${preferredTrainer.name} ngày ${toISODateLocal(addDaysLocal(new Date(), 2))}`,
+        },
+      ],
+      actions: [buildNavigateAction(`/marketplace/packages/${selectedPackage.id}`, "Xem gói phù hợp")],
+      cards: buildPackageCards([selectedPackage], bmiContext, preferredTrainer, selectedDate),
+      bookingContext: nextBookingContext,
+    };
+  }
+
+  if (!selectedTime) {
+    return {
+      reply: `Mình đã nhớ PT ${preferredTrainer.name}, gói ${selectedPackage.name} và ngày ${formatDateVN(selectedDate)}. Hiện PT này còn ${slots.length} khung giờ trống. Bạn chọn giờ giúp mình nhé.`,
+      suggestions: slots.slice(0, 5).map((s) => ({
+        type: "message",
+        label: formatTimeHHMM(s.startTime),
+        value: `Đặt với PT ${preferredTrainer.name} ngày ${selectedDate} lúc ${formatTimeHHMM(s.startTime)}`,
+      })),
+      cards: buildPackageCards([selectedPackage], bmiContext, preferredTrainer, selectedDate),
+      bookingContext: {
+        ...nextBookingContext,
+        selectedDate,
+      },
+    };
+  }
+
+  const matchedSlot = slots.find((s) => formatTimeHHMM(s.startTime) === selectedTime);
+
+  if (!matchedSlot) {
+    return {
+      reply: `Khung giờ ${selectedTime} hiện không còn trống. Bạn chọn một giờ còn lại bên dưới nhé.`,
+      suggestions: slots.slice(0, 5).map((s) => ({
+        type: "message",
+        label: formatTimeHHMM(s.startTime),
+        value: `Đặt với PT ${preferredTrainer.name} ngày ${selectedDate} lúc ${formatTimeHHMM(s.startTime)}`,
+      })),
+      bookingContext: {
+        ...nextBookingContext,
+        selectedDate,
+      },
     };
   }
 
   return {
-    reply: `Ngày ${formatDateVN(selectedDate)}, PT ${preferredTrainer.name} có slot trống ${formatTimeHHMM(
-      slots[0].startTime
-    )}. Với BMI và mục tiêu hiện tại của bạn, gói phù hợp nhất là ${bestPackage.name}${
-      bestPackage.gymName ? ` tại ${bestPackage.gymName}` : ""
-    }. Bạn có muốn đặt lịch theo gói này không?`,
-    suggestions: [
-      {
-        type: "message",
-        label: "Có, đặt lịch giúp tôi",
-        value: `Có, đặt lịch với PT ${preferredTrainer.name} ngày ${selectedDate}`,
-      },
+    reply: `Mình đã giữ sẵn thông tin cho bạn: PT ${preferredTrainer.name}, gói ${selectedPackage.name}, ngày ${formatDateVN(selectedDate)}, lúc ${selectedTime}. Bạn bấm sang gym detail để đặt lịch trực tiếp tại đó nhé.`,
+    suggestions: [],
+    actions: [
+      buildNavigateToGymDetailAction(selectedPackage.gymId, "Đi tới gym này để đặt lịch"),
+      buildNavigateAction(`/marketplace/packages/${selectedPackage.id}`, "Xem gói phù hợp"),
     ],
-    actions: [buildNavigateAction(`/marketplace/packages/${bestPackage.id}`, "Chọn gói này")],
-    cards: buildPackageCards([bestPackage], bmiContext, preferredTrainer, selectedDate),
-    bookingCandidate: {
-      trainerId: preferredTrainer.id,
-      packageId: bestPackage.id,
-      gymId: bestPackage.gymId,
-      date: selectedDate,
-      slots: slots.slice(0, 5),
+    cards: {
+      type: "booking_candidate",
+      title: "Thông tin đã giữ sẵn",
+      items: [
+        {
+          id: `${preferredTrainer.id}-${selectedDate}-${selectedTime}`,
+          title: `${preferredTrainer.name} • ${formatDateVN(selectedDate)}`,
+          subtitle: `${selectedTime} • ${selectedPackage.name}`,
+          meta: selectedPackage.gymName || "",
+          badge: "Đi tiếp tại Gym Detail",
+        },
+      ],
+    },
+    proposedAction: buildNavigateToGymDetailAction(selectedPackage.gymId, "Đi tới gym này để đặt lịch"),
+    requiresConfirmation: false,
+    bookingContext: {
+      ...nextBookingContext,
+      ...buildBookingNavigatePayload({
+        gymId: selectedPackage.gymId,
+        gymName: selectedPackage.gymName,
+        trainerId: preferredTrainer.id,
+        trainerName: preferredTrainer.name,
+        packageId: selectedPackage.id,
+        packageName: selectedPackage.name,
+        activationId: null,
+        selectedDate,
+        selectedTime,
+      }),
     },
   };
 };
@@ -1695,6 +2020,8 @@ const aiService = {
     const message = safeText(body?.message);
     const history = safeArray(body?.history);
     const pageContext = body?.pageContext || {};
+    const bookingContextFromClient = body?.bookingContext || null;
+    const userPreferences = body?.userPreferences || null;
 
     if (!message) {
       const e = new Error("Thiếu message");
@@ -1713,6 +2040,7 @@ const aiService = {
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: null,
+        bookingContext: bookingContextFromClient || null,
       };
     }
 
@@ -1721,7 +2049,7 @@ const aiService = {
 
     const bmiContext = extractBmiContext({ message, history, privateContext });
     const navAction = detectNavigationIntent(message, isAuthed);
-    const intent = await inferIntentHybrid({ message, history, isAuthed });
+    const intent = await inferIntentHybrid({ message, history, isAuthed, bookingContextFromClient });
 
     let response;
 
@@ -1734,28 +2062,66 @@ const aiService = {
         proposedAction: navAction,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
       };
     } else if (intent === "member_package" && isAuthed) {
       const res = replyForMemberPackage(privateContext);
-      response = { ...res, cards: null, proposedAction: null, requiresConfirmation: false, bmiSummary: bmiContext };
-    } else if (intent === "member_schedule" && isAuthed) {
-      const res = replyForMemberSchedule(message, privateContext, history);
-      response = { ...res, cards: null, proposedAction: null, requiresConfirmation: false, bmiSummary: bmiContext };
-    } else if (intent === "booking") {
-      const smartBooking = await buildSmartBookingRecommendation({
-        user,
-        message,
-        publicContext,
-        privateContext,
-        bmiContext,
-      });
-
       response = {
-        ...smartBooking,
+        ...res,
+        cards: null,
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
       };
+    } else if (intent === "member_schedule" && isAuthed) {
+      const res = replyForMemberSchedule(message, privateContext, history);
+      response = {
+        ...res,
+        cards: null,
+        proposedAction: null,
+        requiresConfirmation: false,
+        bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
+      };
+    } else if (intent === "booking") {
+      const hasActivePackage = !!safeArray(privateContext?.myPackages).find((x) => safeLower(x.status) === "active");
+
+      if (hasActivePackage) {
+        const res = await buildBookingReply({
+          user,
+          message,
+          privateContext,
+          pageContext,
+          publicContext,
+          bookingContextFromClient,
+          history,
+        });
+
+        response = {
+          ...res,
+          proposedAction: res?.proposedAction || null,
+          requiresConfirmation: !!res?.requiresConfirmation,
+          bmiSummary: bmiContext,
+        };
+      } else {
+        const smartBooking = await buildSmartBookingRecommendation({
+          user,
+          message,
+          history,
+          publicContext,
+          privateContext,
+          bmiContext,
+          bookingContextFromClient,
+        });
+
+        response = {
+          ...smartBooking,
+          proposedAction: smartBooking?.proposedAction || null,
+          requiresConfirmation: !!smartBooking?.requiresConfirmation,
+          bmiSummary: bmiContext,
+        };
+      }
     } else if (intent === "bmi") {
       if (!bmiContext?.bmi) {
         response = {
@@ -1765,6 +2131,7 @@ const aiService = {
           proposedAction: null,
           requiresConfirmation: false,
           bmiSummary: null,
+          bookingContext: bookingContextFromClient || null,
         };
       } else {
         response = {
@@ -1775,6 +2142,7 @@ const aiService = {
           proposedAction: null,
           requiresConfirmation: false,
           bmiSummary: bmiContext,
+          bookingContext: bookingContextFromClient || null,
         };
       }
     } else if (intent === "nutrition") {
@@ -1786,6 +2154,7 @@ const aiService = {
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
       };
     } else if (intent === "workout") {
       response = {
@@ -1796,6 +2165,7 @@ const aiService = {
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
       };
     } else if (intent === "gym") {
       const gyms = recommendGyms(publicContext, message, bmiContext);
@@ -1809,6 +2179,7 @@ const aiService = {
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
       };
     } else if (intent === "package") {
       const packages = recommendPackages(publicContext, bmiContext);
@@ -1822,6 +2193,7 @@ const aiService = {
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
       };
     } else if (intent === "trainer") {
       const trainerRows = recommendTrainersByPackages(publicContext, privateContext, bmiContext, message);
@@ -1839,15 +2211,24 @@ const aiService = {
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
       };
     } else {
-      const general = await answerGeneralConversation({ message, history, isAuthed, bmiContext, pageContext });
+      const general = await answerGeneralConversation({
+        message,
+        history,
+        isAuthed,
+        bmiContext,
+        pageContext,
+        userPreferences,
+      });
       response = {
         ...general,
         cards: null,
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
       };
     }
 
@@ -1861,6 +2242,7 @@ const aiService = {
       privateContext,
       bmiContext,
       pageContext,
+      userPreferences,
     });
   },
 
@@ -1872,21 +2254,6 @@ const aiService = {
       const e = new Error("Thiếu action type");
       e.statusCode = 400;
       throw e;
-    }
-
-    if (type === "CREATE_BOOKING") {
-      const data = await bookingService.createBooking(user.id, {
-        activationId: payload.activationId,
-        trainerId: payload.trainerId,
-        date: payload.date,
-        startTime: payload.startTime,
-      });
-
-      return {
-        reply: "Đặt lịch thành công. Mình đã tạo booking mới cho bạn.",
-        actionResult: data,
-        followUpAction: buildNavigateAction("/member/bookings", "Mở lịch của tôi"),
-      };
     }
 
     if (type === "NAVIGATE_TO_PAGE") {
