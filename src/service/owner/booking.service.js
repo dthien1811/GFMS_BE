@@ -1,5 +1,7 @@
 import db from "../../models/index";
 import realtimeService from "../realtime.service";
+import { applyPackageActivationCompletion, removePendingCommissionForBooking } from "../bookingActivationHelpers";
+import { createOwnerRetentionCommissionForBooking } from "../ownerRetentionSync.service";
 
 const { Booking, Member, Trainer, Gym, Package, User, TrainerShare, Request } = db;
 const OWNER_ACTIVE_TRAINER_SHARE_STATUSES = ['approved', 'pending', 'pending_trainer'];
@@ -11,23 +13,6 @@ const ACTIVE_PT_PACKAGE_INCLUDE = [{
   },
   required: true,
 }];
-
-const applyPackageActivationCompletion = async (booking) => {
-  if (!booking?.packageActivationId) return null;
-
-  const activation = await db.PackageActivation.findByPk(booking.packageActivationId, {
-    include: [{ model: db.Package, attributes: ["id", "name"] }],
-  });
-  if (!activation || activation.sessionsRemaining <= 0) return activation;
-
-  await activation.update({
-    sessionsUsed: (activation.sessionsUsed || 0) + 1,
-    sessionsRemaining: Math.max(0, activation.sessionsRemaining - 1),
-    status: activation.sessionsRemaining - 1 <= 0 ? 'completed' : activation.status,
-  });
-
-  return activation;
-};
 
 const getDateOnlyString = (value) => {
   if (!value) return null;
@@ -1024,22 +1009,46 @@ const updateBookingStatus = async (userId, bookingId, newStatus) => {
     throw error;
   }
 
-  // Cập nhật status
-  const updateData = { status: newStatus };
   let completedActivation = null;
-  
-  // Thêm timestamp tùy theo status
-  if (newStatus === 'in_progress') {
-    updateData.checkinTime = new Date();
-  } else if (newStatus === 'completed') {
-    updateData.checkoutTime = new Date();
-    completedActivation = await applyPackageActivationCompletion(booking);
-  } else if (newStatus === 'cancelled') {
-    updateData.cancellationDate = new Date();
-    updateData.cancellationBy = userId;
-  }
+  const t = await db.sequelize.transaction();
+  try {
+    const lockedBooking = await Booking.findByPk(booking.id, {
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!lockedBooking) {
+      const error = new Error("Không tìm thấy booking");
+      error.statusCode = 404;
+      throw error;
+    }
 
-  await booking.update(updateData);
+    // Cập nhật status
+    const updateData = { status: newStatus };
+
+    // Thêm timestamp tùy theo status
+    if (newStatus === 'in_progress') {
+      updateData.checkinTime = new Date();
+    } else if (newStatus === 'completed') {
+      updateData.checkoutTime = new Date();
+      completedActivation = await applyPackageActivationCompletion(lockedBooking, { transaction: t });
+    } else if (newStatus === 'no_show') {
+      // No-show cũng được tính là tiêu hao 1 buổi của gói để doanh thu thuộc owner.
+      updateData.checkoutTime = new Date();
+      completedActivation = await applyPackageActivationCompletion(lockedBooking, { transaction: t });
+      await removePendingCommissionForBooking(lockedBooking.id, t);
+      await createOwnerRetentionCommissionForBooking(lockedBooking, { transaction: t });
+    } else if (newStatus === 'cancelled') {
+      updateData.cancellationDate = new Date();
+      updateData.cancellationBy = userId;
+    }
+
+    await lockedBooking.update(updateData, { transaction: t });
+    await t.commit();
+    booking = lockedBooking;
+  } catch (error) {
+    await t.rollback();
+    throw error;
+  }
 
   try {
     const member = booking.memberId ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] }) : null;

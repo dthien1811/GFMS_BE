@@ -2,6 +2,7 @@ import db from "../../models";
 import { Op } from "sequelize";
 import ExcelJS from "exceljs";
 import realtimeService from "../realtime.service";
+import ownerRetentionSyncService from "../ownerRetentionSync.service";
 
 const {
   Commission,
@@ -9,6 +10,7 @@ const {
   Trainer,
   User,
   Booking,
+  Member,
   PackageActivation,
   Package,
   PayrollPeriod,
@@ -25,7 +27,8 @@ const emitCommissionChanged = (userIds = [], payload = {}) => {
 
 const parsePaging = (query) => {
   const page = Math.max(1, Number(query.page) || 1);
-  const limit = Math.min(100, Math.max(1, Number(query.limit) || 10));
+  // Giới hạn limit để tránh query quá nặng gây timeout
+  const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
   const offset = (page - 1) * limit;
   return { page, limit, offset };
 };
@@ -83,7 +86,19 @@ const buildCommissionQuery = async (ownerUserId, query = {}) => {
       attributes: ["id", "userId"],
       include: [{ model: User, attributes: ["id", "username", "email", "phone"], required: false }],
     },
-    { model: Booking, attributes: ["id", "bookingDate", "startTime", "endTime"], required: false },
+    {
+      model: Booking,
+      attributes: ["id", "bookingDate", "startTime", "endTime", "memberId"],
+      required: false,
+      include: [
+        {
+          model: Member,
+          attributes: ["id", "userId", "membershipNumber"],
+          required: false,
+          include: [{ model: User, attributes: ["id", "username", "email", "phone"], required: false }],
+        },
+      ],
+    },
     {
       model: PackageActivation,
       attributes: ["id", "packageId"],
@@ -97,20 +112,55 @@ const buildCommissionQuery = async (ownerUserId, query = {}) => {
 
 const ownerCommissionService = {
   async getCommissions(ownerUserId, query = {}) {
+    ownerRetentionSyncService.scheduleSyncForOwnerUser(ownerUserId);
     const { page, limit, offset } = parsePaging(query);
     const { where, include } = await buildCommissionQuery(ownerUserId, query);
+    const count = await Commission.count({ where });
+    if (count === 0) {
+      return {
+        data: [],
+        pagination: {
+          total: 0,
+          page,
+          limit,
+          totalPages: 0,
+        },
+      };
+    }
 
-    const { rows, count } = await Commission.findAndCountAll({
+    // 2-phase query: paginate theo bảng commission trước, rồi mới include các quan hệ.
+    // Cách này tránh findAndCountAll + include + distinct quá nặng.
+    const idRows = await Commission.findAll({
       where,
-      include,
-      order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
+      attributes: ["id"],
+      order: [["sessionDate", "DESC"], ["createdAt", "DESC"], ["id", "DESC"]],
       limit,
       offset,
-      distinct: true,
+      raw: true,
     });
+    const ids = idRows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n) && n > 0);
+    if (!ids.length) {
+      return {
+        data: [],
+        pagination: {
+          total: count,
+          page,
+          limit,
+          totalPages: Math.ceil(count / limit),
+        },
+      };
+    }
+
+    const rows = await Commission.findAll({
+      where: { id: { [Op.in]: ids } },
+      include,
+      order: [["sessionDate", "DESC"], ["createdAt", "DESC"], ["id", "DESC"]],
+    });
+    const byId = new Map(rows.map((r) => [Number(r.id), r]));
+    const sortedRows = ids.map((id) => byId.get(id)).filter(Boolean);
 
     return {
-      data: rows,
+      data: sortedRows,
       pagination: {
         total: count,
         page,
@@ -121,6 +171,7 @@ const ownerCommissionService = {
   },
 
   async getCommissionsRaw(ownerUserId, query = {}) {
+    ownerRetentionSyncService.scheduleSyncForOwnerUser(ownerUserId);
     const { where, include } = await buildCommissionQuery(ownerUserId, query);
     return Commission.findAll({
       where,
@@ -253,8 +304,70 @@ const ownerCommissionService = {
       distinct: true,
     });
 
+    const periodIdsNeedFallback = rows
+      .filter((p) => !Array.isArray(p.items) || p.items.length === 0)
+      .map((p) => Number(p.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    let groupedByPeriodTrainer = [];
+    if (periodIdsNeedFallback.length > 0) {
+      groupedByPeriodTrainer = await Commission.findAll({
+        where: {
+          payrollPeriodId: { [Op.in]: periodIdsNeedFallback },
+          payee: { [Op.or]: [null, "trainer"] },
+        },
+        attributes: [
+          "payrollPeriodId",
+          "trainerId",
+          [db.Sequelize.fn("COUNT", db.Sequelize.col("Commission.id")), "totalSessions"],
+          [
+            db.Sequelize.fn(
+              "COALESCE",
+              db.Sequelize.fn("SUM", db.Sequelize.col("Commission.commissionAmount")),
+              0
+            ),
+            "totalAmount",
+          ],
+        ],
+        include: [
+          {
+            model: Trainer,
+            attributes: ["id", "userId"],
+            required: false,
+            include: [{ model: User, attributes: ["id", "username", "email"], required: false }],
+          },
+        ],
+        group: ["payrollPeriodId", "trainerId", "Trainer.id", "Trainer->User.id"],
+        raw: false,
+      });
+    }
+
+    const fallbackMap = new Map();
+    groupedByPeriodTrainer.forEach((row) => {
+      const periodId = Number(row.payrollPeriodId);
+      const list = fallbackMap.get(periodId) || [];
+      list.push({
+        id: `fallback-${periodId}-${row.trainerId}`,
+        trainerId: Number(row.trainerId),
+        totalSessions: Number(row.get("totalSessions") || 0),
+        totalAmount: Number(row.get("totalAmount") || 0),
+        Trainer: row.Trainer || null,
+      });
+      fallbackMap.set(periodId, list);
+    });
+
+    const mergedRows = rows.map((period) => {
+      const plain = period.toJSON ? period.toJSON() : period;
+      if (Array.isArray(plain.items) && plain.items.length > 0) return plain;
+      const fallbackItems = fallbackMap.get(Number(plain.id)) || [];
+      return {
+        ...plain,
+        items: fallbackItems,
+      };
+    });
+
     return {
-      data: rows,
+      data: mergedRows,
       pagination: {
         total: count,
         page,
@@ -283,6 +396,7 @@ const ownerCommissionService = {
           [Op.gte]: new Date(fromDate),
           [Op.lte]: new Date(toDate),
         },
+        ...ownerRetentionSyncService.trainerPayeeOrNullWhere(),
       },
     });
 
@@ -293,24 +407,67 @@ const ownerCommissionService = {
     }
 
     const totalAmount = commissions.reduce((sum, c) => sum + Number(c.commissionAmount || 0), 0);
+    const paidAt = new Date();
 
-    await Commission.update(
-      { status: "paid", paidAt: new Date() },
-      { where: { id: { [Op.in]: commissions.map((c) => c.id) } } }
-    );
+    // Khi chi trả trực tiếp theo PT, vẫn ghi nhận 1 payroll period (status=paid)
+    // để lịch sử "Kỳ lương đã chốt" luôn đầy đủ.
+    const t = await db.sequelize.transaction();
+    let periodId = null;
+    try {
+      const period = await PayrollPeriod.create(
+        {
+          gymId: Number(gymId),
+          startDate: fromDate,
+          endDate: toDate,
+          status: "paid",
+          totalSessions: commissions.length,
+          totalAmount,
+          createdBy: ownerUserId,
+          paidAt,
+          walletCreditedAt: paidAt,
+          notes: `Chi trả trực tiếp theo huấn luyện viên #${trainerId}`,
+        },
+        { transaction: t }
+      );
+      periodId = Number(period.id);
 
-    const trainer = await Trainer.findByPk(trainerId);
-    if (trainer) {
-      const current = Number(trainer.pendingCommission || 0);
-      await trainer.update({
-        pendingCommission: current + totalAmount,
-        lastPayoutDate: new Date(),
-      });
+      await PayrollItem.create(
+        {
+          periodId,
+          trainerId: Number(trainerId),
+          totalSessions: commissions.length,
+          totalAmount,
+        },
+        { transaction: t }
+      );
+
+      await Commission.update(
+        { status: "paid", paidAt, calculatedAt: paidAt, payrollPeriodId: periodId },
+        { where: { id: { [Op.in]: commissions.map((c) => c.id) } }, transaction: t }
+      );
+
+      const trainer = await Trainer.findByPk(trainerId, { transaction: t });
+      if (trainer) {
+        const current = Number(trainer.pendingCommission || 0);
+        await trainer.update(
+          {
+            pendingCommission: current + totalAmount,
+            lastPayoutDate: paidAt,
+          },
+          { transaction: t }
+        );
+      }
+
+      await t.commit();
+    } catch (e) {
+      await t.rollback();
+      throw e;
     }
 
     emitCommissionChanged([ownerUserId], {
       gymId: Number(gymId),
       trainerId: Number(trainerId),
+      periodId,
       action: "paid_by_trainer",
     });
 
@@ -336,6 +493,7 @@ const ownerCommissionService = {
           [Op.gte]: new Date(fromDate),
           [Op.lte]: new Date(toDate),
         },
+        ...ownerRetentionSyncService.trainerPayeeOrNullWhere(),
       },
       attributes: ["commissionAmount"],
     });
@@ -358,6 +516,8 @@ const ownerCommissionService = {
       { header: "Goi tap", key: "package", width: 20 },
       { header: "Gia tri/buoi", key: "sessionValue", width: 16 },
       { header: "Hoa hong PT", key: "commissionAmount", width: 16 },
+      { header: "Loai", key: "payee", width: 14 },
+      { header: "Ghi chu", key: "note", width: 40 },
       { header: "Trang thai", key: "status", width: 12 },
     ];
     rows.forEach((r) => {
@@ -368,6 +528,8 @@ const ownerCommissionService = {
         package: r.PackageActivation?.Package?.name || "N/A",
         sessionValue: Number(r.sessionValue || 0),
         commissionAmount: Number(r.commissionAmount || 0),
+        payee: r.payee === "owner" ? "Chu phong tap" : "PT",
+        note: r.retentionReason || "",
         status: r.status || "N/A",
       });
     });
@@ -394,6 +556,7 @@ const ownerCommissionService = {
           [Op.gte]: new Date(startDate),
           [Op.lte]: new Date(endDate),
         },
+        ...ownerRetentionSyncService.trainerPayeeOrNullWhere(),
       },
     });
 
@@ -508,6 +671,7 @@ const ownerCommissionService = {
           [Op.gte]: new Date(startDate),
           [Op.lte]: new Date(endDate),
         },
+        ...ownerRetentionSyncService.trainerPayeeOrNullWhere(),
       },
       attributes: ["trainerId", "commissionAmount"],
       include: [

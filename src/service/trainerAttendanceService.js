@@ -1,4 +1,5 @@
 const db = require("../models");
+const { Op } = require("sequelize");
 const realtimeService = require("./realtime.service").default;
 const { syncPackageActivationCountersByActivationId } = require("./member/booking.service");
 
@@ -146,12 +147,6 @@ const toDateOnly = (raw) => {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 };
 
-const addDays = (d, days) => {
-  const x = new Date(d);
-  x.setDate(x.getDate() + days);
-  return x;
-};
-
 const SAFE_ATT_COLS = [
   'id', 'userId', 'gymId', 'bookingId', 
   'checkInTime', 'checkOutTime', 
@@ -164,14 +159,35 @@ const ensureAttendanceEditable = async (bookingId) => {
   const Commission = db.Commission || db.commission;
   mustHaveModel(Commission, "Commission");
 
-  const existing = await Commission.findOne({ where: { bookingId } });
-  if (existing && existing.status && existing.status !== "pending") {
+  const existing = await Commission.findOne({
+    where: {
+      bookingId,
+      [Op.or]: [{ payee: "owner" }, { status: { [Op.ne]: "pending" } }],
+    },
+  });
+  if (existing) {
     const err = new Error(
-      "Buổi tập này đã được chốt kỳ lương hoặc đã chi trả cho PT. Không thể thay đổi điểm danh."
+      "Buổi tập này đã ghi nhận doanh thu chủ / chốt kỳ lương hoặc đã chi trả cho PT. Không thể thay đổi điểm danh."
     );
     err.statusCode = 400;
     throw err;
   }
+};
+
+/** Giờ kết thúc slot theo ngày + endTime (local server), khớp logic owner retention. */
+const getBookingSlotEndDate = (booking) => {
+  const raw = booking?.bookingDate;
+  const dateStr =
+    typeof raw === "string"
+      ? raw.slice(0, 10)
+      : raw instanceof Date
+        ? `${raw.getFullYear()}-${String(raw.getMonth() + 1).padStart(2, "0")}-${String(raw.getDate()).padStart(2, "0")}`
+        : "";
+  if (!dateStr) return null;
+  let end = String(booking?.endTime || "23:59:59");
+  if (end.length === 5) end = `${end}:00`;
+  const d = new Date(`${dateStr}T${end}`);
+  return Number.isNaN(d.getTime()) ? null : d;
 };
 
 const assertAttendanceDateWindow = (booking) => {
@@ -187,10 +203,10 @@ const assertAttendanceDateWindow = (booking) => {
     throw err;
   }
 
-  // Quá 2 ngày kể từ ngày buổi học thì không cho chỉnh sửa lại điểm danh.
-  const editableUntil = addDays(bookingDay, 2); // bookingDay + 2 days
-  if (today.getTime() > editableUntil.getTime()) {
-    const err = new Error("Đã qua ngày buổi học, không thể chỉnh sửa điểm danh.");
+  // Đã qua giờ kết thúc buổi tập thì không điểm danh (đồng bộ với luồng doanh thu chủ sau slot).
+  const slotEnd = getBookingSlotEndDate(booking);
+  if (slotEnd && Date.now() > slotEnd.getTime()) {
+    const err = new Error("Buổi tập đã qua giờ kết thúc, không thể điểm danh.");
     err.statusCode = 400;
     throw err;
   }
@@ -221,8 +237,8 @@ const assertBusyRequestBeforeSixHours = (booking) => {
 };
 
 // Đồng bộ hoa hồng theo trạng thái điểm danh của 1 booking
-// - Nếu status = present/completed  → đảm bảo có 1 dòng commission (pending)
-// - Nếu status khác (absent, ...)   → xóa commission pending của booking đó
+// - Nếu status = present/completed/absent  → đảm bảo có 1 dòng commission (pending)
+// - Nếu status khác (reset, ...)           → xóa commission pending của booking đó
 const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus }) => {
   const Commission = db.Commission || db.commission;
   const PackageActivation = db.PackageActivation || db.packageactivation;
@@ -249,15 +265,16 @@ const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus 
 
   const existing = await Commission.findOne({ where: { bookingId: booking.id } });
 
-  // Nếu đánh dấu vắng / không hiện diện → xóa commission pending (nếu có)
-  if (normalizedStatus !== "present" && normalizedStatus !== "completed") {
+  // Chỉ giữ commission khi PT đã chấm trạng thái hợp lệ cho buổi dạy.
+  // absent cũng được trả như present/completed theo nghiệp vụ mới.
+  if (normalizedStatus !== "present" && normalizedStatus !== "completed" && normalizedStatus !== "absent") {
     if (existing && existing.status === "pending") {
       await existing.destroy();
     }
     return;
   }
 
-  // present/completed: đã có commission paid/calculated → giữ nguyên
+  // present/completed/absent: đã có commission paid/calculated → giữ nguyên
   if (existing && existing.status !== "pending") {
     return;
   }
@@ -303,6 +320,8 @@ const syncCommissionForAttendance = async ({ trainer, booking, normalizedStatus 
   }
 
   if (!sessionValue || !Number.isFinite(sessionValue) || sessionValue <= 0) return;
+
+  await Commission.destroy({ where: { bookingId: booking.id, payee: "owner" } });
 
   // Lấy tỷ lệ hoa hồng theo policy commission của gym
   let ownerRate = 0.15;
@@ -557,10 +576,11 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
     if (Commission && bookingIds.length) {
       const commRows = await Commission.findAll({
         where: { bookingId: bookingIds },
-        attributes: ["bookingId", "status"],
+        attributes: ["bookingId", "status", "payee"],
       });
+      const trainerFirst = commRows.filter((c) => c.payee !== "owner");
       commissionByBookingId = new Map(
-        commRows.map((c) => [c.bookingId, c.status])
+        trainerFirst.map((c) => [c.bookingId, c.status])
       );
     }
   } catch (e) {
@@ -762,7 +782,7 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   await booking.save();
 
   let consumedActivation = null;
-  if (["present", "completed"].includes(normalizedStatus) && previousBookingStatus !== "completed") {
+  if (["present", "completed", "absent"].includes(normalizedStatus) && previousBookingStatus !== "completed") {
     try {
       consumedActivation = await consumePackageSessionForBooking(booking);
     } catch (e) {
@@ -836,7 +856,7 @@ const resetAttendance = async ({ userId, bookingId }) => {
   booking.status = "confirmed";
   await booking.save();
 
-  if (previousBookingStatus === "completed" && ["present", "completed"].includes(previousAttendanceStatus)) {
+  if (previousBookingStatus === "completed" && ["present", "completed", "absent"].includes(previousAttendanceStatus)) {
     try {
       await restorePackageSessionForBooking(booking);
     } catch (e) {

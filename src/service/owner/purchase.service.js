@@ -29,7 +29,7 @@ const {
 
 const parsePaging = (query) => {
   const page = Math.max(1, Number(query.page) || 1);
-  const limit = Math.min(100, Math.max(1, Number(query.limit) || 10));
+  const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
   const offset = (page - 1) * limit;
   return { page, limit, offset };
 };
@@ -660,21 +660,28 @@ const ownerPurchaseService = {
       distinct: true,
     });
 
-    const requestIds = rows.map((r) => r.id);
+    const requestIds = rows.map((r) => Number(r.id)).filter((id) => Number.isFinite(id) && id > 0);
+    // Tránh OR theo từng id (rất nặng khi dữ liệu lớn): lấy tập giao dịch liên quan theo gym rồi map ngược.
     const txs = requestIds.length
       ? await Transaction.findAll({
           where: {
             transactionType: "equipment_purchase",
-            [Op.or]: requestIds.map((id) => ({ metadata: { [Op.like]: `%\"purchaseRequestId\":${id}%` } })),
+            gymId: { [Op.in]: gymIds },
+            metadata: { [Op.like]: '%"purchaseRequestId":%' },
           },
+          attributes: ["id", "metadata", "paymentStatus", "amount", "createdAt", "updatedAt"],
           order: [["id", "DESC"]],
+          limit: Math.max(500, requestIds.length * 20),
         })
       : [];
+    const requestIdSet = new Set(requestIds);
     const latestTxByRequestId = new Map();
     for (const tx of txs) {
       const meta = parseMeta(tx.metadata);
       const prId = Number(meta.purchaseRequestId || 0);
-      if (prId && !latestTxByRequestId.has(prId)) latestTxByRequestId.set(prId, tx);
+      if (prId && requestIdSet.has(prId) && !latestTxByRequestId.has(prId)) {
+        latestTxByRequestId.set(prId, tx);
+      }
     }
     const enriched = rows.map((r) => {
       const j = r.toJSON();
