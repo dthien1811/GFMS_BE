@@ -26,6 +26,8 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.ENUM('pending', 'calculated', 'paid'), 
       defaultValue: 'pending' 
     },
+    payee: DataTypes.STRING(16),
+    retentionReason: DataTypes.TEXT,
     calculatedAt: DataTypes.DATE,
     paidAt: DataTypes.DATE
   }, {

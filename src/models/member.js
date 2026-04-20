@@ -16,7 +16,8 @@ module.exports = (sequelize, DataTypes) => {
       Member.hasMany(models.Booking, { foreignKey: 'memberId' });
       Member.hasMany(models.Transaction, { foreignKey: 'memberId' });
       Member.hasMany(models.Review, { foreignKey: 'memberId' });
-      Member.hasMany(models.Attendance, { foreignKey: 'memberId' });
+      // Không khai báo hasMany Attendance qua memberId: bảng attendance không có cột memberId,
+      // Sequelize sẽ SELECT memberId và gây lỗi toàn bộ query Attendance (đồng bộ doanh thu chủ, điểm danh…).
       Member.hasMany(models.MemberMetric, { foreignKey: 'memberId', as: 'metrics' });
     }
   }

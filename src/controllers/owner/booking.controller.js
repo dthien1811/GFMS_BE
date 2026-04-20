@@ -55,6 +55,27 @@ const ownerBookingController = {
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
+
+  /** PATCH /api/owner/bookings/:bookingId/status */
+  async updateBookingStatus(req, res) {
+    try {
+      const userId = req.user.id;
+      const bookingId = Number.parseInt(String(req.params.bookingId || ""), 10);
+      const newStatus = String(req.body?.status || "").trim().toLowerCase();
+
+      if (!Number.isInteger(bookingId) || bookingId < 1) {
+        return res.status(400).json({ message: "ID booking không hợp lệ" });
+      }
+      if (!newStatus) {
+        return res.status(400).json({ message: "Thiếu trạng thái cần cập nhật" });
+      }
+
+      const data = await ownerBookingService.updateBookingStatus(userId, bookingId, newStatus);
+      return res.status(200).json({ message: "Cập nhật trạng thái thành công", data });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
 };
 
 export default ownerBookingController;
