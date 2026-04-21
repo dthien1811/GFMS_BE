@@ -8,6 +8,10 @@ const router = express.Router();
 router.use(jwtAction.checkUserJWT);
 router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owners"]));
 
+// Combo catalog
+router.get("/combos", ownerPurchaseController.getActiveCombos);
+router.get("/combos/:id", ownerPurchaseController.getComboDetail);
+
 // Suppliers
 router.get("/suppliers", ownerPurchaseController.getSuppliers);
 router.get("/equipments", ownerPurchaseController.getEquipmentsForPurchase);

@@ -10,6 +10,7 @@ module.exports = (sequelize, DataTypes) => {
       Transaction.belongsTo(models.Package, { foreignKey: 'packageId' });
       Transaction.belongsTo(models.PackageActivation, { foreignKey: 'packageActivationId' });
       Transaction.belongsTo(models.User, { foreignKey: 'processedBy', as: 'processor' });
+      Transaction.belongsTo(models.PurchaseRequest, { foreignKey: 'purchaseRequestId', as: 'purchaseRequest' });
     }
   }
 
@@ -51,6 +52,14 @@ module.exports = (sequelize, DataTypes) => {
       description: DataTypes.TEXT,
       metadata: DataTypes.JSON,
       transactionDate: DataTypes.DATE,
+      purchaseRequestId: DataTypes.INTEGER,
+      paymentPhase: { type: DataTypes.ENUM('deposit', 'final'), allowNull: true },
+      paymentProvider: DataTypes.STRING,
+      payosOrderCode: DataTypes.STRING,
+      paymentLink: DataTypes.TEXT,
+      paidAt: DataTypes.DATE,
+      rawPayload: DataTypes.JSON,
+      expiresAt: DataTypes.DATE,
 
       // ========== THÊM MỚI ==========
       packageActivationId: DataTypes.INTEGER,

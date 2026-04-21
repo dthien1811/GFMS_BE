@@ -1,112 +1,95 @@
-require("dotenv").config();
+require('dotenv').config();
 
 let payos = null;
 
 function getPayOS() {
   if (payos) return payos;
 
-  const {
-    PAYOS_CLIENT_ID,
-    PAYOS_API_KEY,
-    PAYOS_CHECKSUM_KEY
-  } = process.env;
+  const PAYOS_CLIENT_ID = process.env.PAYOS_CLIENT_ID || process.env.PAYOS_CLIENTID;
+  const PAYOS_API_KEY = process.env.PAYOS_API_KEY || process.env.PAYOS_KEY;
+  const PAYOS_CHECKSUM_KEY = process.env.PAYOS_CHECKSUM_KEY || process.env.PAYOS_SECRET_KEY;
 
   if (!PAYOS_CLIENT_ID || !PAYOS_API_KEY || !PAYOS_CHECKSUM_KEY) {
-    console.warn("[PayOS] Missing env → MOCK mode");
+    console.warn('[PayOS] Missing env → MOCK mode');
     return null;
   }
 
   try {
-    const PayOSModule = require("@payos/node");
-    const PayOSClass = PayOSModule.default || PayOSModule;
-    
+    const PayOSModule = require('@payos/node');
+    const PayOSClass = PayOSModule.default || PayOSModule.PayOS || PayOSModule;
     payos = new PayOSClass({
       clientId: PAYOS_CLIENT_ID,
       apiKey: PAYOS_API_KEY,
       checksumKey: PAYOS_CHECKSUM_KEY,
     });
-    
-    console.log("✅ PayOS initialized!");
     return payos;
   } catch (error) {
-    try {
-      const { PayOS: PayOSClass } = require("@payos/node");
-      payos = new PayOSClass({
-        clientId: PAYOS_CLIENT_ID,
-        apiKey: PAYOS_API_KEY,
-        checksumKey: PAYOS_CHECKSUM_KEY,
-      });
-      
-      console.log("✅ PayOS initialized successfully!");
-      return payos;
-    } catch (error2) {
-      console.error("❌ PayOS init error:", error2.message);
-      return null;
-    }
+    console.error('❌ PayOS init error:', error.message);
+    return null;
   }
 }
 
-async function createPackagePaymentLink({ orderCode, amount, description, returnUrl, cancelUrl }) {
+function normalizeDescription(description) {
+  const base = String(description || 'Thanh toan combo').trim() || 'Thanh toan combo';
+  return base.length > 25 ? `${base.slice(0, 22)}...` : base;
+}
+
+async function createPaymentLink({ orderCode, amount, description, returnUrl, cancelUrl, metadata }) {
   const client = getPayOS();
 
   if (!client) {
     return {
       checkoutUrl: `https://sandbox.payos.local/mock?orderCode=${orderCode}`,
       orderCode,
+      paymentLinkId: `mock-${orderCode}`,
+      metadata: metadata || null,
     };
-  }
-
-  // ✅ Rút ngắn description xuống tối đa 25 ký tự
-  let shortDesc = description || "Thanh toan goi tap";
-  if (shortDesc.length > 25) {
-    shortDesc = shortDesc.substring(0, 22) + "...";
   }
 
   const paymentData = {
     orderCode: Number(orderCode),
     amount: Math.round(Number(amount)),
-    description: shortDesc,
+    description: normalizeDescription(description),
     returnUrl:
       returnUrl ||
       process.env.PAYOS_RETURN_URL ||
-      `${process.env.FRONTEND_URL || "http://localhost:3000"}/member/payment-success?payos=success&orderCode=${encodeURIComponent(
-        orderCode
-      )}`,
+      `${process.env.FRONTEND_URL || 'http://localhost:3000'}/member/payment-success?payos=success&orderCode=${encodeURIComponent(orderCode)}`,
     cancelUrl:
       cancelUrl ||
       process.env.PAYOS_CANCEL_URL ||
-      `${process.env.FRONTEND_URL || "http://localhost:3000"}/member/payment-success?payos=cancel`,
+      `${process.env.FRONTEND_URL || 'http://localhost:3000'}/member/payment-success?payos=cancel`,
   };
-
-  console.log("\n💳 Creating payment link with data:", paymentData);
 
   try {
     const response = await client.paymentRequests.create(paymentData);
-    console.log("✅ Payment link created:", response.checkoutUrl);
-    
     return {
       checkoutUrl: response.checkoutUrl,
       orderCode: response.orderCode,
       paymentLinkId: response.paymentLinkId || response.id,
+      metadata: metadata || null,
     };
   } catch (error) {
-    console.error("❌ Create payment error:", error.message);
+    console.error('❌ Create payment error:', error.message);
     throw error;
   }
+}
+
+async function createPackagePaymentLink(args) {
+  return createPaymentLink(args);
 }
 
 function verifyWebhook(webhookBody) {
   const client = getPayOS();
   if (!client) return webhookBody;
-  
+
   try {
     if (client.webhooks && typeof client.webhooks.verify === 'function') {
       return client.webhooks.verify(webhookBody);
     }
   } catch (e) {
-    console.error("❌ Webhook verify error:", e.message);
+    console.error('❌ Webhook verify error:', e.message);
   }
-  
+
   return webhookBody;
 }
 
@@ -115,12 +98,11 @@ async function getPaymentLinkInformation(id) {
   if (!client) return null;
 
   try {
-    if (client.paymentRequests && typeof client.paymentRequests.get === "function") {
+    if (client.paymentRequests && typeof client.paymentRequests.get === 'function') {
       return await client.paymentRequests.get(id);
     }
   } catch (e) {
-    const detail = e?.message || e;
-    console.error("❌ PayOS getPaymentLinkInformation error:", detail);
+    console.error('❌ PayOS getPaymentLinkInformation error:', e?.message || e);
   }
 
   return null;
@@ -128,6 +110,7 @@ async function getPaymentLinkInformation(id) {
 
 module.exports = {
   createPackagePaymentLink,
+  createPaymentLink,
   verifyWebhook,
   getPaymentLinkInformation,
 };

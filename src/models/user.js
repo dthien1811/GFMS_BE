@@ -40,6 +40,10 @@ module.exports = (sequelize, DataTypes) => {
         foreignKey: 'userId',
         as: 'refreshTokenSessions',
       });
+      User.hasMany(models.PurchaseRequest, {
+        foreignKey: 'requestedBy',
+        as: 'purchaseRequests',
+      });
       // ==============================
     }
   };

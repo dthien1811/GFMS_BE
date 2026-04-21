@@ -10,6 +10,7 @@ router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owner
 
 router.get("/", ownerBookingController.getMyBookings);
 router.get("/trainer/:trainerId/schedule", ownerBookingController.getTrainerSchedule);
+router.patch("/:bookingId/status", ownerBookingController.updateBookingStatus);
 router.get("/:bookingId", ownerBookingController.getBookingDetail);
 
 export default router;

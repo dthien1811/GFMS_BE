@@ -62,6 +62,16 @@ router.post("/exports", adminInventoryController.createExport);
 router.get("/inventory-logs", adminInventoryController.getInventoryLogs);
 
 // ========================
+// MODULE 2: EQUIPMENT COMBO + PURCHASE WORKFLOW
+// ========================
+router.get("/equipment-combos", adminPurchaseWorkflowController.getEquipmentCombos);
+router.get("/equipment-combos/:id", adminPurchaseWorkflowController.getEquipmentComboDetail);
+router.post("/equipment-combos", adminPurchaseWorkflowController.createEquipmentCombo);
+router.put("/equipment-combos/:id", adminPurchaseWorkflowController.updateEquipmentCombo);
+router.delete("/equipment-combos/:id", adminPurchaseWorkflowController.deleteEquipmentCombo);
+router.patch("/equipment-combos/:id/selling", adminPurchaseWorkflowController.toggleEquipmentComboSelling);
+
+// ========================
 // MODULE 2: PURCHASE WORKFLOW
 // ========================
 router.get("/purchase-requests", adminPurchaseWorkflowController.getPurchaseRequests);

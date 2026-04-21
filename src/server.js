@@ -22,6 +22,7 @@ import payosRoute from "./routes/payment/payos.route";
 
 import connectDB from "./config/connectDB";
 import { initSocket } from "./socket";
+import { startOwnerRetentionBackgroundJob } from "./jobs/ownerRetentionBackground.job";
 
 import jwtAction from "./middleware/JWTAction";
 import { checkUserPermission } from "./middleware/permission";
@@ -210,6 +211,7 @@ if (typeof uploadRoute === "function") uploadRoute(app);
 
 // ===== DB =====
 connectDB();
+startOwnerRetentionBackgroundJob();
 
 // ===== START =====
 initSocket(httpServer);
