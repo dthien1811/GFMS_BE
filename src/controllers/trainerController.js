@@ -1209,30 +1209,33 @@ exports.replyReview = async (req, res) => {
     row.repliedAt = new Date();
     await row.save();
 
-    try {
-      const memberUserId =
-        row?.Member?.userId ||
-        (row?.memberId && MemberModel
-          ? (await MemberModel.findByPk(row.memberId, { attributes: ["userId"] }))?.userId
-          : null);
+    res.status(200).json({ data: row, message: "Đã phản hồi đánh giá" });
 
-      if (memberUserId && NotificationModel) {
-        const noti = await NotificationModel.create({
-          userId: memberUserId,
-          title: "PT đã phản hồi đánh giá của bạn",
-          message: trainerReply.slice(0, 160),
-          notificationType: "review",
-          relatedType: "review",
-          relatedId: row.id,
-          isRead: false,
-        });
-        emitToUser(memberUserId, "notification:new", noti.toJSON ? noti.toJSON() : noti);
-      }
-    } catch (notifyErr) {
-      console.warn("[replyReview] notify member error:", notifyErr?.message || notifyErr);
-    }
+    Promise.resolve()
+      .then(async () => {
+        const memberUserId =
+          row?.Member?.userId ||
+          (row?.memberId && MemberModel
+            ? (await MemberModel.findByPk(row.memberId, { attributes: ["userId"] }))?.userId
+            : null);
 
-    return res.status(200).json({ data: row, message: "Đã phản hồi đánh giá" });
+        if (memberUserId && NotificationModel) {
+          const noti = await NotificationModel.create({
+            userId: memberUserId,
+            title: "PT đã phản hồi đánh giá của bạn",
+            message: trainerReply.slice(0, 160),
+            notificationType: "review",
+            relatedType: "review",
+            relatedId: row.id,
+            isRead: false,
+          });
+          emitToUser(memberUserId, "notification:new", noti.toJSON ? noti.toJSON() : noti);
+        }
+      })
+      .catch((notifyErr) => {
+        console.warn("[replyReview] notify member error:", notifyErr?.message || notifyErr);
+      });
+    return;
   } catch (error) {
     console.error("[replyReview] Error:", error);
     return res.status(error.statusCode || 500).json({ message: error.message });
