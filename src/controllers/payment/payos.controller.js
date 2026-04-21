@@ -2,6 +2,7 @@ import db from "../../models";
 import payosService from "../../service/payment/payos.service";
 import realtimeService from "../../service/realtime.service";
 import { Op } from "sequelize";
+import comboPurchaseFlowService from "../../service/comboPurchaseFlow.service";
 
 const PAID_STATUSES = new Set(["PAID", "SUCCESS", "SUCCEEDED"]);
 const ALLOWED_STATUSES = new Set(["pending", "completed", "failed", "refunded", "cancelled"]);
@@ -194,7 +195,13 @@ const payosController = {
       if (tx.transactionType === "equipment_purchase") {
         const meta = parseMeta(tx.metadata);
         const poId = Number(meta.purchaseOrderId || 0);
-        const requestId = Number(meta.purchaseRequestId || 0);
+        const requestId = Number(tx.purchaseRequestId || meta.purchaseRequestId || 0);
+
+        if (requestId && (tx.paymentPhase || meta.paymentPhase)) {
+          const result = await comboPurchaseFlowService.handleSuccessfulPayment(tx, data, "webhook");
+          return res.status(200).json({ message: "OK", purchaseRequestId: result.request.id, phase: result.transaction.paymentPhase });
+        }
+
         await tx.update(
           {
             paymentStatus: "completed",
@@ -343,7 +350,13 @@ const payosController = {
       if (tx.transactionType === "equipment_purchase") {
         const meta = parseMeta(tx.metadata);
         const poId = Number(meta.purchaseOrderId || 0);
-        const requestId = Number(meta.purchaseRequestId || 0);
+        const requestId = Number(tx.purchaseRequestId || meta.purchaseRequestId || 0);
+
+        if (requestId && (tx.paymentPhase || meta.paymentPhase)) {
+          const result = await comboPurchaseFlowService.handleSuccessfulPayment(tx, info, "confirm");
+          return res.status(200).json({ message: "OK", purchaseRequestId: result.request.id, phase: result.transaction.paymentPhase });
+        }
+
         await tx.update(
           {
             paymentStatus: "completed",

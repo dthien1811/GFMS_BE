@@ -41,6 +41,8 @@ const {
   Inventory,
   Receipt,
   PurchaseOrder,
+  PurchaseRequest,
+  EquipmentCombo,
 } = require("../models");
 const realtimeServiceModule = require("./realtime.service");
 const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
@@ -1639,7 +1641,7 @@ async rejectFranchiseRequest(req) {
     };
   }
 
-  // ========== DASHBOARD OVERVIEW (enterprise) ==========
+  // ========== DASHBOARD OVERVIEW (combo-focused admin) ==========
   async getDashboardOverview(req) {
     const days = Math.min(90, Math.max(7, Number(req.query?.days || 30)));
     const nowDt = new Date();
@@ -1647,70 +1649,76 @@ async rejectFranchiseRequest(req) {
 
     const gymId = req.query?.gymId ? Number(req.query.gymId) : null;
 
-    const whereCommon = {};
-    if (gymId) whereCommon.gymId = gymId;
+    const comboRequestWhere = { comboId: { [Op.ne]: null } };
+    if (gymId) comboRequestWhere.gymId = gymId;
 
-    const txWhere = {
-      paymentStatus: "completed",
+    const completedComboTxWhere = {
       transactionType: "equipment_purchase",
+      paymentStatus: "completed",
       transactionDate: { [Op.gte]: fromDt, [Op.lte]: nowDt },
     };
-    if (gymId) txWhere.gymId = gymId;
+    if (gymId) completedComboTxWhere.gymId = gymId;
 
     const [
-      gyms,
-      members,
-      trainers,
       franchisePending,
       maintenancePending,
-      maintenanceInProgress,
-      poPending,
-      trainerSharePending,
-      lowStock,
-      revenue30d,
-      revenueSeriesRaw,
-      salesTransactions,
+      comboPending,
+      latestComboRequests,
+      comboTransactions,
     ] = await Promise.all([
-      Gym.count({ where: gymId ? { id: gymId, status: "active" } : { status: "active" } }).catch(() => 0),
-      Member.count({ where: { ...(gymId ? { gymId } : {}), status: "active" } }).catch(() => 0),
-      Trainer.count({ where: { ...(gymId ? { gymId } : {}), isActive: true } }).catch(() => 0),
       FranchiseRequest.count({ where: { status: "pending" } }).catch(() => 0),
       Maintenance.count({ where: { ...(gymId ? { gymId } : {}), status: "pending" } }).catch(() => 0),
-      Maintenance.count({ where: { ...(gymId ? { gymId } : {}), status: "in_progress" } }).catch(() => 0),
-      PurchaseOrder.count({ where: { ...(gymId ? { gymId } : {}), status: { [Op.in]: ["pending", "draft", "submitted", "awaiting_approval"] } } }).catch(() => 0),
-      TrainerShare.count({ where: { status: "pending" } }).catch(() => 0),
-      EquipmentStock.count({ where: { ...(gymId ? { gymId } : {}), availableQuantity: { [Op.lte]: 10 } } }).catch(() => 0),
-      Transaction.sum("amount", { where: txWhere }).then((v) => Number(v || 0)).catch(() => 0),
-      Transaction.findAll({
-        where: txWhere,
-        attributes: [
-          [sequelize.fn("DATE", sequelize.col("transactionDate")), "date"],
-          [sequelize.fn("SUM", sequelize.col("amount")), "total"],
+      PurchaseRequest.count({ where: { ...comboRequestWhere, status: "submitted" } }).catch(() => 0),
+      PurchaseRequest.findAll({
+        where: comboRequestWhere,
+        order: [["createdAt", "DESC"], ["id", "DESC"]],
+        limit: 6,
+        include: [
+          { model: Gym, as: "gym", attributes: ["id", "name"], required: false },
+          { model: EquipmentCombo, as: "combo", attributes: ["id", "name", "code", "price", "coverImage"], required: false },
         ],
-        group: [sequelize.fn("DATE", sequelize.col("transactionDate"))],
-        order: [[sequelize.fn("DATE", sequelize.col("transactionDate")), "ASC"]],
-        raw: true,
       }).catch(() => []),
       Transaction.findAll({
-        where: txWhere,
+        where: completedComboTxWhere,
         order: [["transactionDate", "DESC"], ["id", "DESC"]],
-        limit: 20,
-        include: [{ model: Gym, attributes: ["id", "name"], required: false }],
+        include: [
+          { model: Gym, attributes: ["id", "name"], required: false },
+          { model: PurchaseRequest, as: "purchaseRequest", attributes: ["id", "code", "status", "comboId"], required: true, where: { comboId: { [Op.ne]: null } }, include: [{ model: EquipmentCombo, as: "combo", attributes: ["id", "name", "code"], required: false }] },
+        ],
       }).catch(() => []),
     ]);
 
-    const dayMap = new Map((revenueSeriesRaw || []).map((x) => [String(x.date), Number(x.total || 0)]));
+    const comboRevenue30d = (comboTransactions || []).reduce((sum, tx) => sum + Number(tx?.amount || 0), 0);
+
+    const dayMap = new Map();
+    for (const tx of comboTransactions || []) {
+      const rawDate = tx?.transactionDate || tx?.createdAt;
+      if (!rawDate) continue;
+      const key = new Date(rawDate).toISOString().slice(0, 10);
+      dayMap.set(key, Number(dayMap.get(key) || 0) + Number(tx?.amount || 0));
+    }
+
     const revenue30dSeries = [];
     for (let i = days - 1; i >= 0; i -= 1) {
       const d = new Date(nowDt.getTime() - i * 24 * 60 * 60 * 1000);
       const key = d.toISOString().slice(0, 10);
-      revenue30dSeries.push({
-        date: key,
-        total: Number(dayMap.get(key) || 0),
-      });
+      revenue30dSeries.push({ date: key, total: Number(dayMap.get(key) || 0) });
     }
 
-    const equipmentSalesTransactions = (salesTransactions || []).map((tx) => ({
+    const latestComboRequestRows = (latestComboRequests || []).map((row) => {
+      const json = row.toJSON ? row.toJSON() : row;
+      return {
+        id: json.id,
+        code: json.code,
+        status: json.status,
+        totalAmount: Number(json.totalAmount || json.combo?.price || 0),
+        createdAt: json.createdAt,
+        gym: json.gym ? { id: json.gym.id, name: json.gym.name } : null,
+        combo: json.combo ? { id: json.combo.id, name: json.combo.name, code: json.combo.code, price: Number(json.combo.price || 0), coverImage: json.combo.coverImage || null } : null,
+      };
+    });
+
+    const comboSalesTransactions = (comboTransactions || []).slice(0, 15).map((tx) => ({
       id: tx.id,
       transactionCode: tx.transactionCode,
       amount: Number(tx.amount || 0),
@@ -1719,6 +1727,20 @@ async rejectFranchiseRequest(req) {
       description: tx.description,
       transactionDate: tx.transactionDate,
       gym: tx.Gym ? { id: tx.Gym.id, name: tx.Gym.name } : null,
+      purchaseRequest: tx.purchaseRequest
+        ? {
+            id: tx.purchaseRequest.id,
+            code: tx.purchaseRequest.code,
+            status: tx.purchaseRequest.status,
+            combo: tx.purchaseRequest.combo
+              ? {
+                  id: tx.purchaseRequest.combo.id,
+                  name: tx.purchaseRequest.combo.name,
+                  code: tx.purchaseRequest.combo.code,
+                }
+              : null,
+          }
+        : null,
       metadata: tx.metadata || null,
     }));
 
@@ -1727,19 +1749,14 @@ async rejectFranchiseRequest(req) {
       days,
       gymId,
       cards: {
-        gyms,
-        members,
-        trainers,
         franchisePending,
         maintenancePending,
-        maintenanceInProgress,
-        poPending,
-        trainerSharePending,
-        lowStock,
-        revenue30d,
+        comboPending,
+        comboRevenue30d,
       },
+      latestComboRequests: latestComboRequestRows,
       revenue30dSeries,
-      equipmentSalesTransactions,
+      comboSalesTransactions,
     };
   }
 

@@ -5,6 +5,7 @@ import { getAdminWarehouseGymIdSet } from "../adminWarehouseGymScope";
 import realtimeService from "../realtime.service";
 import payosService from "../payment/payos.service";
 import equipmentUnitEventUtils from "../../utils/equipmentUnitEvent";
+import comboPurchaseFlowService from "../comboPurchaseFlow.service";
 
 const { buildStockContext, computeFulfillmentPlan, validateRequestReason } = procurementStockHelper;
 const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
@@ -530,6 +531,10 @@ const ownerPurchaseService = {
   },
 
   async createPurchaseRequest(ownerUserId, payload) {
+    if (payload?.comboId) {
+      return comboPurchaseFlowService.createOwnerComboRequest(ownerUserId, payload);
+    }
+
     const {
       gymId,
       equipmentId,
@@ -589,7 +594,9 @@ const ownerPurchaseService = {
           issueQty,
           purchaseQty,
           payableAmount,
+          totalAmount: payableAmount,
           depositAmount,
+          finalAmount: remainingAmount,
           remainingAmount,
           reason: String(reason || "").trim(),
           priority: String(priority || "normal").trim() || "normal",
@@ -621,6 +628,10 @@ const ownerPurchaseService = {
   },
 
   async getPurchaseRequests(ownerUserId, query) {
+    if (!query?.legacy) {
+      return comboPurchaseFlowService.ownerListRequests(ownerUserId, query);
+    }
+
     const { page, limit, offset } = parsePaging(query);
     const { status, q } = query;
 
@@ -699,6 +710,11 @@ const ownerPurchaseService = {
   },
 
   async getPurchaseRequestDetail(ownerUserId, requestId) {
+    const request = await PurchaseRequest.findByPk(requestId);
+    if (request?.comboId) {
+      return comboPurchaseFlowService.ownerGetRequestDetail(ownerUserId, requestId);
+    }
+
     const pr = await PurchaseRequest.findByPk(requestId, {
       include: [
         { model: Gym, as: "gym", attributes: ["id", "name", "ownerId"] },
@@ -717,7 +733,13 @@ const ownerPurchaseService = {
     };
   },
 
-  async createPurchaseRequestPayOSLink(ownerUserId, requestId) {
+  async createPurchaseRequestPayOSLink(ownerUserId, requestId, payload = {}) {
+    const request = await PurchaseRequest.findByPk(requestId);
+    if (request?.comboId) {
+      const phase = String(payload?.phase || 'deposit').toLowerCase();
+      return comboPurchaseFlowService.createPaymentLink(ownerUserId, requestId, phase);
+    }
+
     const pr = await PurchaseRequest.findByPk(requestId, {
       include: [{ model: Gym, as: "gym", attributes: ["id", "ownerId"] }],
     });
@@ -787,6 +809,11 @@ const ownerPurchaseService = {
   },
 
   async confirmReceivePurchaseRequest(ownerUserId, requestId) {
+    const request = await PurchaseRequest.findByPk(requestId);
+    if (request?.comboId) {
+      return comboPurchaseFlowService.confirmReceived(ownerUserId, requestId);
+    }
+
     return sequelize.transaction(async (t) => {
       const pr = await PurchaseRequest.findByPk(requestId, {
         include: [{ model: Gym, as: "gym", attributes: ["id", "ownerId"] }],
@@ -1245,6 +1272,14 @@ const ownerPurchaseService = {
       purchaseOrderId: po.id,
       purchaseOrderCode: po.code,
     };
+  },
+
+  async getActiveCombos(query) {
+    return comboPurchaseFlowService.listCombos({ activeOnly: true, query });
+  },
+
+  async getComboDetail(comboId) {
+    return comboPurchaseFlowService.getComboDetail(comboId);
   },
 };
 
