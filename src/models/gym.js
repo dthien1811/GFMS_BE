@@ -122,6 +122,10 @@ module.exports = (sequelize, DataTypes) => {
       });
     }
 
+    if (models.PurchaseRequest) {
+      Gym.hasMany(models.PurchaseRequest, { foreignKey: 'gymId', as: 'purchaseRequests' });
+    }
+
     /**
      * ===== INVENTORY / MAINTENANCE (nếu có) =====
      */

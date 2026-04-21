@@ -2,6 +2,60 @@
 const adminPurchaseWorkflowService = require("../service/adminPurchaseWorkflowService");
 
 class AdminPurchaseWorkflowController {
+  getEquipmentCombos = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.getEquipmentCombos(req.query);
+      return res.status(200).json(result);
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  };
+
+  getEquipmentComboDetail = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.getEquipmentComboDetail(req.params.id);
+      return res.status(200).json({ data: result });
+    } catch (e) {
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  };
+
+  createEquipmentCombo = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.createEquipmentCombo(req.body, req.user?.id, req);
+      return res.status(201).json({ data: result });
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
+    }
+  };
+
+  updateEquipmentCombo = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.updateEquipmentCombo(req.params.id, req.body, req.user?.id, req);
+      return res.status(200).json({ data: result });
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
+    }
+  };
+
+  deleteEquipmentCombo = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.deleteEquipmentCombo(req.params.id, req.user?.id, req);
+      return res.status(200).json(result);
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
+    }
+  };
+
+  toggleEquipmentComboSelling = async (req, res) => {
+    try {
+      const result = await adminPurchaseWorkflowService.toggleEquipmentComboSelling(req.params.id, req.body, req.user?.id, req);
+      return res.status(200).json({ data: result });
+    } catch (e) {
+      return res.status(e.statusCode || 400).json({ message: e.message });
+    }
+  };
+
   /* ========================= PURCHASE REQUESTS ========================= */
 
   getPurchaseRequests = async (req, res) => {

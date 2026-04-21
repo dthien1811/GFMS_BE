@@ -29,6 +29,7 @@ const {
 const notificationGymService = require("./notification-gym.service");
 const { attachGymIdsToNotifications } = notificationGymService;
 const equipmentUnitEventUtils = require("../utils/equipmentUnitEvent");
+const comboPurchaseFlowService = require("./comboPurchaseFlow.service");
 const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
 
 const EPS = 0.01;
@@ -1323,6 +1324,9 @@ class AdminPurchaseWorkflowService {
   /* ========================= PURCHASE REQUESTS (owner → admin) ========================= */
 
   async getPurchaseRequests(query) {
+    if (!query?.legacy) {
+      return comboPurchaseFlowService.adminListRequests(query);
+    }
     const { page, limit, offset } = paging(query);
     const where = {};
     if (query.status && query.status !== "all") where.status = query.status;
@@ -1439,7 +1443,11 @@ class AdminPurchaseWorkflowService {
   }
 
   async getPurchaseRequestDetail(id) {
-    const pr = await PurchaseRequest.findByPk(id, {
+    const pr = await PurchaseRequest.findByPk(id);
+    if (pr?.comboId) {
+      return comboPurchaseFlowService.adminGetRequestDetail(id);
+    }
+    const row = await PurchaseRequest.findByPk(id, {
       include: [
         { model: Gym, as: "gym", attributes: ["id", "name"] },
         { model: Equipment, as: "equipment", attributes: ["id", "name", "code", "minStockLevel"] },
@@ -1448,229 +1456,90 @@ class AdminPurchaseWorkflowService {
         { model: Quotation, as: "quotation", attributes: ["id", "code", "status", "totalAmount"] },
       ],
     });
-    if (!pr) throw new Error("Purchase request not found");
+    if (!row) throw new Error("Purchase request not found");
     return {
-      ...pr.toJSON(),
-      fulfillmentPlan: pr.stockSnapshot?.fulfillmentPlan || computeFulfillmentPlan(pr.quantity, pr.stockSnapshot),
+      ...row.toJSON(),
+      fulfillmentPlan: row.stockSnapshot?.fulfillmentPlan || computeFulfillmentPlan(row.quantity, row.stockSnapshot),
     };
   }
 
   async approvePurchaseRequest(requestId, adminId, req) {
+    const pr = await PurchaseRequest.findByPk(requestId);
+    if (pr?.comboId) {
+      return comboPurchaseFlowService.approveRequest(requestId, adminId, req);
+    }
     return sequelize.transaction(async (t) => {
-      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
-      if (!pr) throw new Error("Purchase request not found");
-      if (pr.status !== "submitted") throw new Error("Only submitted requests can be approved");
+      const prLocked = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!prLocked) throw new Error("Purchase request not found");
+      if (prLocked.status !== "submitted") throw new Error("Only submitted requests can be approved");
 
-      const old = pr.toJSON();
-      pr.status = "approved_waiting_payment";
-      await pr.save({ transaction: t });
+      const old = prLocked.toJSON();
+      prLocked.status = "approved_waiting_payment";
+      await prLocked.save({ transaction: t });
 
-      const amount = Number(pr.quantity || 0) * Number(pr.expectedUnitPrice || 0);
+      const amount = Number(prLocked.quantity || 0) * Number(prLocked.expectedUnitPrice || 0);
       await Transaction.create(
         {
           transactionCode: genCode("TX"),
-          gymId: pr.gymId,
+          gymId: prLocked.gymId,
           amount,
           transactionType: "equipment_purchase",
           paymentMethod: "payos",
           paymentStatus: "pending",
-          description: `Payment for purchase request ${pr.code}`,
+          description: `Payment for purchase request ${prLocked.code}`,
           metadata: {
-            purchaseRequestId: pr.id,
-            purchaseRequestCode: pr.code,
+            purchaseRequestId: prLocked.id,
+            purchaseRequestCode: prLocked.code,
             source: "direct_purchase_request",
           },
           transactionDate: new Date(),
-          processedBy: pr.requestedBy || null,
+          processedBy: prLocked.requestedBy || null,
         },
         { transaction: t }
       );
 
-      await createAudit(
-        {
-          userId: adminId,
-          action: "PURCHASE_REQUEST_APPROVED",
-          tableName: "purchaserequest",
-          recordId: pr.id,
-          oldValues: old,
-          newValues: pr.toJSON(),
-          req,
-        },
-        t
-      );
-
-      await createNotification(
-        {
-          userId: pr.requestedBy,
-          title: "Yêu cầu mua đã được duyệt",
-          message: `${pr.code} đã được duyệt. Vui lòng thanh toán để admin xử lý giao hàng.`,
-          notificationType: "purchase_request",
-          relatedType: "purchaserequest",
-          relatedId: pr.id,
-        },
-        t
-      );
-
-      return pr;
+      await createAudit({ userId: adminId, action: "PURCHASE_REQUEST_APPROVED", tableName: "purchaserequest", recordId: prLocked.id, oldValues: old, newValues: prLocked.toJSON(), req }, t);
+      await createNotification({ userId: prLocked.requestedBy, title: "Yêu cầu mua đã được duyệt", message: `${prLocked.code} đã được duyệt. Vui lòng thanh toán để admin xử lý giao hàng.`, notificationType: "purchase_request", relatedType: "purchaserequest", relatedId: prLocked.id }, t);
+      return prLocked;
     });
   }
 
   async confirmPurchaseRequestPaymentAndShip(requestId, adminId, req) {
+    const pr = await PurchaseRequest.findByPk(requestId);
+    if (pr?.comboId) {
+      return comboPurchaseFlowService.shipRequest(requestId, adminId, req);
+    }
     return sequelize.transaction(async (t) => {
-      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
-      if (!pr) throw new Error("Purchase request not found");
-      if (pr.status !== "paid_waiting_admin_confirm") {
-        throw new Error("Request must be paid_waiting_admin_confirm");
-      }
-
-      const neededQty = Number(pr.quantity || 0);
-      if (neededQty <= 0) throw new Error("Invalid request quantity");
-
-      const stocks = await EquipmentStock.findAll({
-        where: { equipmentId: pr.equipmentId },
-        include: [
-          {
-            model: Gym,
-            as: "gym",
-            attributes: ["id", "ownerId"],
-            required: false,
-          },
-        ],
-        order: [["availableQuantity", "DESC"], ["id", "ASC"]],
-        transaction: t,
-        lock: t.LOCK.UPDATE,
-      });
-      // Trừ đúng "kho admin" (cùng tập gym với chỗ admin ghi tồn). Fallback: mọi kho trừ gym nhận hàng.
-      const adminGymIdSet = await getAdminWarehouseGymIdSet({ transaction: t });
-      const adminWarehouseStocks = stocks.filter((s) => adminGymIdSet.has(Number(s.gymId)));
-      const nonOwnerStocks = stocks.filter((s) => Number(s.gymId) !== Number(pr.gymId));
-      const sourceStocks = adminWarehouseStocks.length ? adminWarehouseStocks : nonOwnerStocks;
-
-      if (!sourceStocks.length) {
-        throw new Error("Không tìm thấy kho nguồn để xuất hàng (đã loại trừ kho owner nhận hàng).");
-      }
-
-      const stockGymIds = Array.from(
-        new Set(sourceStocks.map((s) => Number(s.gymId)).filter((id) => Number.isFinite(id) && id > 0))
-      );
-      const validGyms = stockGymIds.length
-        ? await Gym.findAll({
-            where: { id: { [Op.in]: stockGymIds } },
-            attributes: ["id"],
-            transaction: t,
-            lock: t.LOCK.SHARE,
-          })
-        : [];
-      const validGymIdSet = new Set(validGyms.map((g) => Number(g.id)));
-      const fallbackLogGymId = Number(validGyms[0]?.id || 0);
-      let remaining = neededQty;
-      for (const st of sourceStocks) {
-        if (remaining <= 0) break;
-        const avail = Number(st.availableQuantity || 0);
-        if (avail <= 0) continue;
-        const take = Math.min(avail, remaining);
-        const before = Number(st.quantity || 0);
-        st.quantity = Math.max(0, before - take);
-        st.availableQuantity = Math.max(0, Number(st.availableQuantity || 0) - take);
-        await st.save({ transaction: t });
-        remaining -= take;
-
-        const stockGymId = validGymIdSet.has(Number(st.gymId)) ? Number(st.gymId) : fallbackLogGymId;
-        if (!stockGymId) continue;
-        await Inventory.create(
-          {
-            gymId: stockGymId,
-            equipmentId: pr.equipmentId,
-            transactionType: "sale",
-            transactionId: pr.id,
-            transactionCode: pr.code,
-            quantity: -take,
-            unitPrice: pr.expectedUnitPrice || 0,
-            totalValue: Number(pr.expectedUnitPrice || 0) * take,
-            stockBefore: before,
-            stockAfter: Number(st.quantity || 0),
-            notes: `Xuất kho bán cho yêu cầu ${pr.code}`,
-            recordedBy: adminId || null,
-            recordedAt: new Date(),
-          },
-          { transaction: t }
-        );
-      }
-      if (remaining > 0) throw new Error("Admin stock is not enough to ship this request");
-
-      const old = pr.toJSON();
-      pr.status = "shipping";
-      await pr.save({ transaction: t });
-
-      await createAudit(
-        {
-          userId: adminId,
-          action: "PURCHASE_REQUEST_SHIPPING",
-          tableName: "purchaserequest",
-          recordId: pr.id,
-          oldValues: old,
-          newValues: pr.toJSON(),
-          req,
-        },
-        t
-      );
-
-      await createNotification(
-        {
-          userId: pr.requestedBy,
-          title: "Admin đã nhận tiền, đang chuyển thiết bị",
-          message: `${pr.code} đã được xác nhận thanh toán và đang chuyển thiết bị cho bạn.`,
-          notificationType: "purchase_request",
-          relatedType: "purchaserequest",
-          relatedId: pr.id,
-        },
-        t
-      );
-
-      return pr;
+      const prLocked = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!prLocked) throw new Error("Purchase request not found");
+      if (prLocked.status !== "paid_waiting_admin_confirm") throw new Error("Request must be paid_waiting_admin_confirm");
+      const old = prLocked.toJSON();
+      prLocked.status = "shipping";
+      await prLocked.save({ transaction: t });
+      await createAudit({ userId: adminId, action: "PURCHASE_REQUEST_SHIPPING", tableName: "purchaserequest", recordId: prLocked.id, oldValues: old, newValues: prLocked.toJSON(), req }, t);
+      await createNotification({ userId: prLocked.requestedBy, title: "Admin đã nhận tiền, đang chuyển thiết bị", message: `${prLocked.code} đã được xác nhận thanh toán và đang chuyển thiết bị cho bạn.`, notificationType: "purchase_request", relatedType: "purchaserequest", relatedId: prLocked.id }, t);
+      return prLocked;
     });
   }
 
   async rejectPurchaseRequest(requestId, body, adminId, req) {
+    const pr = await PurchaseRequest.findByPk(requestId);
+    if (pr?.comboId) {
+      return comboPurchaseFlowService.rejectRequest(requestId, body?.rejectionReason || body?.reason, adminId, req);
+    }
     return sequelize.transaction(async (t) => {
-      const pr = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
-      if (!pr) throw new Error("Purchase request not found");
-      if (pr.status !== "submitted") throw new Error("Only submitted requests can be rejected");
-
+      const prLocked = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
+      if (!prLocked) throw new Error("Purchase request not found");
+      if (prLocked.status !== "submitted") throw new Error("Only submitted requests can be rejected");
       const reason = String(body?.rejectionReason || body?.reason || "").trim();
       if (!reason) throw new Error("Missing rejectionReason");
-
-      const old = pr.toJSON();
-      pr.status = "rejected";
-      pr.adminRejectionNote = reason;
-      await pr.save({ transaction: t });
-
-      await createAudit(
-        {
-          userId: adminId,
-          action: "PURCHASE_REQUEST_REJECTED",
-          tableName: "purchaserequest",
-          recordId: pr.id,
-          oldValues: old,
-          newValues: pr.toJSON(),
-          req,
-        },
-        t
-      );
-
-      await createNotification(
-        {
-          userId: pr.requestedBy,
-          title: "Yêu cầu mua sắm bị từ chối",
-          message: `${pr.code}: ${reason}`,
-          notificationType: "purchase_request",
-          relatedType: "purchaserequest",
-          relatedId: pr.id,
-        },
-        t
-      );
-
-      return pr;
+      const old = prLocked.toJSON();
+      prLocked.status = "rejected";
+      prLocked.adminRejectionNote = reason;
+      await prLocked.save({ transaction: t });
+      await createAudit({ userId: adminId, action: "PURCHASE_REQUEST_REJECTED", tableName: "purchaserequest", recordId: prLocked.id, oldValues: old, newValues: prLocked.toJSON(), req }, t);
+      await createNotification({ userId: prLocked.requestedBy, title: "Yêu cầu mua sắm bị từ chối", message: `${prLocked.code}: ${reason}`, notificationType: "purchase_request", relatedType: "purchaserequest", relatedId: prLocked.id }, t);
+      return prLocked;
     });
   }
 
@@ -1928,6 +1797,30 @@ class AdminPurchaseWorkflowService {
 
     return { data: events };
   }
+  async getEquipmentCombos(query) {
+    return comboPurchaseFlowService.listCombos({ activeOnly: false, query, forAdmin: true });
+  }
+
+  async getEquipmentComboDetail(id) {
+    return comboPurchaseFlowService.getComboDetail(id);
+  }
+
+  async createEquipmentCombo(body) {
+    return comboPurchaseFlowService.createCombo(body);
+  }
+
+  async updateEquipmentCombo(id, body) {
+    return comboPurchaseFlowService.updateCombo(id, body);
+  }
+
+  async deleteEquipmentCombo(id) {
+    return comboPurchaseFlowService.deleteCombo(id);
+  }
+
+  async toggleEquipmentComboSelling(id, body) {
+    return comboPurchaseFlowService.toggleComboSelling(id, body?.isSelling);
+  }
+
 }
 
 module.exports = new AdminPurchaseWorkflowService();

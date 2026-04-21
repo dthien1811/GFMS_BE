@@ -4,7 +4,9 @@ const { Model } = require('sequelize');
 module.exports = (sequelize, DataTypes) => {
   class Supplier extends Model {
     static associate(models) {
-      // nếu sau này bạn có bảng liên kết supplier-equipment/purchaseorder thì thêm ở đây
+      if (models.EquipmentCombo) {
+        Supplier.hasMany(models.EquipmentCombo, { foreignKey: 'supplierId', as: 'equipmentCombos' });
+      }
     }
   }
 

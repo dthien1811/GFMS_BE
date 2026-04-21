@@ -1,6 +1,26 @@
 import ownerPurchaseService from "../../service/owner/purchase.service";
 
 const ownerPurchaseController = {
+  async getActiveCombos(req, res) {
+    try {
+      const data = await ownerPurchaseService.getActiveCombos(req.query);
+      return res.status(200).json(data);
+    } catch (e) {
+      console.error("Get combos error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
+  async getComboDetail(req, res) {
+    try {
+      const data = await ownerPurchaseService.getComboDetail(req.params.id);
+      return res.status(200).json({ data });
+    } catch (e) {
+      console.error("Get combo detail error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
   // Suppliers
   async getSuppliers(req, res) {
     try {
@@ -166,7 +186,7 @@ const ownerPurchaseController = {
 
   async createPurchaseRequestPayOSLink(req, res) {
     try {
-      const data = await ownerPurchaseService.createPurchaseRequestPayOSLink(req.user.id, req.params.id);
+      const data = await ownerPurchaseService.createPurchaseRequestPayOSLink(req.user.id, req.params.id, req.body || {});
       return res.status(200).json({ data });
     } catch (e) {
       console.error("Create purchase request payos link error:", e);

@@ -54,6 +54,13 @@ module.exports = (sequelize, DataTypes) => {
         });
       }
 
+      if (models.EquipmentComboItem) {
+        Equipment.hasMany(models.EquipmentComboItem, {
+          foreignKey: 'equipmentId',
+          as: 'comboItems',
+        });
+      }
+
       // Images (nếu có)
       if (models.EquipmentImage) {
         Equipment.hasMany(models.EquipmentImage, {
