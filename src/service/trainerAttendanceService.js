@@ -20,6 +20,14 @@ const normalizeDateOnly = (dateStr) => {
 const now = () => new Date();
 const BUSY_REQUEST_NOTE_MARKER = "[PT_BUSY_REQUEST]";
 
+const runAsyncSideEffect = (name, job) => {
+  Promise.resolve()
+    .then(() => job())
+    .catch((error) => {
+      console.error(`[trainerAttendanceService] ${name}:`, error?.message || error);
+    });
+};
+
 
 const formatDateVN = (value) => {
   if (!value) return "ngày đã chọn";
@@ -609,7 +617,15 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
 
   const plainList = bookings.map((b) => (b.toJSON ? b.toJSON() : b));
   let shareSnapByBookingId = new Map();
-  if (shareSvc?.attachSharePaymentSnapshotsBatchForTrainerBookings && plainList.length) {
+  const hasTrainerShareSessions = plainList.some(
+    (bookingItem) =>
+      String(bookingItem?.sessionType || bookingItem?.type || "").toLowerCase() === "trainer_share"
+  );
+  if (
+    hasTrainerShareSessions &&
+    shareSvc?.attachSharePaymentSnapshotsBatchForTrainerBookings &&
+    plainList.length
+  ) {
     try {
       shareSnapByBookingId = await shareSvc.attachSharePaymentSnapshotsBatchForTrainerBookings(plainList);
     } catch (_err) {
@@ -685,21 +701,17 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
   }
 
   booking.status = "in_progress";
-  await booking.save();
+  await booking.save({ fields: ["status", "updatedAt"] });
 
-  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus });
-
-  try {
-    await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
-  } catch (e) {
-    console.error("[trainerAttendanceService] activation counters (checkIn):", e.message);
-  }
-
-  try {
-    await syncCommissionForAttendance({ trainer, booking, normalizedStatus });
-  } catch (e) {
-    console.error("[trainerAttendanceService] commission sync error (checkIn):", e.message);
-  }
+  runAsyncSideEffect("emit booking status (checkIn)", () =>
+    emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus })
+  );
+  runAsyncSideEffect("activation counters (checkIn)", () =>
+    syncPackageActivationCountersByActivationId(booking.packageActivationId, null)
+  );
+  runAsyncSideEffect("commission sync (checkIn)", () =>
+    syncCommissionForAttendance({ trainer, booking, normalizedStatus })
+  );
 
   return { booking, attendance };
 };
@@ -759,46 +771,46 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   if (Booking.rawAttributes?.checkoutTime) {
     booking.checkoutTime = t;
   }
-  await booking.save();
-
-  let consumedActivation = null;
-  if (["present", "completed"].includes(normalizedStatus) && previousBookingStatus !== "completed") {
-    try {
-      consumedActivation = await consumePackageSessionForBooking(booking);
-    } catch (e) {
-      console.error("[trainerAttendanceService] consume package session error:", e.message);
-    }
-  }
-
-  await emitBookingStatusRealtime({
-    booking,
-    trainer,
-    attendanceStatus: normalizedStatus,
-    source: "trainer_checkout",
+  await booking.save({
+    fields: Booking.rawAttributes?.checkoutTime
+      ? ["status", "checkoutTime", "updatedAt"]
+      : ["status", "updatedAt"],
   });
 
-  try {
-    await notifyGymOwnerTrainerCompletedSession({
+  const shouldConsumeActivation =
+    ["present", "completed"].includes(normalizedStatus) &&
+    previousBookingStatus !== "completed";
+
+  runAsyncSideEffect("emit booking status (checkOut)", () =>
+    emitBookingStatusRealtime({
+      booking,
+      trainer,
+      attendanceStatus: normalizedStatus,
+      source: "trainer_checkout",
+    })
+  );
+  runAsyncSideEffect("notify owner (checkOut)", () =>
+    notifyGymOwnerTrainerCompletedSession({
       booking,
       trainer,
       previousBookingStatus,
-    });
-  } catch (e) {
-    console.error("[trainerAttendanceService] notify owner error:", e.message);
-  }
-
-  try {
+    })
+  );
+  runAsyncSideEffect("consume activation + counters + notify member (checkOut)", async () => {
+    let consumedActivation = null;
+    if (shouldConsumeActivation) {
+      try {
+        consumedActivation = await consumePackageSessionForBooking(booking);
+      } catch (e) {
+        console.error("[trainerAttendanceService] consume package session error:", e.message);
+      }
+    }
     await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
     await notifyMemberSessionCompletion(booking, consumedActivation);
-  } catch (e) {
-    console.error("[trainerAttendanceService] notify member error:", e.message);
-  }
-
-  try {
-    await syncCommissionForAttendance({ trainer, booking, normalizedStatus });
-  } catch (e) {
-    console.error("[trainerAttendanceService] commission sync error (checkOut):", e.message);
-  }
+  });
+  runAsyncSideEffect("commission sync (checkOut)", () =>
+    syncCommissionForAttendance({ trainer, booking, normalizedStatus })
+  );
 
   return { booking, attendance };
 };
@@ -834,29 +846,25 @@ const resetAttendance = async ({ userId, bookingId }) => {
   }
 
   booking.status = "confirmed";
-  await booking.save();
+  await booking.save({ fields: ["status", "updatedAt"] });
 
-  if (previousBookingStatus === "completed" && ["present", "completed"].includes(previousAttendanceStatus)) {
-    try {
-      await restorePackageSessionForBooking(booking);
-    } catch (e) {
-      console.error("[trainerAttendanceService] restore package session error:", e.message);
+  const shouldRestoreActivation =
+    previousBookingStatus === "completed" &&
+    ["present", "completed"].includes(previousAttendanceStatus);
+
+  runAsyncSideEffect("restore activation + emit + counters + commission (resetAttendance)", async () => {
+    if (shouldRestoreActivation) {
+      try {
+        await restorePackageSessionForBooking(booking);
+      } catch (e) {
+        console.error("[trainerAttendanceService] restore package session error:", e.message);
+      }
     }
-  }
 
-  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: "reset" });
-
-  try {
+    await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: "reset" });
     await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
-  } catch (e) {
-    console.error("[trainerAttendanceService] activation counters (resetAttendance):", e.message);
-  }
-
-  try {
     await syncCommissionForAttendance({ trainer, booking, normalizedStatus: "reset" });
-  } catch (e) {
-    console.error("[trainerAttendanceService] commission sync error (resetAttendance):", e.message);
-  }
+  });
 
   return { booking, attendance: null };
 };
