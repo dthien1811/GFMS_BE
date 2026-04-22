@@ -1,4 +1,44 @@
 import db from '../models/index';
+import realtimeService from './realtime.service';
+
+
+
+const emitGymLifecycleChanged = async (gym, action) => {
+  const ownerId = Number(gym?.ownerId || 0);
+  const gymId = Number(gym?.id || 0);
+  if (!gymId) return;
+
+  if (ownerId) {
+    realtimeService.emitUser(ownerId, 'gym:changed', {
+      gymId,
+      ownerId,
+      status: gym?.status || null,
+      action,
+    });
+
+    try {
+      await realtimeService.notifyUser(ownerId, {
+        title: action === 'restored' ? 'Gym đã được khôi phục hoạt động' : 'Gym bị tạm ngưng hoạt động',
+        message:
+          action === 'restored'
+            ? `Phòng gym ${gym?.name || `#${gymId}`} đã được admin khôi phục và có thể vận hành trở lại.`
+            : `Phòng gym ${gym?.name || `#${gymId}`} đang bị admin tạm ngưng. Vui lòng xử lý tại mục Phòng tập hoặc liên hệ quản trị viên.`,
+        notificationType: 'gym_status_changed',
+        relatedType: 'gym',
+        relatedId: gymId,
+      });
+    } catch (error) {
+      console.error('[gymService] notify owner status changed:', error?.message || error);
+    }
+  }
+
+  realtimeService.emitGroup('Administrators', 'gym:changed', {
+    gymId,
+    ownerId: ownerId || null,
+    status: gym?.status || null,
+    action,
+  });
+};
 
 const gymService = {
   /**
@@ -352,6 +392,8 @@ const gymService = {
         status: 'suspended'
       });
 
+      await emitGymLifecycleChanged(gym, 'suspended');
+
       // Lấy lại gym đã cập nhật
       const updatedGym = await db.Gym.findOne({
         where: { id },
@@ -406,6 +448,8 @@ const gymService = {
       await gym.update({
         status: 'active'
       });
+
+      await emitGymLifecycleChanged(gym, 'restored');
 
       // Lấy lại gym đã cập nhật
       const updatedGym = await db.Gym.findOne({

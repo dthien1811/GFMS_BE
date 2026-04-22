@@ -2,12 +2,40 @@ import db from "../../models";
 import { Op } from "sequelize";
 import realtimeService from "../realtime.service";
 
-const { Equipment, Gym, EquipmentCategory, EquipmentStock, EquipmentUnit, EquipmentUnitEvent, Maintenance, User, Supplier } = db;
+const { Equipment, Gym, EquipmentCategory, EquipmentStock, EquipmentUnit, EquipmentUnitEvent, Maintenance, User, Supplier, EquipmentImage } = db;
 
 const emitEquipmentChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
     realtimeService.emitUser(userId, "equipment:changed", payload);
   });
+};
+
+
+const buildEquipmentImageMap = async (equipmentIds = []) => {
+  const uniqueIds = [...new Set((equipmentIds || []).map(Number).filter((id) => Number.isInteger(id) && id > 0))];
+  if (!uniqueIds.length || !EquipmentImage) return new Map();
+
+  const imageRows = await EquipmentImage.findAll({
+    where: { equipmentId: { [Op.in]: uniqueIds } },
+    attributes: ["id", "equipmentId", "url", "isPrimary", "sortOrder", "altText"],
+    order: [["equipmentId", "ASC"], ["isPrimary", "DESC"], ["sortOrder", "ASC"], ["id", "ASC"]],
+    raw: true,
+  });
+
+  const imageMap = new Map();
+  imageRows.forEach((row) => {
+    const key = Number(row.equipmentId);
+    const bucket = imageMap.get(key) || [];
+    bucket.push({
+      id: row.id,
+      url: row.url,
+      isPrimary: Boolean(row.isPrimary),
+      sortOrder: Number(row.sortOrder || 0),
+      altText: row.altText || null,
+    });
+    imageMap.set(key, bucket);
+  });
+  return imageMap;
 };
 
 const parseMetadata = (raw) => {
@@ -365,8 +393,20 @@ const ownerEquipmentService = {
       ? aggregatedRows.slice(offset, offset + limit)
       : aggregatedRows;
 
+    const imageMap = await buildEquipmentImageMap(pagedData.map((row) => row.id));
+    const decoratedRows = pagedData.map((row) => {
+      const images = imageMap.get(Number(row.id)) || [];
+      const primaryImageUrl = images.find((item) => item.isPrimary)?.url || images[0]?.url || null;
+      return {
+        ...row,
+        images,
+        primaryImageUrl,
+        thumbnail: primaryImageUrl,
+      };
+    });
+
     return {
-      data: pagedData,
+      data: decoratedRows,
       meta: {
         page,
         limit,
@@ -575,9 +615,16 @@ const ownerEquipmentService = {
       });
     }
 
+    const imageMap = await buildEquipmentImageMap([Number(equipmentId)]);
+    const equipmentImages = imageMap.get(Number(equipmentId)) || [];
+    const primaryImageUrl = equipmentImages.find((item) => item.isPrimary)?.url || equipmentImages[0]?.url || null;
+
     // Return first stock's equipment with all stocks
     return {
       ...stocks[0].equipment.toJSON(),
+      images: equipmentImages,
+      primaryImageUrl,
+      thumbnail: primaryImageUrl,
       selectedGym: stocks[0].gym ? stocks[0].gym.toJSON() : null,
       stocks: stocks.map((s) => ({
         id: s.id,

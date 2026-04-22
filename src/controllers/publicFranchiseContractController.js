@@ -384,7 +384,7 @@ module.exports = {
 
       return res.status(200).json({
         ok: true,
-        message: "Signed successfully. Admin will countersign to complete.",
+        message: "Đã kí thành công. Cảm ơn bạn đã hoàn tất bước ký hợp đồng. Admin sẽ xem xét và phản hồi sớm nhất có thể.",
         data: {
           id: fr.id,
           contractStatus: fr.contractStatus,
