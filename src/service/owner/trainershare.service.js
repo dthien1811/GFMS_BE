@@ -11,6 +11,7 @@ const {
   Booking,
   PackageActivation,
   Package,
+  Request,
 } = db;
 const OWNER_ACTIVE_SHARE_STATUSES = ["approved", "pending"];
 /** Trạng thái đang giữ slot / mượn (dùng khi check trùng lịch) */
@@ -351,7 +352,9 @@ const assertReferencedMemberBelongsToGym = async ({ memberId, toGymId }) => {
 };
 
 const emitTrainerShareChanged = (userIds = [], payload = {}) => {
-  [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((targetUserId) => {
+  const ids = [...new Set((userIds || []).filter(Boolean).map(Number))];
+  console.log(`[trainer_share emit] targets=${JSON.stringify(ids)} action=${payload.action} status=${payload.status} shareId=${payload.shareId}`);
+  ids.forEach((targetUserId) => {
     realtimeService.emitUser(targetUserId, "trainer_share:changed", payload);
   });
 };
@@ -376,6 +379,7 @@ const createTrainerShare = async (userId, data) => {
     notes,
     borrowSpecialization,
     sessionPrice,
+    busySlotRequestId, // ID của yêu cầu báo bận gốc (BUSY_SLOT) - khi owner chuyển sang luồng mượn PT
   } = data;
 
   const borrowTrim =
@@ -604,6 +608,7 @@ const createTrainerShare = async (userId, data) => {
   }
 
   // Tạo yêu cầu chia sẻ huấn luyện viên
+  const busySlotRequestIdNum = busySlotRequestId ? Number(busySlotRequestId) : null;
   const trainerShare = await TrainerShare.create({
     trainerId: trainerIdNum,
     fromGymId: fromGymIdNum,
@@ -625,6 +630,7 @@ const createTrainerShare = async (userId, data) => {
     borrowSpecialization: borrowTrim || null,
     sessionPrice: parseSessionPrice(sessionPrice),
     sharePaymentStatus: "none",
+    busySlotRequestId: busySlotRequestIdNum,
   });
 
   let trainerName = "một huấn luyện viên phù hợp";
@@ -1320,6 +1326,18 @@ const acceptTrainerShareRequest = async (userId, requestId) => {
   request.acceptedAt = new Date();
   await request.save();
 
+  // Nếu yêu cầu mượn này đến từ yêu cầu báo bận (busySlotRequestId), cập nhật trạng thái yêu cầu báo bận gốc thành APPROVED
+  if (request.busySlotRequestId) {
+    const busySlotRequest = await Request.findByPk(request.busySlotRequestId);
+    if (busySlotRequest && String(busySlotRequest.requestType || "").toUpperCase() === "BUSY_SLOT") {
+      const previousStatus = busySlotRequest.status;
+      busySlotRequest.status = "APPROVED";
+      busySlotRequest.processedAt = new Date();
+      await busySlotRequest.save();
+      console.log(`[trainer_share] Đã cập nhật yêu cầu báo bận #${request.busySlotRequestId} từ '${previousStatus}' -> 'APPROVED' (do owner đồng ý cho mượn #${request.id})`);
+    }
+  }
+
   emitTrainerShareChanged([userId, request.requestedBy], {
     shareId: request.id,
     status: request.status,
@@ -1578,6 +1596,18 @@ const claimTrainerShareRequest = async (userId, requestId) => {
     request.acceptedAt = new Date();
     await request.save({ transaction });
 
+    // Nếu yêu cầu mượn này đến từ yêu cầu báo bận (busySlotRequestId), cập nhật trạng thái yêu cầu báo bận gốc thành APPROVED
+    if (request.busySlotRequestId) {
+      const busySlotRequest = await Request.findByPk(request.busySlotRequestId, { transaction, lock: transaction.LOCK.UPDATE });
+      if (busySlotRequest && String(busySlotRequest.requestType || "").toUpperCase() === "BUSY_SLOT") {
+        const previousStatus = busySlotRequest.status;
+        busySlotRequest.status = "APPROVED";
+        busySlotRequest.processedAt = new Date();
+        await busySlotRequest.save({ transaction });
+        console.log(`[trainer_share] Đã cập nhật yêu cầu báo bận #${request.busySlotRequestId} từ '${previousStatus}' -> 'APPROVED' (do PT #${trainer.id} nhận yêu cầu mượn #${request.id})`);
+      }
+    }
+
     // Tự động tạo/cập nhật lịch dạy cho huấn luyện viên từ khung giờ đã nhận
     for (const slot of scheduleDates) {
       // Nếu có hội viên tham chiếu, ưu tiên đổi huấn luyện viên cho booking hiện có đúng khung giờ
@@ -1709,7 +1739,7 @@ const claimTrainerShareRequest = async (userId, requestId) => {
       }
     }
 
-    emitTrainerShareChanged([request.requestedBy, request.fromGym?.ownerId], {
+    emitTrainerShareChanged([request.requestedBy, request.fromGym?.ownerId, request.toGym?.ownerId], {
       shareId: request.id,
       status: request.status,
       action: "claimed_by_trainer",
