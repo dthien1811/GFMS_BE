@@ -84,6 +84,45 @@ const ownerDashboardController = {
         },
       });
 
+      const todayBookingRows = await Booking.findAll({
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          bookingDate: todayStr,
+          status: { [Sequelize.Op.notIn]: ["cancelled"] },
+        },
+        include: [
+          {
+            model: Member,
+            attributes: ["id"],
+            include: [{ model: User, attributes: ["username"] }],
+            required: false,
+          },
+          {
+            model: db.Trainer,
+            attributes: ["id"],
+            include: [{ model: User, attributes: ["username"] }],
+            required: false,
+          },
+          {
+            model: Gym,
+            attributes: ["id", "name"],
+            required: false,
+          },
+        ],
+        order: [["startTime", "ASC"], ["createdAt", "DESC"]],
+        limit: 100,
+      });
+      const todayBookingsDetails = todayBookingRows.map((b) => ({
+        id: b.id,
+        bookingDate: b.bookingDate,
+        startTime: b.startTime,
+        endTime: b.endTime,
+        status: b.status,
+        memberName: b.Member?.User?.username || "—",
+        trainerName: b.Trainer?.User?.username || "—",
+        gymName: b.Gym?.name || "—",
+      }));
+
       // ── 2. Booking sắp tới (hôm nay + ngày mai, còn pending/confirmed) ──
       const upcomingBookingRows = await Booking.findAll({
         where: {
@@ -201,6 +240,29 @@ const ownerDashboardController = {
         },
       });
 
+      const activeMemberRows = await Member.findAll({
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          status: "active",
+        },
+        include: [
+          { model: User, attributes: ["username", "email", "phone"], required: false },
+          { model: Package, as: "currentPackage", attributes: ["name"], required: false },
+          { model: Gym, attributes: ["name"], required: false },
+        ],
+        order: [["updatedAt", "DESC"]],
+        limit: 120,
+      });
+      const activeMembers = activeMemberRows.map((m) => ({
+        id: m.id,
+        memberName: m.User?.username || "—",
+        email: m.User?.email || "",
+        phone: m.User?.phone || "",
+        packageName: m.currentPackage?.name || "—",
+        gymName: m.Gym?.name || "—",
+        sessionsRemaining: m.sessionsRemaining,
+      }));
+
       // ── 6. Hội viên mới hôm nay (count + list) ─────────────────────────
       const newMembersRows = await Member.findAll({
         where: {
@@ -229,7 +291,9 @@ const ownerDashboardController = {
         joinTime: m.createdAt,
       }));
 
-      // ── 7. Tổng doanh thu owner (chia sẻ từ PT = sessionValue - commissionAmount) ─────────
+      // ── 7. Doanh thu owner:
+      //    - Doanh thu từ buổi PT: sessionValue - commissionAmount
+      //    - + Doanh thu từ bán thẻ thành viên (membership_card_purchase đã thanh toán)
       const revenueResult = await Commission.findOne({
         attributes: [
           [
@@ -249,7 +313,17 @@ const ownerDashboardController = {
         },
         raw: true,
       });
-      const totalRevenue = parseFloat(revenueResult?.total || 0);
+      const trainerRevenueTotal = parseFloat(revenueResult?.total || 0);
+
+      const membershipRevenueTotal = Number(
+        (await Transaction.sum("amount", {
+          where: {
+            gymId: { [Sequelize.Op.in]: activeGymIds },
+            transactionType: "membership_card_purchase",
+            paymentStatus: "completed",
+          },
+        })) || 0
+      );
 
       const todayRevenueResult = await Commission.findOne({
         attributes: [
@@ -280,7 +354,23 @@ const ownerDashboardController = {
         },
         raw: true,
       });
-      const todayRevenue = parseFloat(todayRevenueResult?.total || 0);
+      const trainerRevenueToday = parseFloat(todayRevenueResult?.total || 0);
+
+      const membershipRevenueToday = Number(
+        (await Transaction.sum("amount", {
+          where: {
+            gymId: { [Sequelize.Op.in]: activeGymIds },
+            transactionType: "membership_card_purchase",
+            paymentStatus: "completed",
+            [Sequelize.Op.and]: [
+              Sequelize.where(
+                Sequelize.fn("DATE_FORMAT", Sequelize.col("transactionDate"), "%Y-%m-%d"),
+                todayKey
+              ),
+            ],
+          },
+        })) || 0
+      );
 
       const monthRevenueResult = await Commission.findOne({
         attributes: [
@@ -311,7 +401,150 @@ const ownerDashboardController = {
         },
         raw: true,
       });
-      const monthRevenue = parseFloat(monthRevenueResult?.total || 0);
+      const trainerRevenueMonth = parseFloat(monthRevenueResult?.total || 0);
+
+      const membershipRevenueMonth = Number(
+        (await Transaction.sum("amount", {
+          where: {
+            gymId: { [Sequelize.Op.in]: activeGymIds },
+            transactionType: "membership_card_purchase",
+            paymentStatus: "completed",
+            [Sequelize.Op.and]: [
+              Sequelize.where(
+                Sequelize.fn("DATE_FORMAT", Sequelize.col("transactionDate"), "%Y-%m"),
+                monthKey
+              ),
+            ],
+          },
+        })) || 0
+      );
+
+      const todayCommissionRevenueRows = await Commission.findAll({
+        attributes: ["id", "bookingId", "sessionDate", "createdAt", "sessionValue", "commissionAmount", "gymId"],
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          [Sequelize.Op.and]: [
+            Sequelize.where(
+              Sequelize.fn(
+                "DATE_FORMAT",
+                revenueDateExpr,
+                "%Y-%m-%d"
+              ),
+              todayKey
+            ),
+          ],
+        },
+        include: [{ model: Gym, attributes: ["id", "name"], required: false }],
+        order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
+        limit: 300,
+      });
+
+      const monthCommissionRevenueRows = await Commission.findAll({
+        attributes: ["id", "bookingId", "sessionDate", "createdAt", "sessionValue", "commissionAmount", "gymId"],
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          [Sequelize.Op.and]: [
+            Sequelize.where(
+              Sequelize.fn(
+                "DATE_FORMAT",
+                revenueDateExpr,
+                "%Y-%m"
+              ),
+              monthKey
+            ),
+          ],
+        },
+        include: [{ model: Gym, attributes: ["id", "name"], required: false }],
+        order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
+        limit: 500,
+      });
+
+      const todayMembershipRevenueRows = await Transaction.findAll({
+        attributes: ["id", "amount", "transactionCode", "transactionDate", "createdAt", "description", "gymId", "memberId"],
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          transactionType: "membership_card_purchase",
+          paymentStatus: "completed",
+          [Sequelize.Op.and]: [
+            Sequelize.where(
+              Sequelize.fn("DATE_FORMAT", Sequelize.col("transactionDate"), "%Y-%m-%d"),
+              todayKey
+            ),
+          ],
+        },
+        include: [
+          { model: Gym, attributes: ["id", "name"], required: false },
+          {
+            model: Member,
+            attributes: ["id"],
+            required: false,
+            include: [{ model: User, attributes: ["id", "username"], required: false }],
+          },
+        ],
+        order: [["transactionDate", "DESC"], ["createdAt", "DESC"]],
+        limit: 300,
+      });
+
+      const monthMembershipRevenueRows = await Transaction.findAll({
+        attributes: ["id", "amount", "transactionCode", "transactionDate", "createdAt", "description", "gymId", "memberId"],
+        where: {
+          gymId: { [Sequelize.Op.in]: activeGymIds },
+          transactionType: "membership_card_purchase",
+          paymentStatus: "completed",
+          [Sequelize.Op.and]: [
+            Sequelize.where(
+              Sequelize.fn("DATE_FORMAT", Sequelize.col("transactionDate"), "%Y-%m"),
+              monthKey
+            ),
+          ],
+        },
+        include: [
+          { model: Gym, attributes: ["id", "name"], required: false },
+          {
+            model: Member,
+            attributes: ["id"],
+            required: false,
+            include: [{ model: User, attributes: ["id", "username"], required: false }],
+          },
+        ],
+        order: [["transactionDate", "DESC"], ["createdAt", "DESC"]],
+        limit: 500,
+      });
+
+      const mapCommissionRevenue = (row) => ({
+        id: `commission-${row.id}`,
+        source: "pt_session",
+        sourceLabel: "Doanh thu buổi PT",
+        amount: Math.max(0, Number(row.sessionValue || 0) - Number(row.commissionAmount || 0)),
+        occurredAt: row.sessionDate || row.createdAt,
+        gymName: row.Gym?.name || "—",
+        reference: row.bookingId ? `Booking #${row.bookingId}` : `Commission #${row.id}`,
+      });
+
+      const mapMembershipRevenue = (row) => ({
+        id: `membership-${row.id}`,
+        source: "membership_card",
+        sourceLabel: "Giao dịch thẻ thành viên",
+        amount: Number(row.amount || 0),
+        occurredAt: row.transactionDate || row.createdAt,
+        gymName: row.Gym?.name || "—",
+        reference: row.transactionCode || row.description || `Transaction #${row.id}`,
+        memberName: row.Member?.User?.username || "—",
+      });
+
+      const todayRevenueDetails = [
+        ...todayCommissionRevenueRows.map(mapCommissionRevenue),
+        ...todayMembershipRevenueRows.map(mapMembershipRevenue),
+      ].sort((a, b) => new Date(b.occurredAt || 0) - new Date(a.occurredAt || 0));
+
+      const monthRevenueDetails = [
+        ...monthCommissionRevenueRows.map(mapCommissionRevenue),
+        ...monthMembershipRevenueRows.map(mapMembershipRevenue),
+      ].sort((a, b) => new Date(b.occurredAt || 0) - new Date(a.occurredAt || 0));
+
+      const totalRevenue = trainerRevenueTotal + membershipRevenueTotal;
+      const todayRevenue = trainerRevenueToday + membershipRevenueToday;
+      const monthRevenue = trainerRevenueMonth + membershipRevenueMonth;
 
       // ── 8. Gói bán chạy nhất (mua/gia hạn, giảm dần theo lượt bán) ─────────
       const bestSellingRows = await Transaction.findAll({
@@ -357,12 +590,28 @@ const ownerDashboardController = {
         newMembersCount,
         newMembersToday,
         upcomingBookings,
+        todayBookingsDetails,
         expiringMembers,
+        activeMembers,
         lowStock,
         bestSellingPackages,
         totalRevenue,
         todayRevenue,
         monthRevenue,
+        todayRevenueDetails,
+        monthRevenueDetails,
+        revenueBreakdown: {
+          trainerShare: {
+            total: trainerRevenueTotal,
+            today: trainerRevenueToday,
+            month: trainerRevenueMonth,
+          },
+          membershipCard: {
+            total: membershipRevenueTotal,
+            today: membershipRevenueToday,
+            month: membershipRevenueMonth,
+          },
+        },
       });
     } catch (e) {
       console.error("[ownerDashboard] getSummary error:", e);
@@ -482,6 +731,38 @@ const ownerDashboardController = {
         rows.map((r) => [String(r.bucket), parseFloat(r.total || 0)])
       );
 
+      // Doanh thu thẻ thành viên theo bucket cùng kỳ để cộng vào chart doanh thu owner
+      let txBucketSql = "DATE_FORMAT(`transactionDate`, '%Y-%m-%d')";
+      if (period === "month") txBucketSql = "DATE_FORMAT(`transactionDate`, '%Y-%m')";
+      if (period === "year") txBucketSql = "DATE_FORMAT(`transactionDate`, '%Y')";
+
+      const membershipRows = await Transaction.findAll({
+        attributes: [
+          [Sequelize.literal(txBucketSql), "bucket"],
+          [
+            Sequelize.fn(
+              "COALESCE",
+              Sequelize.fn("SUM", Sequelize.col("amount")),
+              0
+            ),
+            "total",
+          ],
+        ],
+        where: {
+          gymId: { [Op.in]: activeGymIds },
+          transactionType: "membership_card_purchase",
+          paymentStatus: "completed",
+          transactionDate: { [Op.gte]: startDate },
+        },
+        group: [Sequelize.literal(txBucketSql)],
+        order: [[Sequelize.literal(txBucketSql), "ASC"]],
+        raw: true,
+      });
+
+      const mapMembershipByBucket = new Map(
+        membershipRows.map((r) => [String(r.bucket), parseFloat(r.total || 0)])
+      );
+
       const series = [];
       if (period === "day") {
         for (let i = 29; i >= 0; i -= 1) {
@@ -491,7 +772,7 @@ const ownerDashboardController = {
           series.push({
             bucket,
             label: toLabelDay(d),
-            total: Number(mapTotalByBucket.get(bucket) || 0),
+            total: Number(mapTotalByBucket.get(bucket) || 0) + Number(mapMembershipByBucket.get(bucket) || 0),
           });
         }
       } else if (period === "month") {
@@ -501,7 +782,7 @@ const ownerDashboardController = {
           series.push({
             bucket,
             label: toLabelMonth(d),
-            total: Number(mapTotalByBucket.get(bucket) || 0),
+            total: Number(mapTotalByBucket.get(bucket) || 0) + Number(mapMembershipByBucket.get(bucket) || 0),
           });
         }
       } else {
@@ -511,7 +792,7 @@ const ownerDashboardController = {
           series.push({
             bucket,
             label: bucket,
-            total: Number(mapTotalByBucket.get(bucket) || 0),
+            total: Number(mapTotalByBucket.get(bucket) || 0) + Number(mapMembershipByBucket.get(bucket) || 0),
           });
         }
       }

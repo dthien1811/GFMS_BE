@@ -17,6 +17,19 @@ const addMonths = (dateInput, months) => {
   return out;
 };
 
+const calcRemainingMonths = (endDateInput, nowInput = new Date()) => {
+  const end = new Date(endDateInput);
+  const now = new Date(nowInput);
+  if (Number.isNaN(end.getTime()) || Number.isNaN(now.getTime())) return 0;
+  if (end.getTime() < now.getTime()) return 0;
+
+  let months =
+    (end.getFullYear() - now.getFullYear()) * 12 +
+    (end.getMonth() - now.getMonth());
+  if (end.getDate() >= now.getDate()) months += 1;
+  return Math.max(0, months);
+};
+
 const isMissingMembershipCardTableError = (error) =>
   String(error?.original?.code || error?.parent?.code || error?.code || "") === "ER_NO_SUCH_TABLE" &&
   String(error?.original?.sqlMessage || error?.parent?.sqlMessage || error?.message || "")
@@ -46,14 +59,17 @@ const getActiveMembershipCard = async (memberId, transaction = null) => {
 const getMembershipCardSummary = async (memberId) => {
   const active = await getActiveMembershipCard(memberId);
   if (!active) return null;
+  const remainingMonths = calcRemainingMonths(active.endDate);
   return {
     id: active.id,
     planCode: active.planCode,
     planMonths: active.planMonths,
+    remainingMonths,
     price: Number(active.price || 0),
     startDate: active.startDate,
     endDate: active.endDate,
     status: active.status,
+    gymId: Number(active.gymId || 0),
     purchaseSource: active.purchaseSource,
   };
 };
