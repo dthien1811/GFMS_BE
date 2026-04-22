@@ -42,6 +42,7 @@ module.exports = (sequelize, DataTypes) => {
       },
 
       scheduledDate: { type: DataTypes.DATE, allowNull: true },
+      targetCompletionDate: { type: DataTypes.DATE, allowNull: true },
       completionDate: { type: DataTypes.DATE, allowNull: true },
 
       notes: { type: DataTypes.TEXT, allowNull: true },
