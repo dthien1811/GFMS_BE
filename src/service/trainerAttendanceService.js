@@ -647,7 +647,10 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
       commissionStatus: commissionByBookingId.get(plainBooking.id) || null,
     };
     const sp = shareSnapByBookingId.get(plainBooking.id);
-    return sp ? { ...base, sharePayment: sp } : base;
+    if (sp) {
+      return { ...base, sharePayment: sp, sharePaymentStatus: sp.sharePaymentStatus };
+    }
+    return base;
   });
 
   return { trainer, bookingDate, rows };

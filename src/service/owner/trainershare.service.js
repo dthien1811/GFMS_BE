@@ -2308,40 +2308,16 @@ const confirmBorrowerSharePayment = async (userId, shareId, body = {}) => {
     trainerShare.paymentProofImageUrls = uniqueUrls;
   }
 
-  trainerShare.sharePaymentStatus = "paid";
+  // Set status = awaiting_transfer để PT có cơ hội xác nhận đã nhận hoặc khiếu nại
+  trainerShare.sharePaymentStatus = "awaiting_transfer";
   trainerShare.paymentMarkedPaidAt = new Date();
   await trainerShare.save();
-
-  const trainerRow = await Trainer.findByPk(trainerShare.trainerId, { attributes: ["userId"] });
-  const trainerUserId = trainerRow?.userId;
-
-  emitTrainerShareChanged(
-    [userId, trainerShare.fromGym?.ownerId, trainerUserId].filter(Boolean),
-    {
-      shareId: trainerShare.id,
-      status: trainerShare.status,
-      action: "payment_confirmed",
-      trainerId: trainerShare.trainerId,
-      fromGymId: trainerShare.fromGymId,
-      toGymId: trainerShare.toGymId,
-    },
-  );
 
   const lenderOwnerId = trainerShare.fromGym?.ownerId;
   if (lenderOwnerId && Number(lenderOwnerId) !== Number(userId)) {
     await realtimeService.notifyUser(lenderOwnerId, {
       title: "Đối tác đã xác nhận chuyển khoản mượn PT",
-      message: `${trainerShare.toGym?.name || "Đối tác"} đã xác nhận đã chuyển tiền buổi mượn PT (#${trainerShare.id}).`,
-      notificationType: "trainer_share",
-      relatedType: "trainerShare",
-      relatedId: trainerShare.id,
-    });
-  }
-
-  if (trainerUserId) {
-    await realtimeService.notifyUser(trainerUserId, {
-      title: "Đã xác nhận thanh toán mượn PT",
-      message: `${trainerShare.toGym?.name || "Chi nhánh mượn"} đã xác nhận đã chuyển khoản (phiếu #${trainerShare.id}).`,
+      message: `${trainerShare.toGym?.name || "Đối tác"} đã xác nhận đã chuyển tiền buổi mượn PT (#${trainerShare.id}). Vui lòng kiểm tra và xác nhận đã nhận tiền hoặc khiếu nại nếu chưa nhận được.`,
       notificationType: "trainer_share",
       relatedType: "trainerShare",
       relatedId: trainerShare.id,
