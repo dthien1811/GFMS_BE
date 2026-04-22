@@ -71,6 +71,17 @@ const createOrExtendMembershipCard = async ({
   purchaseSource = "standalone",
   transaction,
 }) => {
+  // Idempotent guard: nếu giao dịch này đã được áp vào thẻ trước đó
+  // (thường do webhook + confirm cùng chạy), trả luôn thẻ hiện có.
+  if (transactionId) {
+    const existedByTransaction = await db.MembershipCard.findOne({
+      where: { memberId, gymId, transactionId },
+      order: [["id", "DESC"]],
+      ...(transaction ? { transaction, lock: transaction.LOCK.UPDATE } : {}),
+    });
+    if (existedByTransaction) return existedByTransaction;
+  }
+
   const active = await getActiveMembershipCard(memberId, transaction);
   const now = new Date();
   const start = active ? new Date(active.endDate) : now;
@@ -250,6 +261,13 @@ const purchaseMembershipCard = async (userId, payload = {}) => {
       relatedType: "membershipcard",
       relatedId: card.id,
     });
+    await notifyOwnerAboutMembershipCardPurchase({
+      gymId,
+      memberId: member.id,
+      plan,
+      card,
+      transactionId: tx.id,
+    });
     return { transaction: tx, card };
   } catch (e) {
     await t.rollback();
@@ -310,6 +328,36 @@ const syncExpiredCardsAndNotify = async () => {
   return due.length;
 };
 
+const notifyOwnerAboutMembershipCardPurchase = async ({
+  gymId,
+  memberId,
+  plan,
+  card,
+  transactionId = null,
+}) => {
+  const gym = await db.Gym.findByPk(gymId, { attributes: ["id", "ownerId", "name"] });
+  if (!gym?.ownerId) return null;
+
+  const member = await db.Member.findByPk(memberId, {
+    attributes: ["id", "userId"],
+    include: [{ model: db.User, attributes: ["id", "username", "email"] }],
+  });
+  const memberName =
+    member?.User?.username ||
+    (member?.User?.email ? String(member.User.email).split("@")[0] : "") ||
+    `Member #${memberId}`;
+
+  return realtimeService.notifyUser(gym.ownerId, {
+    title: "Có hội viên mua thẻ thành viên",
+    message: `${memberName} vừa mua ${plan?.label || "thẻ thành viên"} tại ${gym.name || "gym"} (hạn đến ${new Date(
+      card?.endDate || Date.now()
+    ).toLocaleDateString("vi-VN")}).`,
+    notificationType: "membership_card_purchase",
+    relatedType: "transaction",
+    relatedId: transactionId || card?.id || null,
+  });
+};
+
 export default {
   CARD_PLANS,
   listPlans,
@@ -321,4 +369,5 @@ export default {
   createOrExtendMembershipCard,
   purchaseMembershipCard,
   syncExpiredCardsAndNotify,
+  notifyOwnerAboutMembershipCardPurchase,
 };
