@@ -308,6 +308,13 @@ const payosController = {
           relatedType: "membershipcard",
           relatedId: card.id,
         });
+        await membershipCardService.notifyOwnerAboutMembershipCardPurchase({
+          gymId: tx.gymId,
+          memberId: tx.memberId,
+          plan,
+          card,
+          transactionId: tx.id,
+        });
         return res.status(200).json({ message: "OK", membershipCardId: card.id });
       }
 
@@ -500,6 +507,13 @@ const payosController = {
           notificationType: "membership_card",
           relatedType: "membershipcard",
           relatedId: card.id,
+        });
+        await membershipCardService.notifyOwnerAboutMembershipCardPurchase({
+          gymId: tx.gymId,
+          memberId: tx.memberId,
+          plan,
+          card,
+          transactionId: tx.id,
         });
         return res.status(200).json({ message: "OK", membershipCardId: card.id });
       }
