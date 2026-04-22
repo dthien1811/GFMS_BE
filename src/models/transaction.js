@@ -34,6 +34,7 @@ module.exports = (sequelize, DataTypes) => {
             'commission',
             'withdrawal',
             'equipment_purchase',
+            'membership_card_purchase',
             'maintenance', // ✅ ADD để complete maintenance không lỗi
             'other'
           ]]

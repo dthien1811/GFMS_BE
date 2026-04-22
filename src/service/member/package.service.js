@@ -2,6 +2,7 @@
 import db from "../../models";
 import payosService from "../payment/payos.service";
 import realtimeService from "../realtime.service";
+import membershipCardService from "./membershipCard.service";
 
 function genCode(prefix = "TX") {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -108,6 +109,15 @@ const memberPackageService = {
         transaction: t,
       });
 
+      const membershipDecision = await membershipCardService.resolvePlanForPackagePurchase({
+        memberId: member.id,
+        gymId: pkg.gymId,
+        payload,
+        transaction: t,
+      });
+      const membershipPlan = membershipDecision.plan;
+      const totalAmount = Number(pkg.price || 0) + Number(membershipDecision.additionalAmount || 0);
+
       // 3) VALIDATE PAYMENT METHOD
       const paymentMethod = String(payload?.paymentMethod || "cash").toLowerCase();
       if (!ALLOWED_PAYMENT.has(paymentMethod)) {
@@ -135,20 +145,34 @@ const memberPackageService = {
             trainerId,
             gymId: pkg.gymId,
             packageId: pkg.id,
-            amount: pkg.price,
+            amount: totalAmount,
             transactionType: "package_purchase",
             paymentMethod,
             paymentStatus: "pending",
-            description: `Thanh toán gói (PayOS): ${pkg.name}`,
+            description: membershipDecision.requireCardPurchase
+              ? `Thanh toán gói + thẻ thành viên (PayOS): ${pkg.name}`
+              : `Thanh toán gói (đã có thẻ thành viên còn hạn): ${pkg.name}`,
             processedBy: userId,
+            metadata: membershipDecision.requireCardPurchase
+              ? {
+                  membershipCard: {
+                    planId: membershipPlan.id,
+                    planCode: membershipPlan.code,
+                    planMonths: membershipPlan.months,
+                    planPrice: membershipPlan.price,
+                  },
+                }
+              : {},
           },
           { transaction: t }
         );
 
         const payosResp = await payosService.createPackagePaymentLink({
           orderCode: tx.id,
-          amount: pkg.price,
-          description: `Thanh toán gói ${pkg.name} cho member #${member.id}`,
+          amount: totalAmount,
+          description: membershipDecision.requireCardPurchase
+            ? `Thanh toán gói ${pkg.name} + thẻ thành viên`
+            : `Thanh toán gói ${pkg.name} (đã có thẻ thành viên còn hạn)`,
         });
 
         await tx.update(
@@ -188,13 +212,25 @@ const memberPackageService = {
           trainerId,
           gymId: pkg.gymId,
           packageId: pkg.id,
-          amount: pkg.price,
+          amount: totalAmount,
           transactionType: "package_purchase",
           paymentMethod,
           paymentStatus: "completed",
-          description: `Mua gói: ${pkg.name}`,
+          description: membershipDecision.requireCardPurchase
+            ? `Mua gói + thẻ thành viên: ${pkg.name}`
+            : `Mua gói (đã có thẻ thành viên còn hạn): ${pkg.name}`,
           transactionDate: new Date(),
           processedBy: userId,
+          metadata: membershipDecision.requireCardPurchase
+            ? {
+                membershipCard: {
+                  planId: membershipPlan.id,
+                  planCode: membershipPlan.code,
+                  planMonths: membershipPlan.months,
+                  planPrice: membershipPlan.price,
+                },
+              }
+            : {},
         },
         { transaction: t }
       );
@@ -222,6 +258,16 @@ const memberPackageService = {
       );
 
       await tx.update({ packageActivationId: activation.id }, { transaction: t });
+      if (membershipDecision.requireCardPurchase) {
+        await membershipCardService.createOrExtendMembershipCard({
+          memberId: member.id,
+          gymId: pkg.gymId,
+          plan: membershipPlan,
+          transactionId: tx.id,
+          purchaseSource: "package_bundle",
+          transaction: t,
+        });
+      }
 
       await t.commit();
 

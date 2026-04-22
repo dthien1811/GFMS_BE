@@ -2,6 +2,7 @@ import db from "../../models";
 import { Op } from "sequelize";
 import payosService from "../payment/payos.service";
 import realtimeService from "../realtime.service";
+import membershipCardService from "./membershipCard.service";
 
 const SLOT_MINUTES = 60;
 const MIN_BOOKING_LEAD_MINUTES = 120;
@@ -917,6 +918,19 @@ const bookingService = {
     try {
       const plan = await buildValidatedFixedPlan(userId, payload, t);
       const isPayOS = paymentMethod === "payos";
+      const member = await ensureMemberForGym({
+        userId,
+        gymId: plan.package.gymId,
+        transaction: t,
+      });
+      const membershipDecision = await membershipCardService.resolvePlanForPackagePurchase({
+        memberId: member.id,
+        gymId: plan.package.gymId,
+        payload,
+        transaction: t,
+      });
+      const membershipPlan = membershipDecision.plan;
+      const totalAmount = Number(plan.package.price || 0) + Number(membershipDecision.additionalAmount || 0);
 
       const selectedSlot = plan.slots.find((s) => `${s.start}:00` === selectedStartTime);
       if (!selectedSlot) {
@@ -933,12 +947,6 @@ const bookingService = {
         throw e;
       }
 
-      const member = await ensureMemberForGym({
-        userId,
-        gymId: plan.package.gymId,
-        transaction: t,
-      });
-
       const tx = await db.Transaction.create(
         {
           transactionCode: genCode("PKG"),
@@ -946,15 +954,29 @@ const bookingService = {
           trainerId: plan.trainer.id,
           gymId: plan.package.gymId,
           packageId: plan.package.id,
-          amount: plan.package.price,
+          amount: totalAmount,
           transactionType: "package_purchase",
           paymentMethod,
           paymentStatus: isPayOS ? "pending" : "completed",
           description: isPayOS
-            ? `Thanh toán gói + lịch cố định (PayOS): ${plan.package.name}`
-            : `Mua gói + đặt lịch cố định: ${plan.package.name}`,
+            ? membershipDecision.requireCardPurchase
+              ? `Thanh toán gói + thẻ thành viên + lịch cố định (PayOS): ${plan.package.name}`
+              : `Thanh toán gói + lịch cố định (đã có thẻ còn hạn): ${plan.package.name}`
+            : membershipDecision.requireCardPurchase
+              ? `Mua gói + thẻ thành viên + đặt lịch cố định: ${plan.package.name}`
+              : `Mua gói + lịch cố định (đã có thẻ còn hạn): ${plan.package.name}`,
           ...(isPayOS ? {} : { transactionDate: new Date() }),
           processedBy: userId,
+          metadata: membershipDecision.requireCardPurchase
+            ? {
+                membershipCard: {
+                  planId: membershipPlan.id,
+                  planCode: membershipPlan.code,
+                  planMonths: membershipPlan.months,
+                  planPrice: membershipPlan.price,
+                },
+              }
+            : {},
         },
         { transaction: t }
       );
@@ -964,8 +986,10 @@ const bookingService = {
         const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
         const payosResp = await payosService.createPackagePaymentLink({
           orderCode: tx.id,
-          amount: plan.package.price,
-          description: `Thanh toán gói ${plan.package.name}`,
+          amount: totalAmount,
+          description: membershipDecision.requireCardPurchase
+            ? `Thanh toán gói ${plan.package.name} + thẻ thành viên`
+            : `Thanh toán gói ${plan.package.name} (đã có thẻ còn hạn)`,
           returnUrl: `${frontendBase}/member/payment-success?payos=success&orderCode=${encodeURIComponent(tx.id)}`,
           cancelUrl: `${frontendBase}/member/payment-success?payos=cancel&orderCode=${encodeURIComponent(tx.id)}`,
         });
@@ -1011,6 +1035,16 @@ const bookingService = {
       );
 
       await tx.update({ packageActivationId: activation.id }, { transaction: t });
+      if (membershipDecision.requireCardPurchase) {
+        await membershipCardService.createOrExtendMembershipCard({
+          memberId: member.id,
+          gymId: plan.package.gymId,
+          plan: membershipPlan,
+          transactionId: tx.id,
+          purchaseSource: "package_bundle",
+          transaction: t,
+        });
+      }
 
       const startTimeFixed = `${selectedSlot.start}:00`;
       const endTime = `${selectedSlot.end}:00`;

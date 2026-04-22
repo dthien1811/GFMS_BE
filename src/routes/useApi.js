@@ -3,6 +3,7 @@ import useApiController from "../controllers/useApiController";
 
 import ownerDashboardRoute from "./owner/dashboard.route";
 import ownerPackageRoute from "./owner/package.route";
+import ownerMembershipCardPlanRoute from "./owner/membershipCardPlan.route";
 import ownerPolicyRoute from "./owner/policy.route";
 import ownerGymRoute from "./owner/gym.route";
 import ownerMaintenanceRoute from "./owner/maintenance.route";
@@ -26,6 +27,7 @@ import memberPackageRoute from "./member/package.route";
 import memberMyPackagesRoute from "./member/myPackages.route";
 import memberMetricRoute from "./member/metric.route";
 import memberProfileRoute from "./member/profile.route";
+import memberMembershipCardRoute from "./member/membershipCard.route";
 
 import memberMessageRoute from "./member/message.route";
 import memberNotificationRoute from "./member/notification.route";
@@ -49,6 +51,7 @@ const useApi = (app) => {
   // ✅ mount business routes FIRST (owner/member tự check role)
   router.use("/owner/dashboard", ownerDashboardRoute);
   router.use("/owner/packages", ownerPackageRoute);
+  router.use("/owner/membership-card-plans", ownerMembershipCardPlanRoute);
   router.use("/owner/policies", ownerPolicyRoute);
   router.use("/owner/gyms", ownerGymRoute);
   router.use("/owner/maintenances", ownerMaintenanceRoute);
@@ -72,6 +75,7 @@ const useApi = (app) => {
   router.use("/member/my-packages", memberMyPackagesRoute);
   router.use("/member/metrics", memberMetricRoute);
   router.use("/member/profile", memberProfileRoute);
+  router.use("/member/membership-cards", memberMembershipCardRoute);
   router.use("/member/reviews", memberReviewRoute);
 
   router.use("/member/messages", memberMessageRoute);
