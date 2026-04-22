@@ -33,7 +33,7 @@ const ownerTrainerShareController = {
       const result = await ownerTrainerShareService.getMyTrainerShares(userId, query);
 
       return res.status(200).json({
-        data: result.trainerShares,
+        data: result.data,
         pagination: result.pagination,
       });
     } catch (e) {

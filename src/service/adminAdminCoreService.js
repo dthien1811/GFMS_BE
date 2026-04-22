@@ -385,7 +385,7 @@ async getTechnicians(req) {
     const actorId = getActorId(req);
     ensure(actorId, "Missing actor (req.user)", 401);
 
-    const { scheduledDate, estimatedCost, notes } = req.body || {};
+    const { scheduledDate, targetCompletionDate, estimatedCost, notes } = req.body || {};
     ensure(scheduledDate, "scheduledDate is required");
 
     return sequelize.transaction(async (t) => {
@@ -399,6 +399,7 @@ async getTechnicians(req) {
         {
           status: "approve", // ✅ quan trọng: đổi status sang approve
           scheduledDate: new Date(scheduledDate),
+          targetCompletionDate: targetCompletionDate ? new Date(targetCompletionDate) : (m.targetCompletionDate || null),
           estimatedCost: estimatedCost ?? m.estimatedCost,
           notes: notes ?? m.notes,
         },
@@ -421,7 +422,7 @@ async getTechnicians(req) {
         title: "Yêu cầu bảo trì đã được duyệt",
         message: `Admin đã duyệt yêu cầu bảo trì #${m.id}. Lịch dự kiến: ${new Date(
           scheduledDate
-        ).toLocaleString()}`,
+        ).toLocaleString()}${m.targetCompletionDate ? ` · Hạn hoàn tất dự kiến: ${new Date(m.targetCompletionDate).toLocaleString()}` : ""}`,
         notificationType: "MAINTENANCE",
         relatedType: "maintenance",
         relatedId: m.id,
@@ -436,6 +437,7 @@ async getTechnicians(req) {
         notes: notes ?? m.issueDescription ?? null,
         metadata: {
           scheduledDate: m.scheduledDate,
+          targetCompletionDate: m.targetCompletionDate || null,
           estimatedCost: m.estimatedCost,
         },
       });
@@ -446,7 +448,7 @@ async getTechnicians(req) {
         receiverId: m.requestedBy,
         content: `Yêu cầu bảo trì #${m.id} đã được duyệt. Lịch: ${new Date(
           scheduledDate
-        ).toLocaleString()}.`,
+        ).toLocaleString()}${m.targetCompletionDate ? ` · Hạn hoàn tất dự kiến: ${new Date(m.targetCompletionDate).toLocaleString()}` : ""}.`,
       });
 
       emitMaintenanceChanged([m.requestedBy], {
@@ -1663,20 +1665,19 @@ async rejectFranchiseRequest(req) {
       franchisePending,
       maintenancePending,
       comboPending,
-      latestComboRequests,
+      activeGyms,
+      sellingCombos,
       comboTransactions,
     ] = await Promise.all([
       FranchiseRequest.count({ where: { status: "pending" } }).catch(() => 0),
       Maintenance.count({ where: { ...(gymId ? { gymId } : {}), status: "pending" } }).catch(() => 0),
       PurchaseRequest.count({ where: { ...comboRequestWhere, status: "submitted" } }).catch(() => 0),
-      PurchaseRequest.findAll({
-        where: comboRequestWhere,
-        order: [["createdAt", "DESC"], ["id", "DESC"]],
+      Gym.count({ where: { status: "active" } }).catch(() => 0),
+      EquipmentCombo.findAll({
+        where: { status: "active", isSelling: true },
+        attributes: ["id", "name", "code", "description", "price", "thumbnail", "updatedAt", "createdAt"],
+        order: [["updatedAt", "DESC"], ["id", "DESC"]],
         limit: 6,
-        include: [
-          { model: Gym, as: "gym", attributes: ["id", "name"], required: false },
-          { model: EquipmentCombo, as: "combo", attributes: ["id", "name", "code", "price", "coverImage"], required: false },
-        ],
       }).catch(() => []),
       Transaction.findAll({
         where: completedComboTxWhere,
@@ -1705,16 +1706,16 @@ async rejectFranchiseRequest(req) {
       revenue30dSeries.push({ date: key, total: Number(dayMap.get(key) || 0) });
     }
 
-    const latestComboRequestRows = (latestComboRequests || []).map((row) => {
+    const sellingComboRows = (sellingCombos || []).map((row) => {
       const json = row.toJSON ? row.toJSON() : row;
       return {
         id: json.id,
+        name: json.name,
         code: json.code,
-        status: json.status,
-        totalAmount: Number(json.totalAmount || json.combo?.price || 0),
-        createdAt: json.createdAt,
-        gym: json.gym ? { id: json.gym.id, name: json.gym.name } : null,
-        combo: json.combo ? { id: json.combo.id, name: json.combo.name, code: json.combo.code, price: Number(json.combo.price || 0), coverImage: json.combo.coverImage || null } : null,
+        description: json.description || "",
+        price: Number(json.price || 0),
+        thumbnail: json.thumbnail || null,
+        updatedAt: json.updatedAt || json.createdAt || null,
       };
     });
 
@@ -1752,9 +1753,10 @@ async rejectFranchiseRequest(req) {
         franchisePending,
         maintenancePending,
         comboPending,
+        activeGyms,
         comboRevenue30d,
       },
-      latestComboRequests: latestComboRequestRows,
+      sellingCombos: sellingComboRows,
       revenue30dSeries,
       comboSalesTransactions,
     };
