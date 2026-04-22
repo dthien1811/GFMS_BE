@@ -270,123 +270,144 @@ const memberMyPackageService = {
   /* ===== GET LIST ===== */
   async getMyPackages(userId) {
     try {
-    const members = await getMembersByUserId(userId);
-    if (!members || members.length === 0) {
-      const err = new Error("Không tìm thấy thành viên");
-      err.statusCode = 404;
-      throw err;
-    }
+      const members = await getMembersByUserId(userId);
+      if (!members || members.length === 0) {
+        const err = new Error("Không tìm thấy thành viên");
+        err.statusCode = 404;
+        throw err;
+      }
 
-    const memberIds = members.map((m) => m.id);
+      const memberIds = members.map((m) => m.id);
 
-    const activations = await db.PackageActivation.findAll({
-      where: { memberId: memberIds },
-      include: [
-        {
-          model: db.Package,
-          attributes: ["id", "name", "type", "sessions", "price", "durationDays", "gymId", "trainerId"],
-        },
-        {
-          model: db.Transaction,
-          attributes: ["id", "transactionCode", "amount", "paymentMethod", "paymentStatus", "transactionDate", "description", "gymId", "trainerId", "createdAt"],
-        },
-        {
-          model: db.Member,
-          attributes: ["id", "gymId"],
-          include: [{ model: db.Gym, attributes: ["id", "name"] }],
-        },
-      ],
-      order: [["createdAt", "DESC"]],
-    });
+      const activations = await db.PackageActivation.findAll({
+        where: { memberId: memberIds },
+        include: [
+          {
+            model: db.Package,
+            attributes: ["id", "name", "type", "sessions", "price", "durationDays", "gymId", "trainerId"],
+          },
+          {
+            model: db.Transaction,
+            attributes: ["id", "transactionCode", "amount", "paymentMethod", "paymentStatus", "transactionDate", "description", "gymId", "trainerId", "createdAt"],
+          },
+          {
+            model: db.Member,
+            attributes: ["id", "gymId"],
+            include: [{ model: db.Gym, attributes: ["id", "name"] }],
+          },
+        ],
+        order: [["createdAt", "DESC"]],
+      });
 
-    // ✅ sync counter cho từng activation (có thể hơi nhiều query, nhưng fix dứt điểm)
-    const activationList = [];
-    for (const a of activations) {
-      try {
-        const synced = await syncActivationCounters(a).catch(() => ({
-          total: Number(a.totalSessions ?? a.Package?.sessions ?? 0) || 0,
-          done: Number(a.sessionsUsed || 0) || 0,
-          remaining: Number(a.sessionsRemaining ?? Math.max(0, (Number(a.totalSessions ?? a.Package?.sessions ?? 0) || 0) - (Number(a.sessionsUsed || 0) || 0))) || 0,
-        }));
-        const total = synced.total;
-        const done = synced.done;
-        const remaining = synced.remaining;
-        const safeActivation = {
+      const activationIds = activations.map((a) => Number(a.id)).filter(Boolean);
+      const doneCountMap = new Map();
+      const reviewKeySet = new Set();
+
+      if (activationIds.length > 0) {
+        const doneRows = await db.Booking.findAll({
+          where: {
+            packageActivationId: activationIds,
+            status: { [Op.in]: ["completed", "in_progress"] },
+          },
+          attributes: [
+            "packageActivationId",
+            [db.Sequelize.fn("COUNT", db.Sequelize.col("id")), "doneCount"],
+          ],
+          group: ["packageActivationId"],
+          raw: true,
+        });
+        doneRows.forEach((r) => {
+          doneCountMap.set(Number(r.packageActivationId), Number(r.doneCount || 0));
+        });
+
+        const reviewRows = await db.Review.findAll({
+          where: {
+            reviewType: "package",
+            memberId: memberIds,
+            packageActivationId: activationIds,
+          },
+          attributes: ["memberId", "packageActivationId"],
+          raw: true,
+        });
+        reviewRows.forEach((r) => {
+          reviewKeySet.add(`${Number(r.memberId)}-${Number(r.packageActivationId)}`);
+        });
+      }
+
+      const activationList = activations.map((a) => {
+        const total = Number(a.totalSessions ?? a.Package?.sessions ?? 0) || 0;
+        const done = doneCountMap.get(Number(a.id)) ?? (Number(a.sessionsUsed || 0) || 0);
+        const remaining = Math.max(0, total - done);
+        const normalizedStatus = remaining <= 0 && total > 0 ? "completed" : a.status;
+        const isCompleted = String(normalizedStatus || "").toLowerCase() === "completed";
+        const reviewEligible = isCompleted && !reviewKeySet.has(`${Number(a.memberId)}-${Number(a.id)}`);
+
+        return {
           id: a.id,
-          memberId: a.memberId,
-          status: remaining <= 0 && total > 0 ? 'completed' : a.status,
-          sessionsRemaining: remaining,
-          totalSessions: total,
-          Package: a.Package,
-        };
-        activationList.push({
-          id: a.id,
-          status: a.status,
+          status: normalizedStatus,
           activationDate: a.activationDate,
           expiryDate: deriveExpiryDate(a.activationDate, a.expiryDate, a.Package?.durationDays),
           totalSessions: total,
           sessionsUsed: done,
           sessionsRemaining: remaining,
           pricePerSession: a.pricePerSession,
-          reviewEligible: await isActivationReviewEligible(a.memberId, safeActivation),
+          reviewEligible,
           Package: a.Package || null,
           Transaction: a.Transaction || null,
           Member: a.Member || null,
           Gym: a.Member?.Gym || null,
-        });
-      } catch (err) {
-        console.error('[memberMyPackageService.getMyPackages] skip broken activation', a?.id, err?.message || err);
-      }
-    }
+        };
+      });
 
-    const pendingTransactions = await db.Transaction.findAll({
-      where: {
-        memberId: memberIds,
-        transactionType: "package_purchase",
-        paymentStatus: "pending",
-        packageActivationId: null,
-      },
-      include: [
-        { model: db.Package, attributes: ["id", "name", "type", "sessions", "price", "durationDays", "gymId", "trainerId"] },
-        {
-          model: db.Member,
-          attributes: ["id", "gymId"],
-          include: [{ model: db.Gym, attributes: ["id", "name"] }],
+      const pendingTransactions = await db.Transaction.findAll({
+        where: {
+          memberId: memberIds,
+          transactionType: "package_purchase",
+          paymentStatus: "pending",
+          packageActivationId: null,
         },
-      ],
-      order: [["createdAt", "DESC"]],
-    });
+        include: [
+          { model: db.Package, attributes: ["id", "name", "type", "sessions", "price", "durationDays", "gymId", "trainerId"] },
+          {
+            model: db.Member,
+            attributes: ["id", "gymId"],
+            include: [{ model: db.Gym, attributes: ["id", "name"] }],
+          },
+        ],
+        order: [["createdAt", "DESC"]],
+      });
 
-    const pendingList = pendingTransactions.map((tx) => ({
-      id: `pending-${tx.id}`,
-      status: null,
-      activationDate: null,
-      expiryDate: null,
-      totalSessions: tx.Package?.sessions || null,
-      sessionsUsed: 0,
-      sessionsRemaining: 0,
-      pricePerSession: null,
-      Package: tx.Package,
-      Transaction: {
-        id: tx.id,
-        transactionCode: tx.transactionCode,
-        amount: tx.amount,
-        paymentMethod: tx.paymentMethod,
-        paymentStatus: tx.paymentStatus,
-        transactionDate: tx.transactionDate,
-        description: tx.description,
-        gymId: tx.gymId,
-        trainerId: tx.trainerId || null,
-      },
-      Member: tx.Member,
-      Gym: tx.Member?.Gym,
-    }));
+      const pendingList = pendingTransactions.map((tx) => ({
+        id: `pending-${tx.id}`,
+        status: null,
+        activationDate: null,
+        expiryDate: null,
+        totalSessions: tx.Package?.sessions || null,
+        sessionsUsed: 0,
+        sessionsRemaining: 0,
+        pricePerSession: null,
+        Package: tx.Package,
+        Transaction: {
+          id: tx.id,
+          transactionCode: tx.transactionCode,
+          amount: tx.amount,
+          paymentMethod: tx.paymentMethod,
+          paymentStatus: tx.paymentStatus,
+          transactionDate: tx.transactionDate,
+          createdAt: tx.createdAt,
+          description: tx.description,
+          gymId: tx.gymId,
+          trainerId: tx.trainerId || null,
+        },
+        Member: tx.Member,
+        Gym: tx.Member?.Gym,
+      }));
 
-    return [...pendingList, ...activationList].sort((a, b) => {
-      const aDate = a.Transaction?.transactionDate || a.Transaction?.createdAt || a.activationDate || new Date(0);
-      const bDate = b.Transaction?.transactionDate || b.Transaction?.createdAt || b.activationDate || new Date(0);
-      return new Date(bDate) - new Date(aDate);
-    });
+      return [...pendingList, ...activationList].sort((a, b) => {
+        const aDate = a.Transaction?.transactionDate || a.Transaction?.createdAt || a.activationDate || new Date(0);
+        const bDate = b.Transaction?.transactionDate || b.Transaction?.createdAt || b.activationDate || new Date(0);
+        return new Date(bDate) - new Date(aDate);
+      });
     } catch (e) {
       console.error('[memberMyPackageService.getMyPackages] error:', e?.message || e);
       throw e;

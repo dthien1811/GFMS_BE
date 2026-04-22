@@ -3,6 +3,7 @@ import payosService from "../../service/payment/payos.service";
 import realtimeService from "../../service/realtime.service";
 import { Op } from "sequelize";
 import comboPurchaseFlowService from "../../service/comboPurchaseFlow.service";
+import membershipCardService from "../../service/member/membershipCard.service";
 
 const PAID_STATUSES = new Set(["PAID", "SUCCESS", "SUCCEEDED"]);
 const ALLOWED_STATUSES = new Set(["pending", "completed", "failed", "refunded", "cancelled"]);
@@ -14,6 +15,13 @@ const toAllowedStatus = (raw) => {
 };
 
 async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
+  const membershipMeta = parseMeta(tx.metadata)?.membershipCard || null;
+  const membershipPlan = membershipMeta?.planId
+    ? await membershipCardService.getPlanById(Number(membershipMeta.planId), tx.gymId)
+    : membershipMeta?.planMonths
+      ? membershipCardService.getPlanByMonths(Number(membershipMeta.planMonths))
+      : null;
+
   if (tx.packageActivationId) {
     await tx.update(
       {
@@ -27,6 +35,15 @@ async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
       },
       { silent: false }
     );
+    if (membershipPlan) {
+      await membershipCardService.createOrExtendMembershipCard({
+        memberId: tx.memberId,
+        gymId: tx.gymId,
+        transactionId: tx.id,
+        plan: membershipPlan,
+        purchaseSource: "package_bundle",
+      });
+    }
     return { id: tx.packageActivationId };
   }
 
@@ -71,6 +88,16 @@ async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
     },
     { silent: false }
   );
+
+  if (membershipPlan) {
+    await membershipCardService.createOrExtendMembershipCard({
+      memberId: tx.memberId,
+      gymId: tx.gymId,
+      transactionId: tx.id,
+      plan: membershipPlan,
+      purchaseSource: "package_bundle",
+    });
+  }
 
   return activation;
 }
@@ -246,6 +273,44 @@ const payosController = {
         return res.status(200).json({ message: "OK", purchaseOrderId: poId || null, purchaseRequestId: requestId || null });
       }
 
+      if (tx.transactionType === "membership_card_purchase") {
+        const meta = parseMeta(tx.metadata);
+        const plan = meta?.membershipCard?.planId
+          ? await membershipCardService.getPlanById(Number(meta.membershipCard.planId), tx.gymId)
+          : membershipCardService.getPlanByMonths(Number(meta?.membershipCard?.planMonths || 0));
+        if (!plan) {
+          return res.status(400).json({ message: "Không tìm thấy thông tin thẻ thành viên trong giao dịch" });
+        }
+        await tx.update(
+          {
+            paymentStatus: "completed",
+            transactionDate: new Date(),
+            amount: amount || tx.amount,
+            metadata: {
+              ...(tx.metadata || {}),
+              payosWebhook: data,
+            },
+          },
+          { silent: false }
+        );
+        const card = await membershipCardService.createOrExtendMembershipCard({
+          memberId: tx.memberId,
+          gymId: tx.gymId,
+          transactionId: tx.id,
+          plan,
+          purchaseSource: "standalone",
+        });
+        const member = await db.Member.findByPk(tx.memberId, { attributes: ["userId"] });
+        await realtimeService.notifyUser(member?.userId, {
+          title: "Thẻ thành viên đã được kích hoạt",
+          message: `${plan.label} đã có hiệu lực đến ${new Date(card.endDate).toLocaleDateString("vi-VN")}.`,
+          notificationType: "membership_card",
+          relatedType: "membershipcard",
+          relatedId: card.id,
+        });
+        return res.status(200).json({ message: "OK", membershipCardId: card.id });
+      }
+
       const activation = await activatePackageFromTransaction(tx, amount, "payosWebhook", data);
       const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
       const memberUserId = tx.processedBy || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId;
@@ -399,6 +464,44 @@ const payosController = {
           relatedId: requestId || poId || tx.id,
         });
         return res.status(200).json({ message: "OK", purchaseOrderId: poId || null, purchaseRequestId: requestId || null });
+      }
+
+      if (tx.transactionType === "membership_card_purchase") {
+        const meta = parseMeta(tx.metadata);
+        const plan = meta?.membershipCard?.planId
+          ? await membershipCardService.getPlanById(Number(meta.membershipCard.planId), tx.gymId)
+          : membershipCardService.getPlanByMonths(Number(meta?.membershipCard?.planMonths || 0));
+        if (!plan) {
+          return res.status(400).json({ message: "Không tìm thấy thông tin thẻ thành viên trong giao dịch" });
+        }
+        await tx.update(
+          {
+            paymentStatus: "completed",
+            transactionDate: new Date(),
+            amount: amountPaid || amountTotal || tx.amount,
+            metadata: {
+              ...(tx.metadata || {}),
+              payosConfirm: info,
+            },
+          },
+          { silent: false }
+        );
+        const card = await membershipCardService.createOrExtendMembershipCard({
+          memberId: tx.memberId,
+          gymId: tx.gymId,
+          transactionId: tx.id,
+          plan,
+          purchaseSource: "standalone",
+        });
+        const member = await db.Member.findByPk(tx.memberId, { attributes: ["userId"] });
+        await realtimeService.notifyUser(member?.userId, {
+          title: "Thẻ thành viên đã được kích hoạt",
+          message: `${plan.label} đã có hiệu lực đến ${new Date(card.endDate).toLocaleDateString("vi-VN")}.`,
+          notificationType: "membership_card",
+          relatedType: "membershipcard",
+          relatedId: card.id,
+        });
+        return res.status(200).json({ message: "OK", membershipCardId: card.id });
       }
 
       const activation = await activatePackageFromTransaction(tx, amountPaid || amountTotal, "payosConfirm", info);
