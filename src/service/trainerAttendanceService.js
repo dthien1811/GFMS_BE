@@ -892,129 +892,156 @@ const requestBusySlot = async ({ userId, bookingId, reason }) => {
   mustHaveModel(Request, "Request");
 
   const trainer = await getTrainerByAuthId(userId);
-  const booking = await Booking.findOne({
-    where: { id: bookingId },
-    include: [
-      Gym ? { model: Gym, attributes: ["id", "ownerId", "name"], required: false } : null,
-      db.Package ? { model: db.Package, attributes: ["id", "name"], required: false } : null,
-      Member
-        ? {
-            model: Member,
-            as: "Member",
-            attributes: ["id", "userId"],
-            include: User ? [{ model: User, as: "User", attributes: ["id", "username"] }] : [],
-            required: false,
-          }
-        : null,
-    ].filter(Boolean),
-  });
-  if (!booking) throw Object.assign(new Error("Không tìm thấy lịch dạy"), { statusCode: 404 });
-
-  const bookingTrainerId = Number(booking.trainerId || booking.ptId || 0);
-  if (!bookingTrainerId || bookingTrainerId !== Number(trainer.id)) {
-    throw Object.assign(new Error("Bạn không có quyền gửi yêu cầu cho lịch dạy này"), { statusCode: 403 });
-  }
-
-  const bookingStatus = String(booking.status || "").toLowerCase();
-  if (["completed", "cancelled", "no_show"].includes(bookingStatus)) {
-    throw Object.assign(new Error("Lịch dạy này không còn khả dụng để gửi yêu cầu báo bận"), { statusCode: 400 });
-  }
-
-  const sessionType = String(booking.sessionType || "").toLowerCase();
-  if (sessionType === "trainer_share") {
-    throw Object.assign(
-      new Error("Khung giờ nhận từ chia sẻ không được phép gửi yêu cầu báo bận"),
-      { statusCode: 400 }
-    );
-  }
-
-  assertBusyRequestBeforeSixHours(booking);
-
-  const ownerId = booking?.Gym?.ownerId || null;
-  if (!ownerId) {
-    throw Object.assign(new Error("Không tìm thấy chủ phòng tập để gửi yêu cầu"), { statusCode: 400 });
-  }
-
-  const dateLabel = String(booking.bookingDate || "").slice(0, 10);
-  const timeLabel = `${String(booking.startTime || "").slice(0, 5)}-${String(booking.endTime || "").slice(0, 5)}`;
-  const trainerLabel = `Huấn luyện viên #${trainer.id}`;
-  const memberLabel =
-    booking?.Member?.User?.username ||
-    (booking?.memberId ? `Hội viên #${booking.memberId}` : "Chưa gắn hội viên");
-  const gymLabel = booking?.Gym?.gymName || booking?.Gym?.name || (booking?.gymId ? `Phòng tập #${booking.gymId}` : "phòng tập");
   const reasonText = String(reason || "").trim();
+  let notifyPayload = null;
 
-  const existingRequests = await Request.findAll({
-    where: {
+  const createdRequest = await db.sequelize.transaction(async (t) => {
+    const booking = await Booking.findOne({
+      where: { id: bookingId },
+      include: [
+        Gym ? { model: Gym, attributes: ["id", "ownerId", "name"], required: false } : null,
+        db.Package ? { model: db.Package, attributes: ["id", "name"], required: false } : null,
+        Member
+          ? {
+              model: Member,
+              as: "Member",
+              attributes: ["id", "userId"],
+              include: User ? [{ model: User, as: "User", attributes: ["id", "username"] }] : [],
+              required: false,
+            }
+          : null,
+      ].filter(Boolean),
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    if (!booking) throw Object.assign(new Error("Không tìm thấy lịch dạy"), { statusCode: 404 });
+
+    const bookingTrainerId = Number(booking.trainerId || booking.ptId || 0);
+    if (!bookingTrainerId || bookingTrainerId !== Number(trainer.id)) {
+      throw Object.assign(new Error("Bạn không có quyền gửi yêu cầu cho lịch dạy này"), { statusCode: 403 });
+    }
+
+    const bookingStatus = String(booking.status || "").toLowerCase();
+    if (["completed", "cancelled", "no_show"].includes(bookingStatus)) {
+      throw Object.assign(new Error("Lịch dạy này không còn khả dụng để gửi yêu cầu báo bận"), { statusCode: 400 });
+    }
+
+    const sessionType = String(booking.sessionType || "").toLowerCase();
+    if (sessionType === "trainer_share") {
+      throw Object.assign(
+        new Error("Khung giờ nhận từ chia sẻ không được phép gửi yêu cầu báo bận"),
+        { statusCode: 400 }
+      );
+    }
+
+    assertBusyRequestBeforeSixHours(booking);
+
+    const ownerId = booking?.Gym?.ownerId || null;
+    if (!ownerId) {
+      throw Object.assign(new Error("Không tìm thấy chủ phòng tập để gửi yêu cầu"), { statusCode: 400 });
+    }
+
+    const dateLabel = String(booking.bookingDate || "").slice(0, 10);
+    const timeLabel = `${String(booking.startTime || "").slice(0, 5)}-${String(booking.endTime || "").slice(0, 5)}`;
+    const trainerLabel = `Huấn luyện viên #${trainer.id}`;
+    const memberLabel =
+      booking?.Member?.User?.username ||
+      (booking?.memberId ? `Hội viên #${booking.memberId}` : "Chưa gắn hội viên");
+    const gymLabel = booking?.Gym?.gymName || booking?.Gym?.name || (booking?.gymId ? `Phòng tập #${booking.gymId}` : "phòng tập");
+
+    const existingRequests = await Request.findAll({
+      where: {
+        requesterId: userId,
+        requestType: "BUSY_SLOT",
+        status: { [db.Sequelize.Op.in]: ["PENDING", "APPROVED"] },
+      },
+      attributes: ["id", "status", "data", "createdAt"],
+      order: [["createdAt", "DESC"]],
+      limit: 100,
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    const duplicatedRequest = existingRequests.find((requestItem) => {
+      const existedBookingId = Number(requestItem?.data?.bookingId || 0);
+      return existedBookingId === Number(booking.id);
+    });
+    if (duplicatedRequest) {
+      const duplicatedStatus = String(duplicatedRequest.status || "").toUpperCase();
+      const err = new Error(
+        duplicatedStatus === "APPROVED"
+          ? "Khung giờ này đã được duyệt báo bận, không thể gửi lại"
+          : "Bạn đã gửi yêu cầu báo bận cho khung giờ này và đang chờ duyệt"
+      );
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const requestContent = `Huấn luyện viên báo bận buổi ${dateLabel} (${timeLabel}) tại ${gymLabel}.`;
+    const requestRow = await Request.create({
       requesterId: userId,
       requestType: "BUSY_SLOT",
-      status: { [db.Sequelize.Op.in]: ["PENDING", "APPROVED"] },
-    },
-    attributes: ["id", "status", "data", "createdAt"],
-    order: [["createdAt", "DESC"]],
-    limit: 100,
+      status: "PENDING",
+      reason: reasonText || null,
+      data: {
+        bookingId: booking.id,
+        gymId: booking.gymId,
+        trainerId: trainer.id,
+        memberId: booking.memberId || null,
+        packageActivationId: booking.packageActivationId || null,
+        packageId: booking.packageId || booking?.Package?.id || null,
+        packageName: booking?.Package?.name || null,
+        bookingDate: booking.bookingDate,
+        startTime: booking.startTime,
+        endTime: booking.endTime,
+        content: requestContent,
+      },
+    }, { transaction: t });
+
+    const currentNotes = String(booking.notes || "");
+    if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
+      const busyNote = `${BUSY_REQUEST_NOTE_MARKER} Huấn luyện viên báo bận lúc ${new Date().toISOString()}`;
+      booking.notes = currentNotes ? `${currentNotes}\n${busyNote}` : busyNote;
+      await booking.save({ transaction: t });
+    }
+
+    notifyPayload = {
+      ownerId,
+      booking,
+      trainer,
+      reasonText,
+      trainerLabel,
+      dateLabel,
+      timeLabel,
+      gymLabel,
+      memberLabel,
+      requestId: requestRow.id,
+    };
+
+    return requestRow;
   });
-  const duplicatedRequest = existingRequests.find((requestItem) => {
-    const existedBookingId = Number(requestItem?.data?.bookingId || 0);
-    return existedBookingId === Number(booking.id);
-  });
-  if (duplicatedRequest) {
-    const duplicatedStatus = String(duplicatedRequest.status || "").toUpperCase();
-    const err = new Error(
-      duplicatedStatus === "APPROVED"
-        ? "Khung giờ này đã được duyệt báo bận, không thể gửi lại"
-        : "Bạn đã gửi yêu cầu báo bận cho khung giờ này và đang chờ duyệt"
-    );
-    err.statusCode = 409;
-    throw err;
+
+  if (notifyPayload?.ownerId) {
+    await realtimeService.notifyUser(notifyPayload.ownerId, {
+      title: "Có yêu cầu báo bận khung giờ dạy",
+      message: `${notifyPayload.trainerLabel} báo bận buổi ${notifyPayload.dateLabel} (${notifyPayload.timeLabel}) tại ${notifyPayload.gymLabel} - ${notifyPayload.memberLabel}.${notifyPayload.reasonText ? ` Lý do: ${notifyPayload.reasonText}` : ""}`,
+      notificationType: "trainer_request",
+      relatedType: "request",
+      relatedId: notifyPayload.requestId,
+    });
   }
 
-  const requestContent = `Huấn luyện viên báo bận buổi ${dateLabel} (${timeLabel}) tại ${gymLabel}.`;
-  const createdRequest = await Request.create({
-    requesterId: userId,
-    requestType: "BUSY_SLOT",
-    status: "PENDING",
-    reason: reasonText || null,
-    data: {
-      bookingId: booking.id,
-      gymId: booking.gymId,
-      trainerId: trainer.id,
-      memberId: booking.memberId || null,
-      packageActivationId: booking.packageActivationId || null,
-      packageId: booking.packageId || booking?.Package?.id || null,
-      packageName: booking?.Package?.name || null,
-      bookingDate: booking.bookingDate,
-      startTime: booking.startTime,
-      endTime: booking.endTime,
-      content: requestContent,
-    },
-  });
-
-  const currentNotes = String(booking.notes || "");
-  if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
-    const busyNote = `${BUSY_REQUEST_NOTE_MARKER} Huấn luyện viên báo bận lúc ${new Date().toISOString()}`;
-    booking.notes = currentNotes ? `${currentNotes}\n${busyNote}` : busyNote;
-    await booking.save();
+  if (notifyPayload?.booking?.gymId) {
+    realtimeService.emitGym(notifyPayload.booking.gymId, "trainer:busy-slot-requested", {
+      bookingId: notifyPayload.booking.id,
+      trainerId: notifyPayload?.trainer?.id,
+      memberId: notifyPayload.booking.memberId || null,
+      gymId: notifyPayload.booking.gymId,
+      bookingDate: notifyPayload.booking.bookingDate,
+      startTime: notifyPayload.booking.startTime,
+      endTime: notifyPayload.booking.endTime,
+      reason: reasonText || null,
+    });
   }
-
-  await realtimeService.notifyUser(ownerId, {
-    title: "Có yêu cầu báo bận khung giờ dạy",
-    message: `${trainerLabel} báo bận buổi ${dateLabel} (${timeLabel}) tại ${gymLabel} - ${memberLabel}.${reasonText ? ` Lý do: ${reasonText}` : ""}`,
-    notificationType: "trainer_request",
-    relatedType: "request",
-    relatedId: createdRequest.id,
-  });
-
-  realtimeService.emitGym(booking.gymId, "trainer:busy-slot-requested", {
-    bookingId: booking.id,
-    trainerId: trainer.id,
-    memberId: booking.memberId || null,
-    gymId: booking.gymId,
-    bookingDate: booking.bookingDate,
-    startTime: booking.startTime,
-    endTime: booking.endTime,
-    reason: reasonText || null,
-  });
 
   return {
     success: true,

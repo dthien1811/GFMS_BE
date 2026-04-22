@@ -31,7 +31,20 @@ const trainerMessageService = {
       order: [[db.User, "username", "ASC"]],
     });
 
-    const rows = await Promise.all(members.map(async (member) => {
+    // Một user có thể có nhiều Member record (khác gym/khác thời điểm).
+    // Ở màn chat PT chỉ cần 1 hội thoại / 1 user để tránh hiển thị trùng.
+    const uniqueMembersByUser = new Map();
+    for (const member of members) {
+      const key = Number(member?.userId || 0);
+      if (!key) continue;
+      const existed = uniqueMembersByUser.get(key);
+      if (!existed || Number(member.id || 0) > Number(existed.id || 0)) {
+        uniqueMembersByUser.set(key, member);
+      }
+    }
+    const uniqueMembers = [...uniqueMembersByUser.values()];
+
+    const rows = await Promise.all(uniqueMembers.map(async (member) => {
       const lastMessage = await db.Message.findOne({
         where: {
           [Op.or]: [
@@ -55,7 +68,6 @@ const trainerMessageService = {
         unreadCount,
       };
     }));
-
     return rows.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0));
   },
 
