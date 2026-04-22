@@ -707,8 +707,6 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
   booking.status = "in_progress";
   await booking.save();
 
-  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus });
-
   try {
     await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
   } catch (e) {
@@ -720,6 +718,8 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
   } catch (e) {
     console.error("[trainerAttendanceService] commission sync error (checkIn):", e.message);
   }
+
+  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus });
 
   return { booking, attendance };
 };
@@ -790,13 +790,6 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
     }
   }
 
-  await emitBookingStatusRealtime({
-    booking,
-    trainer,
-    attendanceStatus: normalizedStatus,
-    source: "trainer_checkout",
-  });
-
   try {
     await notifyGymOwnerTrainerCompletedSession({
       booking,
@@ -819,6 +812,13 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   } catch (e) {
     console.error("[trainerAttendanceService] commission sync error (checkOut):", e.message);
   }
+
+  await emitBookingStatusRealtime({
+    booking,
+    trainer,
+    attendanceStatus: normalizedStatus,
+    source: "trainer_checkout",
+  });
 
   return { booking, attendance };
 };
@@ -864,8 +864,6 @@ const resetAttendance = async ({ userId, bookingId }) => {
     }
   }
 
-  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: "reset" });
-
   try {
     await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
   } catch (e) {
@@ -877,6 +875,8 @@ const resetAttendance = async ({ userId, bookingId }) => {
   } catch (e) {
     console.error("[trainerAttendanceService] commission sync error (resetAttendance):", e.message);
   }
+
+  await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: "reset" });
 
   return { booking, attendance: null };
 };
