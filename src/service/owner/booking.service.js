@@ -877,13 +877,55 @@ const updateBooking = async (userId, bookingId, data) => {
     }
   }
 
+  // Xử lý khi gán PT mới (dạy thế)
+  const BUSY_REQUEST_MARKER = "[PT_BUSY_REQUEST]";
+  const SUBSTITUTE_MARKER = "[PT_SUBSTITUTE]";
+  let updatedNotes = notes !== undefined ? notes : booking.notes;
+  
+  if (trainerChanged && newTrainerId !== previousTrainerId) {
+    // Xóa marker báo bận
+    updatedNotes = (updatedNotes || "").replace(new RegExp(BUSY_REQUEST_MARKER + ".*", "g"), "").trim();
+    // Thêm marker dạy thế nếu chưa có
+    if (!updatedNotes.includes(SUBSTITUTE_MARKER)) {
+      updatedNotes = `${updatedNotes}\n${SUBSTITUTE_MARKER} Thay PT #${previousTrainerId} lúc ${new Date().toISOString()}`;
+    }
+    
+    // Cập nhật BUSY_SLOT Request thành REJECTED (đã có PT thế vào)
+    try {
+      const Request = db.Request || db.request;
+      if (Request) {
+        // Query tất cả BUSY_SLOT pending/approved rồi lọc theo bookingId trong JSON
+        const busyRequests = await Request.findAll({
+          where: {
+            requestType: "BUSY_SLOT",
+            status: { [db.Sequelize.Op.in]: ["PENDING", "APPROVED", "pending", "approved"] },
+          },
+          attributes: ["id", "data"],
+        });
+        const toReject = busyRequests
+          .filter(r => Number(r?.data?.bookingId) === Number(booking.id))
+          .map(r => r.id);
+        
+        if (toReject.length > 0) {
+          await Request.update(
+            { status: "REJECTED", processedAt: new Date() },
+            { where: { id: toReject } }
+          );
+          console.log(`[booking] Đã REJECT ${toReject.length} BUSY_SLOT request cho booking #${booking.id}`);
+        }
+      }
+    } catch (e) {
+      console.log("[booking] Không thể cập nhật BUSY_SLOT request:", e.message);
+    }
+  }
+
   // Cập nhật
   await booking.update({
     trainerId: newTrainerId,
     bookingDate: newBookingDate,
     startTime: newStartTime,
     endTime: newEndTime,
-    notes: notes !== undefined ? notes : booking.notes,
+    notes: updatedNotes,
   });
 
   await notifyBookingReassignment({
