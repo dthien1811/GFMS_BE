@@ -641,12 +641,14 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
     const notes = String(plainBooking?.notes || "");
     const hasSubstituteMarker = notes.includes("[PT_SUBSTITUTE]");
     const hasBusyMarker = notes.includes(BUSY_REQUEST_NOTE_MARKER);
-    // Substitute: có marker hoặc (có busy marker VÀ đã check-in)
     const hasAttendance = attByBookingId.has(Number(plainBooking.id));
-    const isSubstituteBooking = hasSubstituteMarker || (hasBusyMarker && hasAttendance);
+    // isSubstitute: chỉ khi có marker [PT_SUBSTITUTE] rõ ràng
+    const isSubstituteBooking = hasSubstituteMarker;
+    // busyRequested: chỉ khi có marker báo bận VÀ KHÔNG phải dạy thay
+    const busyRequested = !isSubstituteBooking && (busyRequestedByBookingId.has(Number(plainBooking.id)) || hasBusyMarker);
     const base = {
       ...plainBooking,
-      busyRequested: busyRequestedByBookingId.has(Number(plainBooking.id)) || hasBusyMarker,
+      busyRequested,
       isSubstitute: isSubstituteBooking,
       trainerAttendance: attByBookingId.get(plainBooking.id) || null,
       commissionStatus: commissionByBookingId.get(plainBooking.id) || null,
