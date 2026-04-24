@@ -27,82 +27,62 @@ function requireComment(comment) {
   return text;
 }
 
-async function getMemberByUserId(userId) {
-  const member = await db.Member.findOne({
-    where: { userId },
-    attributes: ["id", "gymId"],
-  });
-  if (!member) {
-    throw Object.assign(new Error("Không tìm thấy member."), { statusCode: 404 });
-  }
-  return member;
-}
-
 const toInt = (v, d = 0) => {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
 };
 
-const getCompletedBookingCount = async (activationId) => {
+async function getMemberByUserId(userId) {
+  const member = await db.Member.findOne({
+    where: { userId },
+    attributes: ["id", "gymId"],
+  });
+
+  if (!member) {
+    throw Object.assign(new Error("Không tìm thấy member."), {
+      statusCode: 404,
+    });
+  }
+
+  return member;
+}
+
+function getTotalSessions(activation) {
+  return (
+    toInt(activation?.totalSessions, 0) ||
+    toInt(activation?.Package?.sessions, 0) ||
+    toInt(activation?.sessionsUsed, 0) + toInt(activation?.sessionsRemaining, 0)
+  );
+}
+
+function isActivationCompletedFast(activation, completedCount) {
+  if (!activation) return false;
+
+  const totalSessions = getTotalSessions(activation);
+  const sessionsUsed = toInt(activation.sessionsUsed, 0);
+
+  if (totalSessions > 0) {
+    return completedCount >= totalSessions || sessionsUsed >= totalSessions;
+  }
+
+  return completedCount > 0;
+}
+
+async function getCompletedBookingCount(activationId) {
   return db.Booking.count({
     where: {
       packageActivationId: activationId,
       status: "completed",
     },
   });
-};
+}
 
-const getBookedCount = async (activationId) => {
-  return db.Booking.count({
+async function getLatestCompletedBookingForActivation(activationId) {
+  return db.Booking.findOne({
     where: {
       packageActivationId: activationId,
-      status: { [Op.ne]: "cancelled" },
+      status: "completed",
     },
-  });
-};
-
-const hasReviewForActivation = async (memberId, activationId) => {
-  const existing = await db.Review.findOne({
-    where: { memberId },
-    include: [
-      {
-        model: db.Booking,
-        attributes: ["id", "packageActivationId"],
-        required: true,
-        where: { packageActivationId: activationId },
-      },
-    ],
-  });
-  return !!existing;
-};
-
-const isActivationCompleted = async (activation) => {
-  if (!activation) return false;
-
-  const status = String(activation.status || "").toLowerCase();
-  if (status === "completed" || status === "expired") return true;
-
-  const totalSessions =
-    toInt(activation.totalSessions, 0) ||
-    toInt(activation?.Package?.sessions, 0) ||
-    toInt(activation.sessionsUsed, 0) ||
-    toInt(activation.sessionsRemaining, 0) + toInt(activation.sessionsUsed, 0);
-
-  const completedCount = await getCompletedBookingCount(activation.id);
-  const bookedCount = await getBookedCount(activation.id);
-  const sessionsUsed = toInt(activation.sessionsUsed, 0);
-  const sessionsRemaining = toInt(activation.sessionsRemaining, 0);
-
-  if (totalSessions > 0) {
-    return (completedCount >= totalSessions && bookedCount >= totalSessions) || sessionsUsed >= totalSessions || sessionsRemaining <= 0;
-  }
-
-  return completedCount > 0 && bookedCount > 0 && completedCount >= bookedCount;
-};
-
-const getLatestCompletedBookingForActivation = async (activationId) => {
-  return db.Booking.findOne({
-    where: { packageActivationId: activationId, status: "completed" },
     include: [
       {
         model: db.Trainer,
@@ -111,31 +91,25 @@ const getLatestCompletedBookingForActivation = async (activationId) => {
       },
       { model: db.Package, attributes: ["id", "name", "gymId"] },
     ],
-    order: [["bookingDate", "DESC"], ["startTime", "DESC"], ["id", "DESC"]],
+    order: [
+      ["bookingDate", "DESC"],
+      ["startTime", "DESC"],
+      ["id", "DESC"],
+    ],
   });
-};
+}
 
-const buildTrainerTargetFromActivation = async (memberId, activation) => {
-  if (!(await isActivationCompleted(activation))) return null;
-  const latestBooking = await getLatestCompletedBookingForActivation(activation.id);
-  if (!latestBooking?.trainerId) return null;
-  const reviewed = await db.Review.findOne({
-    where: { memberId, reviewType: "trainer", packageActivationId: activation.id },
-  });
-  if (reviewed) return null;
-  return {
-    reviewType: "trainer",
-    bookingId: latestBooking.id,
-    packageActivationId: activation.id,
-    trainerId: latestBooking.trainerId,
-    label: latestBooking.Trainer?.User?.username || `PT #${latestBooking.trainerId}`,
-    subtitle: `${latestBooking.Package?.name || "Gói tập"} • hoàn thành gói`,
-  };
-};
+async function isActivationCompleted(activation) {
+  if (!activation) return false;
+
+  const completedCount = await getCompletedBookingCount(activation.id);
+  return isActivationCompletedFast(activation, completedCount);
+}
 
 const reviewService = {
   async listMine(userId) {
     const member = await getMemberByUserId(userId);
+
     return db.Review.findAll({
       where: { memberId: member.id },
       include: [
@@ -165,7 +139,10 @@ const reviewService = {
     const member = await getMemberByUserId(userId);
 
     const activations = await db.PackageActivation.findAll({
-      where: { memberId: member.id, status: { [Op.notIn]: ["cancelled"] } },
+      where: {
+        memberId: member.id,
+        status: { [Op.notIn]: ["cancelled"] },
+      },
       include: [
         { model: db.Package, attributes: ["id", "name", "gymId", "sessions"] },
         { model: db.Member, attributes: ["id", "gymId"] },
@@ -173,73 +150,182 @@ const reviewService = {
       order: [["createdAt", "DESC"]],
     });
 
+    if (!activations.length) {
+      return { trainer: [], package: [], gym: [], courses: [] };
+    }
+
+    const activationIds = activations.map((a) => a.id);
+    const packageIds = [...new Set(activations.map((a) => a.packageId).filter(Boolean))];
+    const gymIds = [
+      ...new Set(
+        activations
+          .map((a) => a.Package?.gymId)
+          .filter(Boolean)
+      ),
+    ];
+
+    const [completedBookings, existingReviews, gyms] = await Promise.all([
+      db.Booking.findAll({
+        where: {
+          packageActivationId: activationIds,
+          status: "completed",
+        },
+        include: [
+          {
+            model: db.Trainer,
+            attributes: ["id", "userId"],
+            include: [{ model: db.User, attributes: ["username", "avatar"] }],
+            required: false,
+          },
+          {
+            model: db.Package,
+            attributes: ["id", "name", "gymId"],
+            required: false,
+          },
+        ],
+        order: [
+          ["packageActivationId", "ASC"],
+          ["bookingDate", "DESC"],
+          ["startTime", "DESC"],
+          ["id", "DESC"],
+        ],
+      }),
+
+      db.Review.findAll({
+        where: {
+          memberId: member.id,
+          [Op.or]: [
+            { packageActivationId: activationIds },
+            { packageId: packageIds },
+            { gymId: gymIds },
+          ],
+        },
+        attributes: [
+          "id",
+          "reviewType",
+          "trainerId",
+          "gymId",
+          "packageId",
+          "packageActivationId",
+        ],
+      }),
+
+      gymIds.length
+        ? db.Gym.findAll({
+            where: { id: gymIds },
+            attributes: ["id", "name"],
+          })
+        : [],
+    ]);
+
+    const gymById = new Map(gyms.map((g) => [Number(g.id), g]));
+
+    const completedCountByActivation = new Map();
+    const latestBookingByActivation = new Map();
+
+    for (const booking of completedBookings) {
+      const activationId = Number(booking.packageActivationId);
+      completedCountByActivation.set(
+        activationId,
+        Number(completedCountByActivation.get(activationId) || 0) + 1
+      );
+
+      if (!latestBookingByActivation.has(activationId)) {
+        latestBookingByActivation.set(activationId, booking);
+      }
+    }
+
+    const reviewKeySet = new Set();
+
+    for (const r of existingReviews) {
+      const type = String(r.reviewType || "").toLowerCase();
+      const activationId = Number(r.packageActivationId || 0);
+
+      if (type === "trainer") {
+        reviewKeySet.add(`trainer:${activationId}:${Number(r.trainerId || 0)}`);
+      }
+
+      if (type === "package") {
+        reviewKeySet.add(`package:${activationId}:${Number(r.packageId || 0)}`);
+      }
+
+      if (type === "gym") {
+        reviewKeySet.add(`gym:${activationId}:${Number(r.gymId || 0)}`);
+      }
+    }
+
     const trainer = [];
     const packages = [];
-    const gyms = [];
+    const gymsTargets = [];
     const courses = [];
 
     for (const activation of activations) {
-      const completedByPackage = await isActivationCompleted(activation);
-      if (!completedByPackage && String(activation.status || "").toLowerCase() !== "completed") continue;
+      const activationId = Number(activation.id);
+      const completedCount = Number(completedCountByActivation.get(activationId) || 0);
+      const totalSessions = getTotalSessions(activation);
 
-      const totalSessions = toInt(activation.totalSessions, 0) || toInt(activation?.Package?.sessions, 0);
-      const completedCount = await getCompletedBookingCount(activation.id);
-      const latestBooking = await getLatestCompletedBookingForActivation(activation.id);
+      const completedByPackage = isActivationCompletedFast(activation, completedCount);
 
-      const trainerTarget = await buildTrainerTargetFromActivation(member.id, activation);
-      if (trainerTarget) trainer.push(trainerTarget);
+      if (!completedByPackage) continue;
 
-      const packageReviewed = await db.Review.findOne({
-        where: { memberId: member.id, reviewType: "package", packageActivationId: activation.id, packageId: activation.packageId },
-      });
-      if (!packageReviewed) {
-        packages.push({
-          reviewType: "package",
-          packageActivationId: activation.id,
-          packageId: activation.packageId,
-          gymId: activation.Package?.gymId,
-          label: activation.Package?.name || `Gói #${activation.packageId}`,
-          subtitle: `Đã hoàn thành ${completedCount}/${totalSessions} buổi`,
-        });
-      }
-
-      if (activation.Package?.gymId) {
-        const gymReviewed = await db.Review.findOne({
-          where: { memberId: member.id, reviewType: "gym", gymId: activation.Package.gymId, packageActivationId: activation.id },
-        });
-        if (!gymReviewed) {
-          const gym = await db.Gym.findByPk(activation.Package.gymId, { attributes: ["id", "name"] });
-          if (gym) {
-            gyms.push({
-              reviewType: "gym",
-              gymId: gym.id,
-              packageActivationId: activation.id,
-              packageId: activation.packageId,
-              label: gym.name,
-              subtitle: `${activation.Package?.name || "Gói tập"} • hoàn thành gói`,
-            });
-          }
-        }
-      }
+      const latestBooking = latestBookingByActivation.get(activationId) || null;
 
       if (latestBooking?.trainerId) {
-        const reviewed = await db.Review.findOne({
-          where: {
-            memberId: member.id,
-            reviewType: "trainer",
-            packageActivationId: activation.id,
-          },
-        }).then(Boolean);
+        const trainerId = Number(latestBooking.trainerId);
+        const trainerReviewKey = `trainer:${activationId}:${trainerId}`;
 
-        if (!reviewed) {
+        if (!reviewKeySet.has(trainerReviewKey)) {
+          trainer.push({
+            reviewType: "trainer",
+            bookingId: latestBooking.id,
+            packageActivationId: activationId,
+            trainerId,
+            label: latestBooking.Trainer?.User?.username || `PT #${trainerId}`,
+            subtitle: `${latestBooking.Package?.name || activation.Package?.name || "Gói tập"} • Hoàn thành gói`,
+          });
+
           courses.push({
-            activationId: activation.id,
+            activationId,
             packageName: activation?.Package?.name || latestBooking?.Package?.name || "Gói tập",
-            trainerId: latestBooking.trainerId,
+            trainerId,
             trainerName: latestBooking?.Trainer?.User?.username || "PT",
             totalSessions,
             completedSessions: completedCount,
             reviewed: false,
+          });
+        }
+      }
+
+      const packageId = Number(activation.packageId || activation.Package?.id || 0);
+      const gymId = Number(activation.Package?.gymId || 0);
+
+      if (packageId) {
+        const packageReviewKey = `package:${activationId}:${packageId}`;
+
+        if (!reviewKeySet.has(packageReviewKey)) {
+          packages.push({
+            reviewType: "package",
+            packageActivationId: activationId,
+            packageId,
+            gymId,
+            label: activation.Package?.name || `Gói #${packageId}`,
+            subtitle: `Đã hoàn thành ${completedCount}/${totalSessions || completedCount} buổi`,
+          });
+        }
+      }
+
+      if (gymId) {
+        const gymReviewKey = `gym:${activationId}:${gymId}`;
+        const gym = gymById.get(gymId);
+
+        if (gym && !reviewKeySet.has(gymReviewKey)) {
+          gymsTargets.push({
+            reviewType: "gym",
+            gymId,
+            packageActivationId: activationId,
+            packageId,
+            label: gym.name,
+            subtitle: `${activation.Package?.name || "Gói tập"} • Hoàn thành gói`,
           });
         }
       }
@@ -248,7 +334,7 @@ const reviewService = {
     return {
       trainer,
       package: packages,
-      gym: gyms,
+      gym: gymsTargets,
       courses,
     };
   },
@@ -261,7 +347,6 @@ const reviewService = {
   async create(userId, payload) {
     const member = await getMemberByUserId(userId);
 
-    // Tương thích payload cũ của dev
     if (!payload?.reviewType && payload?.activationId) {
       const activationId = Number(payload.activationId);
       const rating = requireRating(payload.rating);
@@ -288,7 +373,11 @@ const reviewService = {
           trainerId: selected.trainerId,
           status: "completed",
         },
-        order: [["bookingDate", "DESC"], ["startTime", "DESC"], ["id", "DESC"]],
+        order: [
+          ["bookingDate", "DESC"],
+          ["startTime", "DESC"],
+          ["id", "DESC"],
+        ],
       });
 
       if (!booking) {
@@ -317,7 +406,9 @@ const reviewService = {
     const comment = requireComment(payload.comment);
 
     if (!["trainer", "gym", "package"].includes(reviewType)) {
-      throw Object.assign(new Error("reviewType không hợp lệ."), { statusCode: 400 });
+      throw Object.assign(new Error("reviewType không hợp lệ."), {
+        statusCode: 400,
+      });
     }
 
     if (reviewType === "trainer") {
@@ -326,15 +417,28 @@ const reviewService = {
       const packageActivationId = Number(payload.packageActivationId);
 
       const booking = await db.Booking.findOne({
-        where: { id: bookingId, memberId: member.id, trainerId, status: "completed" },
-        include: [{ model: db.PackageActivation, include: [{ model: db.Package, attributes: ["id", "sessions", "gymId"] }] }],
+        where: {
+          id: bookingId,
+          memberId: member.id,
+          trainerId,
+          status: "completed",
+        },
+        include: [
+          {
+            model: db.PackageActivation,
+            include: [{ model: db.Package, attributes: ["id", "sessions", "gymId"] }],
+          },
+        ],
       });
-      const activation = booking?.PackageActivation || (packageActivationId
-        ? await db.PackageActivation.findOne({
-          where: { id: packageActivationId, memberId: member.id },
-          include: [{ model: db.Package, attributes: ["id", "sessions", "gymId"] }],
-        })
-        : null);
+
+      const activation =
+        booking?.PackageActivation ||
+        (packageActivationId
+          ? await db.PackageActivation.findOne({
+              where: { id: packageActivationId, memberId: member.id },
+              include: [{ model: db.Package, attributes: ["id", "sessions", "gymId"] }],
+            })
+          : null);
 
       if (!booking || !activation || !(await isActivationCompleted(activation))) {
         throw Object.assign(
@@ -344,7 +448,12 @@ const reviewService = {
       }
 
       const exists = await db.Review.findOne({
-        where: { memberId: member.id, reviewType, trainerId, packageActivationId: activation.id },
+        where: {
+          memberId: member.id,
+          reviewType,
+          trainerId,
+          packageActivationId: activation.id,
+        },
       });
 
       if (exists) {
@@ -364,14 +473,21 @@ const reviewService = {
         status: "active",
       });
 
-      const trainer = await db.Trainer.findByPk(trainerId, { attributes: ["userId"] });
-      await realtimeService.notifyUser(trainer?.userId, {
-        title: "Bạn có đánh giá mới",
-        message: comment.slice(0, 160),
-        notificationType: "review",
-        relatedType: "review",
-        relatedId: row.id,
+      const trainerRow = await db.Trainer.findByPk(trainerId, {
+        attributes: ["userId"],
       });
+
+      if (trainerRow?.userId) {
+        realtimeService
+          .notifyUser(trainerRow.userId, {
+            title: "Bạn có đánh giá mới",
+            message: comment.slice(0, 160),
+            notificationType: "review",
+            relatedType: "review",
+            relatedId: row.id,
+          })
+          .catch((err) => console.warn("notify review trainer failed:", err?.message || err));
+      }
 
       return row;
     }
@@ -433,15 +549,24 @@ const reviewService = {
       include: [{ model: db.Package, attributes: ["id", "name", "gymId", "sessions"] }],
     });
 
-    if (!activation || !(await isActivationCompleted(activation)) || Number(activation.Package?.gymId) !== gymId) {
+    if (
+      !activation ||
+      !(await isActivationCompleted(activation)) ||
+      Number(activation.Package?.gymId) !== gymId
+    ) {
       throw Object.assign(
-        new Error("Bạn chỉ được đánh giá gym khi đã hoàn thành ít nhất 1 gói của gym đó."),
+        new Error("Bạn chỉ được đánh giá gym khi đã hoàn thành đủ số buổi của một gói thuộc gym đó."),
         { statusCode: 403 }
       );
     }
 
     const exists = await db.Review.findOne({
-      where: { memberId: member.id, reviewType, gymId, packageActivationId },
+      where: {
+        memberId: member.id,
+        reviewType,
+        gymId,
+        packageActivationId,
+      },
     });
 
     if (exists) {
@@ -462,13 +587,18 @@ const reviewService = {
     });
 
     const gym = await db.Gym.findByPk(gymId, { attributes: ["ownerId"] });
-    await realtimeService.notifyUser(gym?.ownerId, {
-      title: "Gym có đánh giá mới",
-      message: comment.slice(0, 160),
-      notificationType: "review",
-      relatedType: "review",
-      relatedId: row.id,
-    });
+
+    if (gym?.ownerId) {
+      realtimeService
+        .notifyUser(gym.ownerId, {
+          title: "Gym có đánh giá mới",
+          message: comment.slice(0, 160),
+          notificationType: "review",
+          relatedType: "review",
+          relatedId: row.id,
+        })
+        .catch((err) => console.warn("notify review gym failed:", err?.message || err));
+    }
 
     return row;
   },
