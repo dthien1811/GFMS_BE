@@ -3,17 +3,17 @@ const db = require('../models');
 const realtimeServiceModule = require('./realtime.service');
 const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
 const payosService = require('./payment/payos.service');
+const crypto = require('crypto');
 
-const { sequelize, PurchaseRequest, EquipmentCombo, EquipmentComboItem, Equipment, EquipmentImage, EquipmentCategory, Gym, Supplier, Transaction, User, EquipmentStock, Inventory, EquipmentUnit } = db;
+const { sequelize, PurchaseRequest, EquipmentCombo, EquipmentComboItem, Equipment, EquipmentImage, EquipmentCategory, Gym, Supplier, Transaction, User, EquipmentStock, Inventory, EquipmentUnit, AuditLog } = db;
 const { logEquipmentUnitEvents } = require('../utils/equipmentUnitEvent');
 
 const ACTIVE_PENDING_STATUSES = new Set(['pending']);
 const REQUEST_STATUSES = {
   SUBMITTED: 'submitted',
-  APPROVED_WAITING_DEPOSIT: 'approved_waiting_deposit',
+  APPROVED_WAITING_PAYMENT: 'approved_waiting_payment',
   PAID_WAITING_ADMIN_CONFIRM: 'paid_waiting_admin_confirm',
   SHIPPING: 'shipping',
-  DELIVERED_WAITING_FINAL_PAYMENT: 'delivered_waiting_final_payment',
   COMPLETED: 'completed',
   REJECTED: 'rejected',
 };
@@ -39,6 +39,31 @@ function roundMoney(value) {
 function genCode(prefix) {
   const now = new Date();
   return `${prefix}-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${Math.floor(100000 + Math.random() * 900000)}`;
+}
+
+function pad6(n) {
+  return String(Math.max(0, Number(n) || 0)).padStart(6, '0');
+}
+
+function buildPublicQrUrl(publicToken) {
+  const frontendOrigin = String(process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '');
+  return `${frontendOrigin}/equipment/scan/${encodeURIComponent(String(publicToken || ''))}`;
+}
+
+async function genUniquePublicToken({ transaction } = {}) {
+  // 128-bit token hex (32 chars). Not sequential. Safe for public QR.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const token = crypto.randomBytes(16).toString('hex');
+    const exists = await EquipmentUnit.findOne({
+      where: { publicToken: token },
+      attributes: ['id'],
+      transaction,
+      lock: transaction?.LOCK?.SHARE,
+    });
+    if (!exists) return token;
+  }
+  // extremely unlikely; fallback to longer
+  return crypto.randomBytes(24).toString('hex');
 }
 
 function pickPrimaryEquipmentImage(images = []) {
@@ -149,17 +174,29 @@ function buildDisplayCombo(requestJson) {
 function serializeRequestRecord(record) {
   const json = typeof record?.toJSON === 'function' ? record.toJSON() : record;
   if (!json) return json;
+
+  // Enterprise guard: nếu webhook/confirm không kịp cập nhật status,
+  // vẫn suy luận trạng thái theo payments đã completed để tránh vòng lặp thanh toán.
+  const payments = Array.isArray(json.payments) ? json.payments : [];
+  const isCompleted = (p) => String(p?.paymentStatus || '').toLowerCase() === 'completed';
+  const currentStatus = String(json.status || '');
+  let derivedStatus = currentStatus;
+  const hasAnyCompletedPayment = payments.some((p) => isCompleted(p));
+  if (currentStatus === REQUEST_STATUSES.APPROVED_WAITING_PAYMENT && hasAnyCompletedPayment) {
+    derivedStatus = REQUEST_STATUSES.PAID_WAITING_ADMIN_CONFIRM;
+  }
+
   return {
     ...json,
+    status: derivedStatus,
     combo: buildDisplayCombo(json),
     comboSnapshot: json?.stockSnapshot?.comboSnapshot || null,
   };
 }
 
 function phaseAmountFromRequest(request, phase) {
+  ensure(String(phase || '').toLowerCase() === 'full', 'Combo chỉ hỗ trợ thanh toán full (100%)', 400);
   const total = roundMoney(request.totalAmount || request.payableAmount || 0);
-  if (phase === 'deposit') return roundMoney(request.depositAmount || total * 0.3);
-  if (phase === 'final') return roundMoney(request.finalAmount || request.remainingAmount || total * 0.7);
   return total;
 }
 
@@ -346,10 +383,9 @@ async function deleteCombo(comboId) {
       status: {
         [Op.in]: [
           REQUEST_STATUSES.SUBMITTED,
-          REQUEST_STATUSES.APPROVED_WAITING_DEPOSIT,
           REQUEST_STATUSES.PAID_WAITING_ADMIN_CONFIRM,
           REQUEST_STATUSES.SHIPPING,
-          REQUEST_STATUSES.DELIVERED_WAITING_FINAL_PAYMENT,
+          REQUEST_STATUSES.APPROVED_WAITING_PAYMENT,
         ],
       },
     },
@@ -427,20 +463,40 @@ async function ensureOwnerComboStock(request, combo, ownerUserId, transaction) {
       recordedAt: new Date(),
     }, { transaction });
 
-    const codePrefix = `EQ-${String(equipmentId).padStart(4, '0')}`;
     const now = Date.now();
     const seed = Math.floor(Math.random() * 1000000);
-    const units = Array.from({ length: quantity }).map((_, idx) => ({
-      equipmentId,
-      gymId: request.gymId,
-      assetCode: `${codePrefix}-GYM-${request.gymId}-${now}-${seed}-${idx + 1}`,
-      status: 'active',
-      usageStatus: 'in_stock',
-      notes: `Sinh ra từ combo ${request.code}`,
-    }));
+    const tmpPrefix = `TMP-${request.id}-${equipmentId}-${now}-${seed}`;
+    const units = [];
+    for (let idx = 0; idx < quantity; idx += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      const publicToken = await genUniquePublicToken({ transaction });
+      units.push({
+        equipmentId,
+        gymId: request.gymId,
+        assetCode: `${tmpPrefix}-${idx + 1}`,
+        publicToken,
+        qrUrl: buildPublicQrUrl(publicToken),
+        status: 'active',
+        usageStatus: 'in_stock',
+        lifecycleStatus: 'active',
+        ownerId: ownerUserId || null,
+        purchaseRequestId: request.id,
+        comboId: request.comboId || null,
+        deliveredAt: new Date(),
+        notes: `Sinh ra từ combo ${request.code}`,
+      });
+    }
 
     const createdUnits = units.length ? await EquipmentUnit.bulkCreate(units, { transaction }) : [];
     if (createdUnits.length) {
+      for (const unit of createdUnits) {
+        // eslint-disable-next-line no-await-in-loop
+        await EquipmentUnit.update(
+          { assetCode: `GFMS-EQ-${pad6(unit.id)}` },
+          { where: { id: unit.id }, transaction }
+        );
+      }
+
       await logEquipmentUnitEvents(
         createdUnits.map((unit) => ({
           equipmentUnitId: unit.id,
@@ -474,8 +530,6 @@ async function createOwnerComboRequest(ownerUserId, payload) {
   return sequelize.transaction(async (t) => {
     const count = await PurchaseRequest.count({ transaction: t });
     const totalAmount = roundMoney(combo.price);
-    const depositAmount = roundMoney(totalAmount * 0.3);
-    const finalAmount = roundMoney(totalAmount - depositAmount);
     const firstEquipmentId = combo.items?.[0]?.equipmentId || null;
     const request = await PurchaseRequest.create({
       code: `CBR-${Date.now()}-${count + 1}`,
@@ -491,9 +545,9 @@ async function createOwnerComboRequest(ownerUserId, payload) {
       purchaseQty: 1,
       payableAmount: totalAmount,
       totalAmount,
-      depositAmount,
-      finalAmount,
-      remainingAmount: finalAmount,
+      depositAmount: 0,
+      finalAmount: totalAmount,
+      remainingAmount: totalAmount,
       reason: 'combo_purchase',
       priority: 'normal',
       note: payload?.note ? String(payload.note) : null,
@@ -684,7 +738,7 @@ async function approveRequest(requestId) {
     ensure(request, 'Purchase request not found', 404);
     ensure(request.comboId, 'Request không thuộc combo flow', 400);
     await assertRequestStatus(request, REQUEST_STATUSES.SUBMITTED, 'Chỉ request submitted mới được duyệt');
-    request.status = REQUEST_STATUSES.APPROVED_WAITING_DEPOSIT;
+    request.status = REQUEST_STATUSES.APPROVED_WAITING_PAYMENT;
     request.approvedAt = new Date();
     request.rejectReason = null;
     request.adminRejectionNote = null;
@@ -692,7 +746,7 @@ async function approveRequest(requestId) {
     t.afterCommit(async () => {
       await realtimeService.notifyUser(request.requestedBy, {
         title: 'Yêu cầu mua combo đã được duyệt',
-        message: `${request.code} đã được duyệt. Bạn có thể thanh toán cọc 30% cho combo ${request.combo?.name || ''}.`,
+        message: `${request.code} đã được duyệt. Bạn có thể thanh toán 100% cho combo ${request.combo?.name || ''}.`,
         notificationType: 'purchase_request',
         relatedType: 'purchaserequest',
         relatedId: request.id,
@@ -728,26 +782,45 @@ async function rejectRequest(requestId, reason) {
   });
 }
 
-async function shipRequest(requestId) {
+async function shipRequest(requestId, adminUserId, req) {
   return sequelize.transaction(async (t) => {
     const request = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE });
     ensure(request, 'Purchase request not found', 404);
     ensure(request.comboId, 'Request không thuộc combo flow', 400);
-    await assertRequestStatus(request, REQUEST_STATUSES.PAID_WAITING_ADMIN_CONFIRM, 'Chỉ request đã cọc thành công mới được chuyển shipping');
-    const depositPaid = await Transaction.findOne({
+    await assertRequestStatus(
+      request,
+      REQUEST_STATUSES.PAID_WAITING_ADMIN_CONFIRM,
+      'Chỉ request đã thanh toán thành công mới được chuyển shipping'
+    );
+    const anyPaid = await Transaction.findOne({
       where: {
         purchaseRequestId: request.id,
         transactionType: 'equipment_purchase',
-        paymentPhase: 'deposit',
         paymentStatus: 'completed',
       },
       transaction: t,
       lock: t.LOCK.SHARE,
     });
-    ensure(depositPaid, 'Không thể shipping khi cọc chưa thanh toán thành công');
+    ensure(anyPaid, 'Không thể shipping khi chưa có giao dịch thanh toán thành công');
+    const oldValues = request.toJSON ? request.toJSON() : request;
     request.status = REQUEST_STATUSES.SHIPPING;
     request.shippingAt = new Date();
     await request.save({ transaction: t });
+    if (AuditLog) {
+      await AuditLog.create(
+        {
+          userId: Number(adminUserId || 0) || null,
+          action: 'COMBO_PURCHASE_SHIPPING',
+          tableName: 'purchaserequest',
+          recordId: request.id,
+          oldValues,
+          newValues: request.toJSON ? request.toJSON() : request,
+          ipAddress: req?.ip || null,
+          userAgent: req?.headers?.['user-agent'] || null,
+        },
+        { transaction: t }
+      );
+    }
     t.afterCommit(async () => {
       await realtimeService.notifyUser(request.requestedBy, {
         title: 'Combo đang được bàn giao',
@@ -761,7 +834,7 @@ async function shipRequest(requestId) {
   });
 }
 
-async function confirmReceived(ownerUserId, requestId) {
+async function confirmReceived(ownerUserId, requestId, req) {
   return sequelize.transaction(async (t) => {
     const request = await PurchaseRequest.findByPk(requestId, {
       transaction: t,
@@ -799,13 +872,31 @@ async function confirmReceived(ownerUserId, requestId) {
 
     await ensureOwnerComboStock(request, request.combo, ownerUserId, t);
 
-    request.status = REQUEST_STATUSES.DELIVERED_WAITING_FINAL_PAYMENT;
+    const oldValues = request.toJSON ? request.toJSON() : request;
+    request.status = REQUEST_STATUSES.COMPLETED;
     request.confirmedReceivedAt = new Date();
+    request.completedAt = new Date();
+    request.remainingAmount = 0;
     await request.save({ transaction: t });
+    if (AuditLog) {
+      await AuditLog.create(
+        {
+          userId: Number(ownerUserId || 0) || null,
+          action: 'COMBO_PURCHASE_COMPLETED',
+          tableName: 'purchaserequest',
+          recordId: request.id,
+          oldValues,
+          newValues: request.toJSON ? request.toJSON() : request,
+          ipAddress: req?.ip || null,
+          userAgent: req?.headers?.['user-agent'] || null,
+        },
+        { transaction: t }
+      );
+    }
     t.afterCommit(async () => {
       await realtimeService.notifyAdministrators({
         title: 'Owner đã xác nhận nhận combo',
-        message: `${request.code} đã nhận combo, chờ thanh toán 70% còn lại.`,
+        message: `${request.code} đã nhận combo và hoàn tất giao dịch.`,
         notificationType: 'purchase_request',
         relatedType: 'purchaserequest',
         relatedId: request.id,
@@ -841,13 +932,13 @@ async function createPaymentLink(ownerUserId, requestId, phase) {
     ensure(request, 'Purchase request not found', 404);
     ensure(Number(request.gym?.ownerId) === Number(ownerUserId), 'Not authorized', 403);
     ensure(request.comboId, 'Request không thuộc combo flow', 400);
-    if (phase === 'deposit') {
-      await assertRequestStatus(request, REQUEST_STATUSES.APPROVED_WAITING_DEPOSIT, 'Chỉ request approved_waiting_deposit mới được tạo link cọc');
-    } else {
-      await assertRequestStatus(request, REQUEST_STATUSES.DELIVERED_WAITING_FINAL_PAYMENT, 'Chỉ request delivered_waiting_final_payment mới được tạo link thanh toán 70%');
+    await assertRequestStatus(request, REQUEST_STATUSES.APPROVED_WAITING_PAYMENT, 'Chỉ request approved_waiting_payment mới được tạo link thanh toán');
+    const normalizedPhase = 'full';
+    if (phase != null && String(phase).toLowerCase() !== 'full') {
+      ensure(false, 'Combo chỉ hỗ trợ thanh toán 100% một lần (full)', 400);
     }
 
-    const existing = await findActivePendingPayment(request.id, phase, t);
+    const existing = await findActivePendingPayment(request.id, normalizedPhase, t);
     if (existing) {
       return {
         checkoutUrl: existing.paymentLink || existing.metadata?.payos?.checkoutUrl || null,
@@ -858,20 +949,20 @@ async function createPaymentLink(ownerUserId, requestId, phase) {
       };
     }
 
-    const amount = phaseAmountFromRequest(request, phase);
+    const amount = phaseAmountFromRequest(request, normalizedPhase);
     ensure(amount > 0, 'Số tiền thanh toán không hợp lệ');
 
     const tx = await Transaction.create({
-      transactionCode: genCode(phase === 'deposit' ? 'CBDP' : 'CBFN'),
+      transactionCode: genCode('CBPY'),
       gymId: request.gymId,
       purchaseRequestId: request.id,
       amount,
       transactionType: 'equipment_purchase',
       paymentMethod: 'payos',
       paymentStatus: 'pending',
-      paymentPhase: phase,
+      paymentPhase: normalizedPhase,
       paymentProvider: 'PAYOS',
-      description: `${request.code} - ${request.combo?.name || 'Combo'} - ${phase}`,
+      description: `${request.code} - ${request.combo?.name || 'Combo'} - full`,
       transactionDate: new Date(),
       processedBy: ownerUserId,
       expiresAt: new Date(Date.now() + 15 * 60 * 1000),
@@ -880,24 +971,40 @@ async function createPaymentLink(ownerUserId, requestId, phase) {
         purchaseRequestCode: request.code,
         comboId: request.comboId,
         comboName: request.combo?.name || null,
-        paymentPhase: phase,
+        paymentPhase: normalizedPhase,
       },
     }, { transaction: t });
 
-    const frontendBase = process.env.PAYOS_RETURN_URL || process.env.FRONTEND_URL || 'http://localhost:3000/owner/purchase-requests';
-    const normalizedFrontEndReturn = frontendBase.includes('http') ? frontendBase : `${process.env.FRONTEND_URL || 'http://localhost:3000'}${frontendBase}`;
-    const returnUrl = `${normalizedFrontEndReturn}${normalizedFrontEndReturn.includes('?') ? '&' : '?'}payos=success&orderCode=${encodeURIComponent(tx.id)}&phase=${phase}`;
-    const cancelUrl = process.env.PAYOS_CANCEL_URL || `${process.env.FRONTEND_URL || 'http://localhost:3000'}/owner/purchase-requests?payos=cancel&phase=${phase}`;
+    const frontendOrigin = String(process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/+$/, '');
+    const defaultOwnerHistoryPath = '/owner/purchase-requests/history';
+    const rawReturnBase = String(process.env.PAYOS_RETURN_URL || '').trim();
+    const rawCancelBase = String(process.env.PAYOS_CANCEL_URL || '').trim();
+
+    const normalizeOwnerHistoryUrl = (rawValue) => {
+      if (!rawValue) return `${frontendOrigin}${defaultOwnerHistoryPath}`;
+      const normalizedRaw = String(rawValue).trim();
+      const absolute = /^https?:\/\//i.test(normalizedRaw)
+        ? normalizedRaw
+        : `${frontendOrigin}${normalizedRaw.startsWith('/') ? normalizedRaw : `/${normalizedRaw}`}`;
+      return absolute.includes(defaultOwnerHistoryPath)
+        ? absolute.replace(/\/+$/, '')
+        : `${frontendOrigin}${defaultOwnerHistoryPath}`;
+    };
+
+    const normalizedFrontEndReturn = normalizeOwnerHistoryUrl(rawReturnBase);
+    const normalizedFrontEndCancel = normalizeOwnerHistoryUrl(rawCancelBase);
+    const returnUrl = `${normalizedFrontEndReturn}${normalizedFrontEndReturn.includes('?') ? '&' : '?'}payos=success&orderCode=${encodeURIComponent(tx.id)}&purchaseRequestId=${encodeURIComponent(request.id)}`;
+    const cancelUrl = `${normalizedFrontEndCancel}${normalizedFrontEndCancel.includes('?') ? '&' : '?'}payos=cancel&purchaseRequestId=${encodeURIComponent(request.id)}`;
     const payment = await payosService.createPaymentLink({
       orderCode: tx.id,
       amount,
-      description: `${request.code}-${request.combo?.code || request.comboId}-${phase}`,
+      description: `${request.code}-${request.combo?.code || request.comboId}-full`,
       returnUrl,
       cancelUrl,
       metadata: {
         purchaseRequestId: request.id,
         comboId: request.comboId,
-        phase,
+        phase: normalizedPhase,
       },
     });
 
@@ -923,7 +1030,7 @@ async function handleSuccessfulPayment(tx, payload, source = 'webhook') {
   const requestId = Number(tx.purchaseRequestId || meta.purchaseRequestId || 0);
   ensure(requestId > 0, 'Thiếu purchaseRequestId trong transaction', 400);
   const phase = String(tx.paymentPhase || meta.paymentPhase || '').toLowerCase();
-  ensure(['deposit', 'final'].includes(phase), 'Thiếu payment phase hợp lệ', 400);
+  ensure(phase === 'full', 'Combo chỉ hỗ trợ thanh toán full (100%)', 400);
 
   return sequelize.transaction(async (t) => {
     const lockedTx = await Transaction.findByPk(tx.id, { transaction: t, lock: t.LOCK.UPDATE });
@@ -943,31 +1050,27 @@ async function handleSuccessfulPayment(tx, payload, source = 'webhook') {
     };
     await lockedTx.save({ transaction: t });
 
-    if (phase === 'deposit') {
-      if (request.status === REQUEST_STATUSES.APPROVED_WAITING_DEPOSIT) {
-        request.status = REQUEST_STATUSES.PAID_WAITING_ADMIN_CONFIRM;
-        await request.save({ transaction: t });
-      }
-    } else if (phase === 'final') {
-      if (request.status === REQUEST_STATUSES.DELIVERED_WAITING_FINAL_PAYMENT) {
-        request.status = REQUEST_STATUSES.COMPLETED;
-        request.completedAt = new Date();
-        request.remainingAmount = 0;
-        await request.save({ transaction: t });
-      }
+    // Flow mới:
+    // - PayOS báo thanh toán thành công (kể cả 100%) => request chuyển sang paid_waiting_admin_confirm
+    // - Không tự cộng kho / completed khi vừa thanh toán
+    // - Chỉ khi owner xác nhận đã nhận combo thì mới cộng kho + completed
+    if (request.status === REQUEST_STATUSES.APPROVED_WAITING_PAYMENT) {
+      request.status = REQUEST_STATUSES.PAID_WAITING_ADMIN_CONFIRM;
+      request.remainingAmount = 0;
+      await request.save({ transaction: t });
     }
 
     t.afterCommit(async () => {
       await realtimeService.notifyUser(request.requestedBy, {
-        title: phase === 'deposit' ? 'Đã thanh toán cọc 30%' : 'Đã thanh toán 70% còn lại',
-        message: `${request.code} · ${request.combo?.name || 'Combo'} · ${phase === 'deposit' ? 'Chờ admin xác nhận giao hàng' : 'Hoàn tất đơn mua combo'}`,
+        title: 'Đã ghi nhận thanh toán combo',
+        message: `${request.code} · ${request.combo?.name || 'Combo'} · Đã thanh toán thành công, chờ admin xác nhận và chuyển hàng.`,
         notificationType: 'payment',
         relatedType: 'purchaserequest',
         relatedId: request.id,
       });
       await realtimeService.notifyAdministrators({
         title: 'PayOS ghi nhận thanh toán combo',
-        message: `${request.code} vừa thanh toán ${phase === 'deposit' ? 'cọc 30%' : '70% còn lại'} thành công.`,
+        message: `${request.code} vừa thanh toán thành công, chờ admin chuyển sang shipping.`,
         notificationType: 'payment',
         relatedType: 'purchaserequest',
         relatedId: request.id,

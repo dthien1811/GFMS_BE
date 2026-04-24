@@ -36,6 +36,8 @@ module.exports = (sequelize, DataTypes) => {
       equipmentId: { type: DataTypes.INTEGER, allowNull: false },
       gymId: { type: DataTypes.INTEGER, allowNull: false },
       assetCode: { type: DataTypes.STRING, allowNull: false, unique: true },
+      publicToken: { type: DataTypes.STRING(64), allowNull: true, unique: true },
+      qrUrl: { type: DataTypes.TEXT, allowNull: true },
       serialNumber: { type: DataTypes.STRING, allowNull: true },
       status: {
         type: DataTypes.ENUM('active', 'in_maintenance', 'transfer_pending', 'disposed'),
@@ -48,6 +50,15 @@ module.exports = (sequelize, DataTypes) => {
         defaultValue: 'in_stock',
       },
       transferId: { type: DataTypes.INTEGER, allowNull: true },
+      purchaseRequestId: { type: DataTypes.INTEGER, allowNull: true },
+      comboId: { type: DataTypes.INTEGER, allowNull: true },
+      ownerId: { type: DataTypes.INTEGER, allowNull: true },
+      deliveredAt: { type: DataTypes.DATE, allowNull: true },
+      lifecycleStatus: {
+        type: DataTypes.ENUM('active', 'maintenance', 'broken', 'retired'),
+        allowNull: false,
+        defaultValue: 'active',
+      },
       notes: { type: DataTypes.TEXT, allowNull: true },
     },
     {
@@ -62,6 +73,11 @@ module.exports = (sequelize, DataTypes) => {
         { fields: ['status'] },
         { fields: ['usageStatus'] },
         { fields: ['transferId'] },
+        { fields: ['purchaseRequestId'] },
+        { fields: ['comboId'] },
+        { fields: ['ownerId'] },
+        { fields: ['lifecycleStatus'] },
+        { fields: ['publicToken'], unique: true },
       ],
     }
   );

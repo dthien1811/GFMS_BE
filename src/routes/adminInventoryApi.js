@@ -8,13 +8,14 @@ const adminInventoryController = require("../controllers/adminInventoryControlle
 const adminPurchaseWorkflowController = require("../controllers/adminPurchaseWorkflowController");
 const adminAdminCoreController = require("../controllers/adminAdminCoreController");
 const adminFranchiseContractController = require("../controllers/adminFranchiseContractController");
+const adminEquipmentAssetController = require("../controllers/adminEquipmentAssetController");
 
 // ✅ NEW: Trainer Share Override enterprise controller
 const adminTrainerShareOverrideController = require("../controllers/adminTrainerShareOverrideController");
 
 // Middleware
 const jwtAction = require("../middleware/JWTAction");
-const { checkUserPermission } = require("../middleware/permission");
+const { checkUserPermission, requirePermissions } = require("../middleware/permission");
 
 const { uploadEquipmentImages } = require("../middleware/uploadEquipmentImages");
 
@@ -38,10 +39,10 @@ router.get("/gyms", adminInventoryController.getGyms);
 router.get("/equipment-categories", adminInventoryController.getEquipmentCategories);
 router.get("/equipments", adminInventoryController.getEquipments);
 
-router.post("/equipments", adminInventoryController.createEquipment);
-router.put("/equipments/:id", adminInventoryController.updateEquipment);
-router.patch("/equipments/:id/discontinue", adminInventoryController.discontinueEquipment);
-router.delete("/equipments/:id", adminInventoryController.deleteEquipment);
+router.post("/equipments", requirePermissions(["perm:equipment:write"]), adminInventoryController.createEquipment);
+router.put("/equipments/:id", requirePermissions(["perm:equipment:write"]), adminInventoryController.updateEquipment);
+router.patch("/equipments/:id/discontinue", requirePermissions(["perm:equipment:write"]), adminInventoryController.discontinueEquipment);
+router.delete("/equipments/:id", requirePermissions(["perm:equipment:write"]), adminInventoryController.deleteEquipment);
 
 // Images
 router.get("/equipments/:id/images", adminInventoryController.getEquipmentImages);
@@ -79,7 +80,11 @@ router.get("/purchase-transactions", adminPurchaseWorkflowController.getEquipmen
 router.get("/purchase-requests/:id", adminPurchaseWorkflowController.getPurchaseRequestDetail);
 router.patch("/purchase-requests/:id/reject", adminPurchaseWorkflowController.rejectPurchaseRequest);
 router.patch("/purchase-requests/:id/approve", adminPurchaseWorkflowController.approvePurchaseRequest);
-router.patch("/purchase-requests/:id/confirm-payment-and-ship", adminPurchaseWorkflowController.confirmPurchaseRequestPaymentAndShip);
+router.patch(
+  "/purchase-requests/:id/confirm-payment-and-ship",
+  requirePermissions(["perm:purchase_workflow:ship"]),
+  adminPurchaseWorkflowController.confirmPurchaseRequestPaymentAndShip
+);
 router.post("/purchase-requests/:id/convert-to-quotation", adminPurchaseWorkflowController.convertPurchaseRequestToQuotation);
 
 router.get("/quotations", adminPurchaseWorkflowController.getQuotations);
@@ -111,6 +116,19 @@ router.post("/purchase-orders/:id/payments", adminPurchaseWorkflowController.cre
 router.get("/purchase-orders/:id/timeline", adminPurchaseWorkflowController.getPOTimeline);
 
 // ========================
+// MODULE X: EQUIPMENT ASSETS (QR lifecycle)
+// ========================
+router.get("/equipment-assets/summary", adminEquipmentAssetController.summary);
+router.get("/equipment-assets", adminEquipmentAssetController.list);
+router.get("/equipment-assets/:id", adminEquipmentAssetController.detail);
+router.get("/equipment-assets/:id/qr", adminEquipmentAssetController.getQr);
+router.post(
+  "/equipment-assets/:id/regenerate-qr",
+  requirePermissions(["perm:equipment_assets:qr_regenerate"]),
+  adminEquipmentAssetController.regenerateQr
+);
+
+// ========================
 // MODULE 3: MAINTENANCE + FRANCHISE + POLICY + TRAINER SHARE + REPORT
 // ========================
 
@@ -122,11 +140,11 @@ router.get("/dashboard/overview", adminAdminCoreController.getDashboardOverview)
 // Maintenance
 router.get("/maintenances", adminAdminCoreController.getMaintenances);
 router.get("/maintenances/:id", adminAdminCoreController.getMaintenanceDetail);
-router.patch("/maintenances/:id/approve", adminAdminCoreController.approveMaintenance);
-router.patch("/maintenances/:id/reject", adminAdminCoreController.rejectMaintenance);
-router.patch("/maintenances/:id/assign", adminAdminCoreController.assignMaintenance);
-router.patch("/maintenances/:id/start", adminAdminCoreController.startMaintenance);
-router.patch("/maintenances/:id/complete", adminAdminCoreController.completeMaintenance);
+router.patch("/maintenances/:id/approve", requirePermissions(["perm:maintenance:transition"]), adminAdminCoreController.approveMaintenance);
+router.patch("/maintenances/:id/reject", requirePermissions(["perm:maintenance:transition"]), adminAdminCoreController.rejectMaintenance);
+router.patch("/maintenances/:id/assign", requirePermissions(["perm:maintenance:transition"]), adminAdminCoreController.assignMaintenance);
+router.patch("/maintenances/:id/start", requirePermissions(["perm:maintenance:transition"]), adminAdminCoreController.startMaintenance);
+router.patch("/maintenances/:id/complete", requirePermissions(["perm:maintenance:transition"]), adminAdminCoreController.completeMaintenance);
 
 // Franchise Requests
 router.get("/franchise-requests", adminAdminCoreController.getFranchiseRequests);
