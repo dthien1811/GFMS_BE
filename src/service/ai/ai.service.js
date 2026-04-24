@@ -2,6 +2,7 @@ import marketplaceService from "../marketplace/marketplace.service";
 import bookingService from "../member/booking.service";
 import memberMyPackageService from "../member/myPackages.service";
 import memberProfileService from "../member/profile.service";
+import membershipCardService from "../member/membershipCard.service";
 import { GFMS_CHAT_FALLBACK_PROMPT, GFMS_INTENT_PROMPT, GFMS_SYSTEM_PROMPT } from "./ai.prompts";
 import { classifyIntentWithOpenRouter, generateReplyWithOpenRouter, rewriteReplyWithOpenRouter } from "./openrouter.service";
 
@@ -33,6 +34,60 @@ const normalize = (v) =>
     .replace(/[^a-z0-9:/.\-\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+const detectUserLanguage = (message = "") => {
+  const raw = safeText(message);
+  const normalizedSource = normalize(raw);
+  if (!raw) return "vi";
+
+  const hasVietnameseAccent = /[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i.test(raw);
+  if (hasVietnameseAccent) return "vi";
+
+  const englishSignals = ["hello", "hi", "what", "can you", "find", "book", "gym", "trainer", "package", "schedule", "tomorrow", "today", "english", "speak english", "how many", "sessions", "where", "near", "help me"];
+  const vietnameseSignals = ["toi", "ban", "minh", "dat lich", "goi tap", "phong tap", "ngay mai", "hom nay", "con may", "duong", "the trang", "an gi", "tap gi"];
+  const enScore = englishSignals.reduce((sum, kw) => sum + (normalizedSource.includes(kw) ? 1 : 0), 0);
+  const viScore = vietnameseSignals.reduce((sum, kw) => sum + (normalizedSource.includes(kw) ? 1 : 0), 0);
+
+  if (enScore > viScore) return "en";
+  if (viScore > 0) return "vi";
+  if (/^[a-z0-9\s.,!?'-]+$/i.test(raw) && /[a-z]/i.test(raw)) return "en";
+  return "vi";
+};
+
+
+const isFreshnessSensitiveGeneralQuestion = (message = "") => {
+  const lower = normalize(message);
+  if (!lower) return false;
+  return [
+    "tong thong", "president", "thu tuong", "prime minister", "ceo", "gia hien tai", "current",
+    "bay gio la ai", "hien tai la ai", "moi nhat", "vua len", "tai dac cu", "election", "biden", "trump"
+  ].some((kw) => lower.includes(normalize(kw)));
+};
+
+const buildFreshnessSafeReply = (message = "", language = "vi") => {
+  const lower = normalize(message);
+  if (language === "en") {
+    return "I’m not connected to live news inside GFMS, so I should not state current political or time-sensitive facts as certain. For gym, trainers, packages, BMI, schedules, and bookings, I’ll use the system’s real data.";
+  }
+
+  if (lower.includes("tong thong") || lower.includes("president") || lower.includes("biden") || lower.includes("trump")) {
+    return "Thông tin chính trị/thời sự có thể thay đổi theo thời gian, nên mình không nên khẳng định chắc nếu không có nguồn cập nhật trực tiếp trong GFMS. Mình sẽ tập trung hỗ trợ bạn bằng dữ liệu thật của hệ thống như gym, PT, gói tập, BMI, lịch và booking.";
+  }
+
+  return "Thông tin này có thể thay đổi theo thời gian, nên mình không nên khẳng định chắc nếu không có dữ liệu cập nhật trực tiếp trong GFMS. Với dữ liệu gym, PT, gói tập, BMI, lịch và booking thì mình sẽ lấy theo hệ thống.";
+};
+
+const localizeStaticReply = (reply, language) => {
+  const text = safeText(reply);
+  if (language !== "en" || !text) return text;
+  const exact = new Map([
+    ["Mình đã hiểu rồi, bạn bấm nút bên dưới là tới đúng chỗ cần xem.", "Got it. Use the button below to open the right page."],
+    ["Hiện mình chưa tìm thấy gym phù hợp với từ khóa này trong dữ liệu hệ thống. Bạn có thể thử nhập tên đường/quận khác hoặc bấm xem tất cả gym.", "I could not load the gym list from the system right now. Please try again."],
+    ["Hiện mình chưa lấy được danh sách gói tập từ hệ thống.", "I could not load the package list from the system right now."],
+    ["Hiện mình chưa lấy được danh sách gym từ hệ thống, bạn thử lại giúp mình nhé.", "I could not load the gym list from the system right now. Please try again."],
+  ]);
+  return exact.get(text) || text;
+};
 
 const isSameNormalizedText = (a, b) => {
   const na = normalize(a);
@@ -104,9 +159,20 @@ const buildNavigateAction = (path, label) => ({
   payload: { path },
 });
 
+
+const buildSelectGymAction = (gym) => ({
+  type: "AI_SELECT_GYM",
+  label: "Chọn / xem gym",
+  payload: {
+    gymId: gym?.id || null,
+    gymName: gym?.name || null,
+    gymAddress: gym?.address || null,
+    path: gym?.id ? `/marketplace/gyms/${gym.id}` : "/marketplace/gyms",
+  },
+});
 const buildSelectTrainerAction = (trainer, extra = {}) => ({
   type: "AI_SELECT_TRAINER",
-  label: "Chọn PT này",
+  label: "Chọn HLV này",
   payload: {
     trainerId: trainer?.id || null,
     trainerName: trainer?.name || null,
@@ -507,12 +573,16 @@ const summarizeGyms = (rows) =>
       id: x.id,
       name: x.name,
       address: x.address,
+      city: x.city || x.province || null,
+      district: x.district || null,
+      ward: x.ward || null,
+      phone: x.phone || x.phoneNumber || null,
       status: x.status,
       images: x.images || [],
       imageUrl: pickImageUrl(x.imageUrl, x.thumbnail, x.coverImage, x.images),
     }))
     .filter(isLikelyValidGym)
-    .slice(0, 18);
+    .slice(0, 100);
 
 const summarizeTrainers = (rows) =>
   safeArray(rows)
@@ -544,7 +614,23 @@ const summarizePackages = (rows) =>
       imageUrl: pickImageUrl(x.imageUrl, x.thumbnail, x.coverImage, x?.Gym?.imageUrl, x?.Gym?.images),
     }))
     .filter(isLikelyValidPackage)
-    .slice(0, 40);
+    .slice(0, 100);
+
+const summarizeMembershipPlans = (rows = [], gym = null) =>
+  safeArray(rows)
+    .map((x) => ({
+      id: x.id,
+      name: x.label || x.name || (x.months ? `Thẻ ${x.months} tháng` : "Thẻ thành viên"),
+      code: x.code || null,
+      months: Number(x.months || 0),
+      price: Number(x.price || 0),
+      description: x.description || "",
+      imageUrl: pickImageUrl(x.imageUrl, gym?.imageUrl, gym?.images),
+      gymId: gym?.id || x.gymId || null,
+      gymName: gym?.name || x.gymName || null,
+      gymAddress: gym?.address || null,
+    }))
+    .filter((x) => x.id && x.gymId && x.months > 0);
 
 const summarizeMyPackages = (rows) =>
   safeArray(rows)
@@ -599,8 +685,8 @@ const buildGymCards = (gyms, bmiContext) => ({
       tags: [gym.address].filter(Boolean),
       imageUrl: gym.imageUrl || null,
       badge: gym.status === "active" ? "Đang hoạt động" : safeText(gym.status),
-      actionLabel: "Xem gym",
-      action: buildNavigateAction(`/marketplace/gyms/${gym.id}`, "Xem gym"),
+      actionLabel: "Chọn / xem gym",
+      action: buildSelectGymAction(gym),
     })),
 });
 
@@ -630,9 +716,27 @@ const buildPackageCards = (packages, bmiContext, preferredTrainer = null, select
     })),
 });
 
+const buildMembershipPlanCards = (plans) => ({
+  type: "membership_plan_list",
+  title: "Thẻ thành viên phù hợp",
+  items: safeArray(plans)
+    .slice(0, 8)
+    .map((plan) => ({
+      id: plan.id,
+      title: plan.name || (plan.months ? `Thẻ ${plan.months} tháng` : "Thẻ thành viên"),
+      subtitle: plan.gymName || "Thẻ thành viên",
+      meta: [plan.months ? `${plan.months} tháng` : null, formatMoney(plan.price), plan.gymAddress].filter(Boolean).join(" • "),
+      tags: ["Thẻ thành viên", plan.gymName].filter(Boolean),
+      imageUrl: plan.imageUrl || null,
+      badge: "Membership",
+      actionLabel: "Xem gym / mua thẻ",
+      action: buildNavigateAction(plan.gymId ? `/marketplace/gyms/${plan.gymId}` : "/marketplace/gyms", "Xem gym / mua thẻ"),
+    })),
+});
+
 const buildTrainerCards = (rows) => ({
   type: "trainer_list",
-  title: "PT phù hợp",
+  title: "HLV phù hợp",
   items: safeArray(rows)
     .slice(0, 8)
     .map((row) => ({
@@ -643,7 +747,7 @@ const buildTrainerCards = (rows) => ({
       tags: [row.gymName, row.packageName].filter(Boolean),
       imageUrl: row.imageUrl || null,
       badge: row.gymName || null,
-      actionLabel: row.activationId ? "Chọn PT này" : "Xem PT",
+      actionLabel: row.activationId ? "Chọn HLV này" : "Xem HLV",
       action: row.activationId
         ? buildSelectTrainerAction(
             {
@@ -660,7 +764,7 @@ const buildTrainerCards = (rows) => ({
               activationId: row.activationId || null,
             }
           )
-        : buildNavigateAction(`/marketplace/trainers/${row.id}`, "Xem PT"),
+        : buildNavigateAction(`/marketplace/trainers/${row.id}`, "Xem HLV"),
     })),
 });
 
@@ -738,15 +842,45 @@ const parseTimeFromMessage = (message) => {
 
 const scoreIntent = (lower, patterns) => patterns.reduce((acc, p) => acc + (p.test(lower) ? 1 : 0), 0);
 
+const isCurrentDateQuestion = (message = "") => {
+  const lower = normalize(message);
+  return /(hom nay.*(thu may|ngay may|ngay gi)|thu may hom nay|ngay hom nay|today.*(date|day))/i.test(lower);
+};
+
+const isStrongGymQuestion = (message = "") => {
+  const lower = normalize(message);
+  return /(gym|phong gym|phong tap|co so|cho tap|duong|pho|quan|phuong|gan|nui thanh|2 thang 9)/.test(lower) &&
+    !/(dat lich|book|slot|gio nao|khung gio)/.test(lower);
+};
+
+const isStrongMembershipQuestion = (message = "") => {
+  const lower = normalize(message);
+  return /(membership|the thanh vien|the thang|the tap|tap theo thang|gia thang|goi thanh vien)/.test(lower);
+};
+
+const isSystemGuideQuestion = (message = "") => {
+  const lower = normalize(message);
+  return /(huong dan|su dung he thong|cach dung|flow|luong|quy trinh|dang ky thi lam sao|muon dang ky thi lam sao)/.test(lower);
+};
+
+const stripBookingLeakForIntent = (intent, bookingContextFromClient) => {
+  if (intent === "booking") return bookingContextFromClient || null;
+  return null;
+};
+
 const INTENT_PATTERNS = {
+  system_guide: [/\bhuong dan\b/, /\bsu dung he thong\b/, /\bcach dung\b/, /\bquy trinh\b/, /\bflow\b/, /\bluong\b/],
+  system_guide: [/\bhuong dan\b/, /\bcach su dung\b/, /\bquy trinh\b/, /\bluong he thong\b/, /\bdung he thong\b/],
   member_package: [/\bgoi cua toi\b/, /\bgoi hien tai\b/, /\bcon bao nhieu buoi\b/, /\bcon bao nhieu session\b/, /\bpackage cua toi\b/],
   member_schedule: [/\blich sap toi\b/, /\blich cua toi\b/, /\bmai co lich\b/, /\bbuoi tiep theo\b/, /\bnhac lich\b/, /\btuan nay.*lich\b/],
   booking: [/\bdat lich\b/, /\bbooking\b/, /\bbook\b/, /\bslot\b/, /\bxac nhan dat lich\b/],
+  franchise: [/\bnhuong quyen\b/, /\bfranchise\b/, /\bmo gym\b/, /\bmo phong gym\b/, /\bmo chi nhanh\b/, /\bchu phong\b/, /\bowner\b/, /\bchinh sach nhuong quyen\b/],
+  membership: [/\bthe thanh vien\b/, /\bmembership\b/, /\bthe thang\b/, /\bthe tap\b/, /\btap theo thang\b/, /\bgia thang\b/, /\bgia theo thang\b/, /\bgoi thang\b/, /\bgoi thanh vien\b/, /\bmua goi thanh vien\b/, /\bdang ky thanh vien\b/],
   bmi: [/\bbmi\b/, /\bchi so\b/, /\b\d{3}\s*cm\b/, /\b\d{2,3}\s*kg\b/, /\b1m\d{2}\b/],
   nutrition: [/\ban gi\b/, /\bnen an\b/, /\bco the an\b/, /\bdinh duong\b/, /\bthuc don\b/, /\bbo sung\b/, /\bkieng\b/],
   workout: [/\btap gi\b/, /\blich tap\b/, /\bcardio\b/, /\bbai tap\b/, /\btap sao\b/],
   gym: [/\bgym nao\b/, /\bgoi y gym\b/, /\bgym phu hop\b/, /\bphong gym\b/, /\bcho tap\b/, /\bco so nao\b/, /\bgym\b/],
-  package: [/\bgoi nao\b/, /\bgoi tap\b/, /\bmua goi\b/, /\bgoi phu hop\b/, /\bpackage\b/, /\bcombo\b/, /\bplan\b/],
+  package: [/\bgoi nao\b/, /\bgoi tap\b/, /\bmua goi\b/, /\bgoi phu hop\b/, /\bpackage\b/, /\bcombo\b/, /\bplan\b/, /\btang co\b/, /\bgiam mo\b/, /\bgiam can\b/],
   trainer: [/\bpt nao\b/, /\btrainer nao\b/, /\bhuan luyen vien\b/, /\bai kem toi\b/, /\bpt hop\b/, /\bhlv\b/],
 };
 
@@ -774,22 +908,36 @@ const inferIntentFromFollowUp = ({ message, history = [], isAuthed, bookingConte
 
   if (!normalizedMessage) return null;
 
-  const hasBookingMemory =
+  // Core V2 guard: câu hỏi gym/membership/hướng dẫn/ngày hiện tại tuyệt đối không bị kéo nhầm sang booking.
+  if (isCurrentDateQuestion(message) || isStrongGymQuestion(message) || isStrongMembershipQuestion(message) || isSystemGuideQuestion(message)) {
+    return null;
+  }
+
+  const hasClientBookingContext =
     !!bookingContextFromClient?.trainerId ||
     !!bookingContextFromClient?.trainerName ||
     !!bookingContextFromClient?.packageId ||
     !!bookingContextFromClient?.packageName ||
-    recentText.includes("dat lich") ||
-    recentText.includes("slot") ||
-    recentText.includes("goi phu hop") ||
-    recentText.includes("pt");
+    !!bookingContextFromClient?.activationId ||
+    !!bookingContextFromClient?.selectedDate ||
+    !!bookingContextFromClient?.selectedTime;
+
+  const recentBookingIsActive =
+    recentText.includes("dat lich") &&
+    (recentText.includes("slot") ||
+      recentText.includes("chon gio") ||
+      recentText.includes("ngay muon tap") ||
+      recentText.includes("minh da nho") ||
+      recentText.includes("booking"));
+
+  const hasBookingMemory = hasClientBookingContext || recentBookingIsActive;
 
   if (
     isAuthed &&
     hasBookingMemory &&
     (parseDateFromMessage(message) ||
       parseTimeFromMessage(message) ||
-      /(gio|luc|khung gio|mai|ngay mai|hom nay|doi gio|doi ngay|gói này|goi nay|pt nay|pt kia|\d{1,2}\/\d{1,2}|\d{1,2}-\d{1,2})/.test(
+      /(gio|luc|khung gio|mai|ngay mai|hom nay|doi gio|doi ngay|gói này|goi nay|pt nay|hlv nay|pt kia|hlv kia|\d{1,2}\/\d{1,2}|\d{1,2}-\d{1,2})/.test(
         normalizedMessage
       ))
   ) {
@@ -815,7 +963,7 @@ const inferIntentFromFollowUp = ({ message, history = [], isAuthed, bookingConte
   return null;
 };
 
-const detectNavigationIntent = (message, isAuthed) => {
+const detectNavigationIntent = (message, isAuthed, pageContext = {}, intent = "general") => {
   const lower = normalize(message);
 
   if (isAuthed && ["mo goi cua toi", "vao goi cua toi", "mo trang goi"].some((w) => lower.includes(w))) {
@@ -830,8 +978,13 @@ const detectNavigationIntent = (message, isAuthed) => {
     return buildNavigateAction("/member/progress", "Mở tiến độ");
   }
 
-  if (["dang ky", "tao tai khoan", "register", "sign up"].some((w) => lower.includes(w))) {
-    return buildNavigateAction("/register", "Đăng ký");
+  const asksAccountSignup = /(dang ky tai khoan|tao tai khoan|register account|sign up account|sign up|register)/.test(lower);
+  const asksGenericRegister = /\bdang ky\b/.test(lower);
+  const marketplaceContext = ["gyms", "packages", "trainers"].includes(pageContext?.pageType);
+  const productIntent = ["gym", "membership", "package", "trainer", "system_guide"].includes(intent);
+
+  if ((asksAccountSignup || asksGenericRegister) && !(marketplaceContext || productIntent)) {
+    return buildNavigateAction("/register", "Đăng ký tài khoản");
   }
 
   if (["dang nhap", "login", "log in", "vao he thong", "vo he thong"].some((w) => lower.includes(w))) {
@@ -845,11 +998,37 @@ const detectNavigationIntent = (message, isAuthed) => {
   return null;
 };
 
+const VIETNAM_LOCATION_STOPWORDS = [
+  "gym", "phong", "tap", "phong tap", "phong gym", "cho tap", "tim", "goi y", "co", "nao",
+  "gan", "o", "tai", "khu vuc", "duong", "pho", "road", "street", "so", "minh", "toi", "cho minh", "khong", "ko", "k", "nha", "nhe", "nhi", "vay", "a"
+];
+
+const cleanLocationNeedle = (text = "") => {
+  let s = normalize(text);
+  VIETNAM_LOCATION_STOPWORDS.forEach((word) => {
+    s = s.replace(new RegExp("\\b" + word + "\\b", "g"), " ");
+  });
+  return s
+    .replace(/\bda nang\b/g, " ")
+    .replace(/\bdanang\b/g, " ")
+    .replace(/\bdn\b/g, " ")
+    .replace(/\btp hcm\b/g, " ")
+    .replace(/\btphcm\b/g, " ")
+    .replace(/\bho chi minh\b/g, " ")
+    .replace(/\bsai gon\b/g, " ")
+    .replace(/\bha noi\b/g, " ")
+    .replace(/\b(co|nao|khong|ko|k|nha|nhe|nhi|vay|a)\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
 const extractLocationHints = (text) => {
   const source = normalize(text);
-  if (!source) return [];
+  if (!source) return { cities: [], areas: [], streets: [], rawNeedle: "", hasSpecificAddress: false };
 
-  const hints = new Set();
+  const cities = new Set();
+  const areas = new Set();
+  const streets = new Set();
 
   const cityAliases = {
     "da nang": ["da nang", "danang", "dn"],
@@ -863,29 +1042,54 @@ const extractLocationHints = (text) => {
   };
 
   Object.entries(cityAliases).forEach(([canonical, aliases]) => {
-    if (aliases.some((alias) => source.includes(alias))) hints.add(canonical);
+    if (aliases.some((alias) => source.includes(alias))) cities.add(canonical);
   });
 
-  const areaRegex = /(?:quan|huyen|phuong|xa)\s+[a-z0-9]+(?:\s+[a-z0-9]+){0,2}/g;
-  for (const match of source.match(areaRegex) || []) hints.add(match.trim());
+  for (const match of source.matchAll(/\b(?:duong|pho|street|road|hem|ngo|kiet)\s+([a-z0-9]+(?:\s+[a-z0-9]+){0,4})/g)) {
+    const street = safeText(match[1]);
+    if (street.length >= 3) streets.add(street);
+  }
 
-  return [...hints];
+  for (const match of source.matchAll(/\b(?:quan|huyen|phuong|xa|thi tran)\s+([a-z0-9]+(?:\s+[a-z0-9]+){0,4})/g)) {
+    const area = safeText(match[1]);
+    if (area.length >= 2) areas.add(area);
+  }
+
+  const rawNeedle = cleanLocationNeedle(source);
+  if (rawNeedle.length >= 3) streets.add(rawNeedle);
+
+  return {
+    cities: [...cities],
+    areas: [...areas],
+    streets: [...streets],
+    rawNeedle,
+    hasSpecificAddress: areas.size > 0 || streets.size > 0 || rawNeedle.length >= 3,
+  };
 };
 
 const buildGymSearchNeedle = (gym) =>
-  normalize([gym?.name, gym?.address, gym?.city, gym?.district, gym?.ward, gym?.description].filter(Boolean).join(" "));
+  normalize([gym?.name, gym?.address, gym?.city, gym?.district, gym?.ward, gym?.phone, gym?.description].filter(Boolean).join(" "));
 
 const buildPublicContext = async () => {
   const [gymsRes, trainersRes, packagesRes] = await Promise.allSettled([
-    marketplaceService.listGyms({ limit: 24 }),
-    marketplaceService.listTrainers({ limit: 24 }),
-    marketplaceService.listPackages({ limit: 24 }),
+    marketplaceService.listGyms({ limit: 100 }),
+    marketplaceService.listTrainers({ limit: 100 }),
+    marketplaceService.listPackages({ limit: 100 }),
   ]);
 
+  const gyms = gymsRes.status === "fulfilled" ? summarizeGyms(unwrapListResult(gymsRes.value)) : [];
+  const trainers = trainersRes.status === "fulfilled" ? summarizeTrainers(unwrapListResult(trainersRes.value)) : [];
+  const packages = packagesRes.status === "fulfilled" ? summarizePackages(unwrapListResult(packagesRes.value)) : [];
+
+  const membershipPlanResults = await Promise.allSettled(
+    gyms.slice(0, 60).map(async (gym) => summarizeMembershipPlans(await membershipCardService.listPlans({ gymId: gym.id }), gym))
+  );
+
   return {
-    gyms: gymsRes.status === "fulfilled" ? summarizeGyms(unwrapListResult(gymsRes.value)) : [],
-    trainers: trainersRes.status === "fulfilled" ? summarizeTrainers(unwrapListResult(trainersRes.value)) : [],
-    packages: packagesRes.status === "fulfilled" ? summarizePackages(unwrapListResult(packagesRes.value)) : [],
+    gyms,
+    trainers,
+    packages,
+    membershipPlans: membershipPlanResults.flatMap((res) => (res.status === "fulfilled" ? res.value : [])),
   };
 };
 
@@ -909,55 +1113,89 @@ const recommendGyms = (publicContext, message, bmiContext) => {
   const gyms = safeArray(publicContext?.gyms);
   if (!gyms.length) return [];
 
-  const lower = normalize(message);
-  const locationHints = extractLocationHints(message);
+  const location = extractLocationHints(message);
+  const hasSpecificLocation = location.hasSpecificAddress || location.cities.length > 0 || location.rawNeedle.length >= 3;
 
   const rows = gyms
     .map((gym) => {
       const hay = buildGymSearchNeedle(gym);
+      const gymName = normalize(gym?.name || "");
       let score = 0;
 
       if (safeLower(gym.status) === "active") score += 50;
-      else score -= 100;
+      else score -= 1000;
 
-      if (locationHints.length && locationHints.some((hint) => hay.includes(hint))) score += 40;
-      if (!locationHints.length) score += 5;
+      const matchCity = location.cities.some((x) => hay.includes(x));
+      const matchArea = location.areas.some((x) => hay.includes(x));
+      const matchStreet = location.streets.some((x) => hay.includes(x));
+      const matchRaw = !!location.rawNeedle && hay.includes(location.rawNeedle);
+      const matchName = !!location.rawNeedle && gymName.includes(location.rawNeedle);
 
-      const cleanedNeedle = lower
-        .replace(/\bgym\b/g, " ")
-        .replace(/\bphong tap\b/g, " ")
-        .replace(/\bcho tap\b/g, " ")
-        .replace(/\bgiup minh\b/g, " ")
-        .replace(/\bcho minh\b/g, " ")
-        .replace(/\btim\b/g, " ")
-        .replace(/\bgoi y\b/g, " ")
-        .trim();
-
-      if (cleanedNeedle && hay.includes(cleanedNeedle)) score += 20;
+      if (matchCity) score += 100;
+      if (matchArea) score += 160;
+      if (matchStreet) score += 220;
+      if (matchRaw) score += 240;
+      if (matchName) score += 180;
+      if (!hasSpecificLocation) score += 5;
       if (bmiContext?.goal) score += 5;
-      if (hay.includes("japan") && locationHints.length) score -= 120;
 
-      return { ...gym, score };
+      const matchedSpecific = matchArea || matchStreet || matchRaw || matchName;
+      if (location.hasSpecificAddress && !matchedSpecific) score -= 120;
+
+      return { ...gym, score, matchCity, matchArea, matchStreet, matchRaw, matchName, matchedSpecific };
     })
-    .filter((gym) => gym.score > -50)
+    .filter((gym) => {
+      if (safeLower(gym.status) !== "active") return false;
+      if (location.hasSpecificAddress) return gym.matchedSpecific || gym.score >= 80;
+      if (hasSpecificLocation) return gym.matchCity || gym.matchArea || gym.matchStreet || gym.matchRaw || gym.matchName;
+      return gym.score > 0;
+    })
     .sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name)));
 
-  const activeRows = rows.filter((gym) => safeLower(gym.status) === "active");
-  return (activeRows.length ? activeRows : rows).slice(0, 8);
+  return rows.slice(0, location.hasSpecificAddress ? 6 : 8);
+};
+
+const recommendMembershipPlans = (publicContext, message) => {
+  const plans = safeArray(publicContext?.membershipPlans);
+  if (!plans.length) return [];
+
+  const location = extractLocationHints(message);
+
+  return plans
+    .map((plan) => {
+      const hay = normalize([plan.name, plan.description, plan.gymName, plan.gymAddress].filter(Boolean).join(" "));
+      let score = 0;
+      if (location.cities.some((x) => hay.includes(x))) score += 80;
+      if (location.areas.some((x) => hay.includes(x))) score += 120;
+      if (location.streets.some((x) => hay.includes(x))) score += 140;
+      if (location.rawNeedle && hay.includes(location.rawNeedle)) score += 160;
+      if (!location.hasSpecificAddress && !location.cities.length) score += 10;
+      score += Math.max(1, 24 - safeNumber(plan.months, 12));
+      return { ...plan, score };
+    })
+    .filter((plan) => plan.score > 0)
+    .sort((a, b) => b.score - a.score || safeNumber(a.price, 999999999) - safeNumber(b.price, 999999999))
+    .slice(0, 8);
 };
 
 const recommendPackages = (publicContext, bmiContext) => {
   const packages = safeArray(publicContext?.packages);
   if (!packages.length) return [];
 
+  const profile = inferFitnessProfile(bmiContext);
+
   return packages
     .filter((pkg) => pkg.gymName)
+    .map((pkg) => ({
+      ...pkg,
+      score: scorePackageForProfile(pkg, profile, null, bmiContext),
+    }))
     .sort((a, b) => {
       const aPrice = safeNumber(a.price, 999999999);
       const bPrice = safeNumber(b.price, 999999999);
       const aSessions = safeNumber(a.sessions, 999);
       const bSessions = safeNumber(b.sessions, 999);
-      return aPrice - bPrice || aSessions - bSessions || String(a.name).localeCompare(String(b.name));
+      return b.score - a.score || aPrice - bPrice || aSessions - bSessions || String(a.name).localeCompare(String(b.name));
     })
     .slice(0, 8);
 };
@@ -971,39 +1209,36 @@ const recommendTrainersByPackages = (publicContext, privateContext, bmiContext, 
   const activePkg =
     safeArray(privateContext?.myPackages).find((x) => safeLower(x.status) === "active") || safeArray(privateContext?.myPackages)[0] || null;
 
-  const matchedPackages = activePkg ? packages.filter((pkg) => Number(pkg.gymId) === Number(activePkg.gymId)) : packages;
+  const baseGymId = activePkg?.gymId || null;
+  const gymPackages = baseGymId ? packages.filter((pkg) => Number(pkg.gymId) === Number(baseGymId)) : packages;
+  const matchedTrainers = baseGymId ? trainers.filter((t) => Number(t.gymId) === Number(baseGymId)) : trainers;
 
-  const rows = matchedPackages
-    .map((pkg) => {
-      const trainer = trainers.find((t) => Number(t.id) === Number(pkg.trainerId)) || null;
-      if (!trainer) return null;
-
-      const searchHay = normalize(`${trainer.name} ${trainer.specialization} ${pkg.name} ${pkg.gymName}`);
+  const rows = matchedTrainers
+    .map((trainer) => {
+      const firstPkg = gymPackages.find((pkg) => Number(pkg.gymId) === Number(trainer.gymId)) || gymPackages[0] || null;
+      const searchHay = normalize(`${trainer.name} ${trainer.specialization} ${firstPkg?.name || ""} ${firstPkg?.gymName || ""}`);
       let score = 0;
 
-      if (activePkg && Number(activePkg.gymId) === Number(pkg.gymId)) score += 40;
+      if (baseGymId && Number(trainer.gymId) === Number(baseGymId)) score += 60;
       if (safeNumber(trainer.rating, 0) > 0) score += safeNumber(trainer.rating, 0) * 10;
       if (goal && searchHay.includes(goal)) score += 18;
       if (goal.includes("tang can") && /(strength|bulking|mass|tang can|tang co|co bap|suc manh)/.test(searchHay)) score += 18;
-      if (goal.includes("giam") && /(fat|cardio|giam|lean)/.test(searchHay)) score += 18;
+      if (goal.includes("giam") && /(fat|cardio|giam|lean|siet mo)/.test(searchHay)) score += 18;
 
       const cleanedNeedle = lower.replace(/\b(pt|huan luyen vien|trainer)\b/g, "").trim();
-      if (cleanedNeedle && searchHay.includes(cleanedNeedle)) score += 10;
+      if (cleanedNeedle && searchHay.includes(cleanedNeedle)) score += 25;
 
       return {
         id: trainer.id,
         name: trainer.name,
         specialization: trainer.specialization || "PT cá nhân",
         rating: trainer.rating,
-        packageName: pkg.name,
-        packageId: pkg.id,
-        gymId: pkg.gymId,
-        gymName: pkg.gymName,
-        activationId: activePkg && Number(activePkg.gymId) === Number(pkg.gymId) ? activePkg.activationId : null,
-        helperText:
-          activePkg && Number(activePkg.gymId) === Number(pkg.gymId)
-            ? "có thể đi tiếp sang gym detail để đặt lịch"
-            : "đi kèm gói tập của gym này",
+        packageName: activePkg?.packageName || firstPkg?.name || null,
+        packageId: activePkg?.packageId || firstPkg?.id || null,
+        gymId: trainer.gymId || firstPkg?.gymId || activePkg?.gymId || null,
+        gymName: activePkg?.gymName || firstPkg?.gymName || null,
+        activationId: activePkg?.activationId || null,
+        helperText: activePkg ? "HLV phù hợp với gói active/gym hiện tại" : "chọn gym hoặc gói trước khi đặt lịch",
         imageUrl: trainer.imageUrl || null,
         score,
       };
@@ -1011,26 +1246,7 @@ const recommendTrainersByPackages = (publicContext, privateContext, bmiContext, 
     .filter(Boolean)
     .sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name)));
 
-  if (rows.length) return rows.slice(0, 8);
-
-  return trainers
-    .map((trainer) => ({
-      id: trainer.id,
-      name: trainer.name,
-      specialization: trainer.specialization || "PT cá nhân",
-      rating: trainer.rating,
-      gymId: trainer.gymId || null,
-      gymName: null,
-      packageName: null,
-      packageId: null,
-      activationId: null,
-      helperText: bmiContext?.goal ? `hợp mục tiêu ${bmiContext.goal.toLowerCase()}` : "cần chọn gym hoặc gói trước",
-      imageUrl: trainer.imageUrl || null,
-      score:
-        safeNumber(trainer.rating, 0) * 10 + (goal && normalize(`${trainer.name} ${trainer.specialization}`).includes(goal) ? 15 : 0),
-    }))
-    .sort((a, b) => b.score - a.score || String(a.name).localeCompare(String(b.name)))
-    .slice(0, 8);
+  return rows.slice(0, 8);
 };
 
 const replyForMemberPackage = (privateContext) => {
@@ -1045,7 +1261,7 @@ const replyForMemberPackage = (privateContext) => {
   }
 
   return {
-    reply: `Bạn đang có gói ${first.packageName}${first.gymName ? ` tại ${first.gymName}` : ""}. Bạn còn ${first.sessionsRemaining} buổi, đã dùng ${first.sessionsUsed}/${first.totalSessions}. Hạn dùng đến ${formatDateVN(first.expiryDate)}.`,
+    reply: `Bạn đang có gói ${first.packageName}${first.gymName ? ` tại ${first.gymName}` : ""}. Bạn còn ${first.sessionsRemaining} buổi, đã dùng ${first.sessionsUsed}/${first.totalSessions}.`,
     suggestions: [],
     actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
   };
@@ -1267,11 +1483,33 @@ const buildAiContextSnapshot = ({ isAuthed, publicContext, privateContext, bmiCo
 };
 
 const answerGeneralConversation = async ({ message, history = [], isAuthed, bmiContext, pageContext, userPreferences }) => {
+  const lower = normalize(message);
+
+  // Core V2: chào hỏi/general không được tự kéo về HLV/PT cũ.
+  if (/^(hello|hi|hey|xin chao|chao|chao ban|alo)$/i.test(lower)) {
+    return {
+      reply: isAuthed
+        ? "Chào bạn, mình là trợ lý GFMS. Mình có thể giúp bạn xem gym, thẻ thành viên, gói tập, BMI, lịch tập hoặc hướng dẫn đặt lịch đúng flow."
+        : "Chào bạn, mình là trợ lý GFMS. Mình có thể giúp bạn tìm gym, xem thẻ thành viên, gói tập hoặc tìm hiểu nhượng quyền.",
+      suggestions: [],
+      actions: [buildNavigateAction("/marketplace/gyms", "Xem gym")],
+    };
+  }
+
   const contextParts = {
     isAuthed,
     pageType: pageContext?.pageType || "general",
     bmiSummary: bmiContext?.bmi ? buildBmiSummaryLine(bmiContext) : null,
-    habits: buildUserHabitSummary(userPreferences),
+    // Không đưa favoriteTrainer vào fallback general để tránh AI tự nhắc HLV Thanh khi user chỉ chào/hỏi chung.
+    habits: userPreferences
+      ? {
+          favoriteIntent: userPreferences.favoriteIntent || null,
+          favoritePath: userPreferences.favoritePath || null,
+          favoritePackageName: userPreferences.favoritePackageName || null,
+          lastPackageName: userPreferences.lastPackageName || null,
+          lastVisitedPath: userPreferences.lastVisitedPath || null,
+        }
+      : null,
   };
 
   const recentHistory = safeArray(history)
@@ -1288,7 +1526,7 @@ const answerGeneralConversation = async ({ message, history = [], isAuthed, bmiC
         content: [
           `Ngữ cảnh: ${JSON.stringify(contextParts)}`,
           `Tin nhắn hiện tại: ${safeText(message)}`,
-          "Hãy trả lời thật tự nhiên, ngắn gọn, đúng trọng tâm. Không lặp BMI trừ khi người dùng đang hỏi về sức khỏe, ăn uống, tập luyện hoặc mục tiêu cơ thể.",
+          "Hãy trả lời thật tự nhiên, ngắn gọn, đúng trọng tâm. Không tự nhắc HLV/PT/booking cũ nếu tin nhắn hiện tại không hỏi đặt lịch. Không lặp BMI trừ khi người dùng đang hỏi về sức khỏe, ăn uống, tập luyện hoặc mục tiêu cơ thể.",
         ].join("\n"),
       },
     ],
@@ -1296,11 +1534,10 @@ const answerGeneralConversation = async ({ message, history = [], isAuthed, bmiC
     max_tokens: 220,
   });
 
-  const lower = normalize(message);
   const systemActions = [];
 
-  if (["dang ky", "tao tai khoan", "register", "sign up"].some((w) => lower.includes(w))) {
-    systemActions.push(buildNavigateAction("/register", "Đăng ký"));
+  if (["dang ky tai khoan", "tao tai khoan", "register", "sign up"].some((w) => lower.includes(w))) {
+    systemActions.push(buildNavigateAction("/register", "Đăng ký tài khoản"));
     systemActions.push(buildNavigateAction("/login", "Đăng nhập"));
   } else if (["dang nhap", "login", "vao he thong", "vo he thong"].some((w) => lower.includes(w))) {
     systemActions.push(buildNavigateAction("/login", "Đăng nhập"));
@@ -1316,7 +1553,12 @@ const answerGeneralConversation = async ({ message, history = [], isAuthed, bmiC
   return buildGeneralReply(isAuthed, bmiContext);
 };
 
-const NON_REWRITE_INTENTS = new Set(["member_package", "member_schedule", "booking"]);
+const NON_REWRITE_INTENTS = new Set([
+  "member_package", "member_schedule", "booking",
+  "gym", "membership", "package", "trainer", "franchise", "system_guide",
+  "bmi", "nutrition", "workout",
+]);
+
 
 const finalizeAssistantResponse = async ({
   response,
@@ -1329,6 +1571,7 @@ const finalizeAssistantResponse = async ({
   bmiContext,
   pageContext,
   userPreferences,
+  responseLanguage = "vi",
 }) => {
   const baseResponse = {
     suggestions: [],
@@ -1341,7 +1584,7 @@ const finalizeAssistantResponse = async ({
     ...(response || {}),
   };
 
-  const reply = safeText(baseResponse.reply);
+  const reply = localizeStaticReply(baseResponse.reply, responseLanguage);
   if (!reply) return baseResponse;
 
   if (NON_REWRITE_INTENTS.has(intent)) {
@@ -1374,20 +1617,31 @@ const finalizeAssistantResponse = async ({
 };
 
 const inferIntentHybrid = async ({ message, history = [], isAuthed, bookingContextFromClient = null }) => {
+  // Core V2: ưu tiên intent rõ ràng của câu hiện tại trước context cũ.
+  // Tránh lỗi user hỏi "đường 2 tháng 9" nhưng bị trả lời slot của PT cũ.
+  const ruleIntent = inferIntent(message, isAuthed);
+
+  if (isCurrentDateQuestion(message)) return "general";
+  if (isSystemGuideQuestion(message)) return "system_guide";
+  if (isStrongMembershipQuestion(message)) return "membership";
+  if (isStrongGymQuestion(message)) return "gym";
+
+  if (ruleIntent !== "general" && ruleIntent !== "booking") return ruleIntent;
+
   const followUpIntent = inferIntentFromFollowUp({ message, history, isAuthed, bookingContextFromClient });
   if (followUpIntent) return followUpIntent;
 
-  const ruleIntent = inferIntent(message, isAuthed);
   if (ruleIntent !== "general") return ruleIntent;
 
   const llmIntent = await classifyIntentWithOpenRouter({
     systemPrompt: GFMS_INTENT_PROMPT,
     message,
-    labels: ["general", "bmi", "nutrition", "workout", "gym", "package", "trainer", "booking", "member_package", "member_schedule"],
+    labels: ["general", "system_guide", "bmi", "nutrition", "workout", "gym", "membership", "package", "trainer", "booking", "member_package", "member_schedule", "franchise"],
   });
 
   if (!llmIntent) return ruleIntent;
   if (!isAuthed && ["member_package", "member_schedule"].includes(llmIntent)) return "general";
+  if (llmIntent === "booking" && !bookingContextFromClient && (isStrongGymQuestion(message) || isStrongMembershipQuestion(message))) return ruleIntent;
 
   return llmIntent;
 };
@@ -1609,33 +1863,12 @@ const buildBookingReply = async ({
     gymName: currentPackage.gymName,
   };
 
-  if (!trainerMentioned && bookingContextFromClient?.selectionSource === "trainer_card") {
-    return {
-      reply: `Mình đã nhận PT ${bookingContextFromClient?.trainerName || "bạn vừa chọn"}, nhưng PT này hiện không khả dụng trong gói active ${currentPackage.packageName}. Bạn chọn một PT khả dụng bên dưới nhé.`,
-      suggestions: trainers.slice(0, 3).map((t) => ({
-        type: "message",
-        label: getTrainerDisplayName(t),
-        value: `Tôi muốn đặt lịch với PT ${getTrainerDisplayName(t)}`,
-      })),
-      cards: trainers.length
-        ? buildTrainerCards(
-            trainers.slice(0, 8).map((t) => ({
-              id: t.id,
-              name: getTrainerDisplayName(t),
-              specialization: Array.isArray(t.specialization) ? t.specialization.join(", ") : safeText(t.specialization),
-              rating: t.rating,
-              gymId: currentPackage.gymId,
-              gymName: currentPackage.gymName,
-              packageId: currentPackage.packageId,
-              packageName: currentPackage.packageName,
-              helperText: "PT khả dụng từ gói active của bạn",
-              activationId: currentPackage.activationId,
-              imageUrl: t?.imageUrl || t?.avatar || t?.photo || t?.User?.image || t?.User?.avatar || null,
-            }))
-          )
-        : null,
-      actions: [buildNavigateAction("/member/my-packages", "Xem gói của tôi")],
-      bookingContext: nextBookingContextBase,
+  if (!trainerMentioned && bookingContextFromClient?.selectionSource === "trainer_card" && bookingContextFromClient?.trainerId) {
+    trainerMentioned = {
+      id: bookingContextFromClient.trainerId,
+      name: bookingContextFromClient.trainerName || `PT #${bookingContextFromClient.trainerId}`,
+      gymId: bookingContextFromClient.gymId || currentPackage.gymId || null,
+      gymName: bookingContextFromClient.gymName || currentPackage.gymName || null,
     };
   }
 
@@ -1853,10 +2086,12 @@ const buildSmartBookingRecommendation = async ({
   let selectedPackage = memory.packageMatch || null;
 
   if (!preferredTrainer) {
+    const packages = recommendPackages(publicContext, bmiContext);
     return {
-      reply: "Mình chưa xác định rõ PT bạn muốn. Bạn nói tên PT giúp mình, mình sẽ kiểm tra gym, gói phù hợp và slot trống cho bạn luôn.",
+      reply: "Để đặt lịch đúng flow, bạn cần chọn gym và gói tập trước. Sau khi có gói phù hợp, hệ thống mới lọc HLV hợp lệ để bạn chọn ngày giờ.",
       suggestions: [],
-      actions: [buildNavigateAction("/marketplace/trainers", "Xem PT")],
+      actions: [buildNavigateAction("/marketplace/gyms", "Chọn gym"), buildNavigateAction("/marketplace/gyms", "Xem thẻ / gói")],
+      cards: packages.length ? buildPackageCards(packages, bmiContext) : buildGymCards(publicContext?.gyms || [], bmiContext),
       bookingContext: bookingContextFromClient || null,
     };
   }
@@ -1872,7 +2107,7 @@ const buildSmartBookingRecommendation = async ({
       reply: `Mình đã xác định PT ${preferredTrainer.name}, nhưng hiện chưa thấy gói nào tại gym của PT này phù hợp với mục tiêu ${fitnessProfile.primaryGoal} của bạn. Mình có thể gợi ý PT khác hoặc gym khác hợp hơn.`,
       suggestions: [],
       actions: [
-        buildNavigateAction("/marketplace/trainers", "Xem PT"),
+        buildNavigateAction("/marketplace/trainers", "Xem HLV"),
         buildNavigateAction("/marketplace/gyms", "Xem gym"),
       ],
       bookingContext: {
@@ -1902,7 +2137,7 @@ const buildSmartBookingRecommendation = async ({
 
   if (!selectedDate) {
     return {
-      reply: `Mình đã nhớ PT ${preferredTrainer.name} rồi. Với thể trạng hiện tại của bạn, gói phù hợp nhất là ${selectedPackage.name}${selectedPackage.gymName ? ` tại ${selectedPackage.gymName}` : ""}. Giờ bạn chỉ cần nhắn ngày muốn tập, ví dụ 16/4 hoặc 2026-04-16, mình sẽ kiểm tra slot ngay.`,
+      reply: `Mình đã ghi nhận HLV ${preferredTrainer.name}, nhưng để đúng flow GFMS bạn cần chọn gói trước. Với thể trạng hiện tại, gói phù hợp nhất là ${selectedPackage.name}${selectedPackage.gymName ? ` tại ${selectedPackage.gymName}` : ""}. Bạn bấm xem/chọn gói này trước, sau đó mới tiếp tục chọn ngày giờ.`,
       suggestions: [
         {
           type: "message",
@@ -2031,9 +2266,11 @@ const aiService = {
 
     const normalizedMessage = normalize(message);
 
-    if (/hom nay la ngay may|hom nay ngay may|ngay hom nay la bao nhieu|hn la ngay may/.test(normalizedMessage)) {
+    if (/hom nay la ngay may|hom nay ngay may|ngay hom nay la bao nhieu|hn la ngay may|hom nay la thu may|hom nay thu may|thu may hom nay/.test(normalizedMessage)) {
+      const now = new Date();
+      const weekdays = ["Chủ nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
       return {
-        reply: `Hôm nay là ngày ${formatDateVN(toISODateLocal(new Date()))} nha.`,
+        reply: `Hôm nay là ${weekdays[now.getDay()]}, ngày ${formatDateVN(toISODateLocal(now))} nha.`,
         suggestions: [],
         actions: [],
         cards: null,
@@ -2048,12 +2285,46 @@ const aiService = {
     const [publicContext, privateContext] = await Promise.all([buildPublicContext(), buildPrivateContext(user?.id || null)]);
 
     const bmiContext = extractBmiContext({ message, history, privateContext });
-    const navAction = detectNavigationIntent(message, isAuthed);
+    const responseLanguage = detectUserLanguage(message);
     const intent = await inferIntentHybrid({ message, history, isAuthed, bookingContextFromClient });
+    const navAction = detectNavigationIntent(message, isAuthed, pageContext, intent);
+
+    if (intent === "general" && isFreshnessSensitiveGeneralQuestion(message)) {
+      return {
+        reply: buildFreshnessSafeReply(message, responseLanguage),
+        suggestions: [],
+        actions: [],
+        cards: null,
+        proposedAction: null,
+        requiresConfirmation: false,
+        bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
+      };
+    }
 
     let response;
 
-    if (navAction) {
+    const wantsProductRegister = /\bdang ky\b/.test(normalizedMessage) && !/(dang ky tai khoan|tao tai khoan|register|sign up)/.test(normalizedMessage);
+    if (wantsProductRegister && ["gym", "membership", "package", "system_guide", "general"].includes(intent)) {
+      const gyms = recommendGyms(publicContext, message, bmiContext);
+      const gymForRegister = gyms[0] || null;
+      response = {
+        reply: gymForRegister
+          ? `Nếu bạn muốn đăng ký tại ${gymForRegister.name}, bạn bấm vào gym đó để xem thẻ thành viên và gói tập. Thẻ thành viên dùng để vào phòng tập theo tháng, còn gói tập dùng cho mục tiêu tập luyện có HLV.`
+          : "Nếu bạn muốn đăng ký tập, bạn hãy chọn gym trước. Trong trang chi tiết gym sẽ có thẻ thành viên và các gói tập để mua đúng nhu cầu.",
+        suggestions: [],
+        actions: [
+          gymForRegister
+            ? buildNavigateAction(`/marketplace/gyms/${gymForRegister.id}`, `Mở ${gymForRegister.name}`)
+            : buildNavigateAction("/marketplace/gyms", "Xem gym"),
+        ],
+        cards: gyms.length ? buildGymCards(gyms, bmiContext) : null,
+        proposedAction: null,
+        requiresConfirmation: false,
+        bmiSummary: bmiContext,
+        bookingContext: null,
+      };
+    } else if (navAction) {
       response = {
         reply: "Mình đã hiểu rồi, bạn bấm nút bên dưới là tới đúng chỗ cần xem.",
         suggestions: [],
@@ -2074,6 +2345,17 @@ const aiService = {
         bmiSummary: bmiContext,
         bookingContext: bookingContextFromClient || null,
       };
+} else if (intent === "system_guide") {
+  response = {
+    reply: "GFMS có 2 luồng chính cho người tập: thẻ thành viên dùng để vào phòng gym theo tháng, còn gói tập dùng cho mục tiêu như tăng cơ, giảm mỡ hoặc cải thiện thể trạng. Khi muốn đặt lịch có HLV, bạn đi đúng flow: chọn gym → chọn gói tập → chọn HLV phù hợp với gói → chọn ngày giờ tại trang Gym Detail. Nếu quan tâm nhượng quyền, hệ thống cũng hỗ trợ owner quản lý chi nhánh, gói, thẻ, HLV, booking và vận hành phòng gym.",
+    suggestions: [],
+    actions: [buildNavigateAction("/marketplace/gyms", "Xem gym"), buildNavigateAction("/marketplace/gyms", "Xem thẻ / gói")],
+    cards: null,
+    proposedAction: null,
+    requiresConfirmation: false,
+    bmiSummary: bmiContext,
+    bookingContext: bookingContextFromClient || null,
+  };
     } else if (intent === "member_schedule" && isAuthed) {
       const res = replyForMemberSchedule(message, privateContext, history);
       response = {
@@ -2171,11 +2453,29 @@ const aiService = {
       const gyms = recommendGyms(publicContext, message, bmiContext);
       response = {
         reply: gyms.length
-          ? `Mình đã lọc ${Math.min(gyms.length, 8)} gym phù hợp nhất từ dữ liệu hệ thống. Bạn xem card bên dưới, ưu tiên chọn nơi thuận đường và đang hoạt động rồi mình sẽ gợi ý tiếp gói tập hoặc PT cho bạn.`
-          : "Hiện mình chưa lấy được danh sách gym từ hệ thống, bạn thử lại giúp mình nhé.",
+          ? `Mình tìm thấy ${gyms.length} gym khớp với khu vực bạn hỏi: ${gyms.map((g) => g.name).join(", ")}. Bạn xem đúng các card bên dưới nhé.`
+          : "Hiện mình chưa thấy gym khớp khu vực bạn nhập trong dữ liệu hệ thống. Bạn có thể thử tên đường/quận khác hoặc bấm xem tất cả gym.",
         suggestions: [],
         actions: [buildNavigateAction("/marketplace/gyms", "Xem tất cả gym")],
         cards: gyms.length ? buildGymCards(gyms, bmiContext) : null,
+        proposedAction: null,
+        requiresConfirmation: false,
+        bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
+      };
+    } else if (intent === "membership") {
+      const plans = recommendMembershipPlans(publicContext, message);
+      response = {
+        reply: plans.length
+          ? "Mình tìm thấy các thẻ thành viên phù hợp theo gym/khu vực trong hệ thống. Thẻ thành viên dùng để vào phòng tập theo tháng. Đây là sản phẩm membership riêng, không phải gói PT."
+          : "Hiện mình chưa thấy thẻ thành viên khớp khu vực bạn nhập. Bạn có thể xem gym trước, rồi chọn thẻ thành viên trong trang chi tiết gym.",
+        suggestions: [],
+        actions: [
+          plans[0]?.gymId
+            ? buildNavigateAction(`/marketplace/gyms/${plans[0].gymId}`, "Mở gym để mua thẻ")
+            : buildNavigateAction("/marketplace/gyms", "Xem gym"),
+        ],
+        cards: plans.length ? buildMembershipPlanCards(plans) : null,
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
@@ -2185,7 +2485,7 @@ const aiService = {
       const packages = recommendPackages(publicContext, bmiContext);
       response = {
         reply: packages.length
-          ? "Mình đã lọc các gói tập phù hợp từ dữ liệu thật. Bạn xem card bên dưới, chọn gói thấy ổn rồi mình sẽ đi tiếp sang PT hoặc bước đặt lịch phù hợp."
+          ? "Mình đã lọc các gói tập phù hợp từ dữ liệu thật. Trong GFMS, mục tiêu của bạn dùng để chọn gói tập trước; sau khi chọn gói, hệ thống mới lọc HLV phù hợp để đặt lịch."
           : "Hiện mình chưa lấy được danh sách gói tập từ hệ thống.",
         suggestions: [],
         actions: [buildNavigateAction("/marketplace/gyms", "Xem gym")],
@@ -2201,13 +2501,24 @@ const aiService = {
 
       response = {
         reply: hasActivePackage
-          ? "Mình đã ưu tiên các PT phù hợp với gym hoặc gói bạn đang có. Bạn xem card PT bên dưới, nếu muốn đặt lịch thì chọn PT thuộc gói active của mình nhé."
-          : "Mình đã lọc vài PT phù hợp từ hệ thống. Với GFMS, PT đi kèm gói tập của gym, nên nếu chưa có gói thì bạn chọn gym trước rồi mình sẽ gợi ý tiếp gói và PT phù hợp.",
+          ? "Mình đã ưu tiên PT theo gói active/gym hiện tại của bạn. HLV là bước sau khi đã có gói phù hợp, nên bạn hãy chọn đúng PT thuộc gói để đi tiếp đặt lịch."
+          : "Trong GFMS, mình không bán HLV trước. Bạn cần chọn gym và gói tập theo mục tiêu trước; sau đó hệ thống mới lọc HLV phù hợp để đặt lịch.",
         suggestions: [],
         actions: hasActivePackage
           ? [buildNavigateAction("/member/bookings", "Mở lịch của tôi"), buildNavigateAction("/member/my-packages", "Xem gói của tôi")]
-          : [buildNavigateAction("/marketplace/gyms", "Xem gym"), buildNavigateAction("/marketplace/trainers", "Xem PT")],
+          : [buildNavigateAction("/marketplace/gyms", "Xem gym"), buildNavigateAction("/marketplace/trainers", "Xem HLV")],
         cards: trainerRows.length ? buildTrainerCards(trainerRows) : null,
+        proposedAction: null,
+        requiresConfirmation: false,
+        bmiSummary: bmiContext,
+        bookingContext: bookingContextFromClient || null,
+      };
+    } else if (intent === "franchise") {
+      response = {
+        reply: "GFMS hỗ trợ mô hình gym nhượng quyền: owner có thể đăng ký/quản lý chi nhánh, thẻ thành viên, gói tập, PT, booking, giao dịch và vận hành phòng gym. Các điều kiện, phí và chính sách cụ thể cần xem theo dữ liệu/chính sách trong hệ thống hoặc gửi yêu cầu nhượng quyền để được xử lý chính xác.",
+        suggestions: [],
+        actions: [buildNavigateAction("/", "Về trang chủ")],
+        cards: null,
         proposedAction: null,
         requiresConfirmation: false,
         bmiSummary: bmiContext,
@@ -2232,6 +2543,12 @@ const aiService = {
       };
     }
 
+    // Core V2: khi intent hiện tại không phải booking thì xoá bookingContext để FE không kéo state booking cũ sang câu hỏi gym/membership/general.
+    response = {
+      ...response,
+      bookingContext: stripBookingLeakForIntent(intent, response?.bookingContext || bookingContextFromClient),
+    };
+
     return finalizeAssistantResponse({
       response,
       message,
@@ -2243,6 +2560,7 @@ const aiService = {
       bmiContext,
       pageContext,
       userPreferences,
+      responseLanguage,
     });
   },
 

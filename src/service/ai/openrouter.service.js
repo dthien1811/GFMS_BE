@@ -4,6 +4,27 @@ const DEFAULT_MODEL = process.env.OPENROUTER_MODEL || "openai/gpt-4o-mini";
 
 const safeText = (v) => String(v || "").trim();
 
+const normalize = (v) =>
+  safeText(v)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const detectReplyLanguage = (message = "") => {
+  const raw = safeText(message);
+  const text = normalize(raw);
+  const enSignals = ["what", "can you", "find", "book", "gym", "trainer", "package", "schedule", "tomorrow", "english", "speak english"];
+  const viSignals = ["toi", "ban", "minh", "dat lich", "goi tap", "phong tap", "ngay mai", "hom nay"];
+  const hasViAccent = /[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i.test(raw);
+  const en = enSignals.reduce((n, kw) => n + (text.includes(kw) ? 1 : 0), 0);
+  const vi = viSignals.reduce((n, kw) => n + (text.includes(kw) ? 1 : 0), 0) + (hasViAccent ? 2 : 0);
+  return en > vi ? "English" : "Vietnamese";
+};
+
 const callOpenRouter = async ({ systemPrompt, messages, temperature = 0.4, max_tokens = 500 }) => {
   if (!hasOpenRouterConfig()) return null;
 
@@ -53,7 +74,8 @@ export const rewriteReplyWithOpenRouter = async ({ systemPrompt, userMessage, hi
     "Câu trả lời nghiệp vụ gốc cần viết lại cho tự nhiên hơn:",
     safeText(rawReply),
     "",
-    "Hãy viết lại đúng ý nghĩa, tự nhiên hơn, không bịa thêm dữ liệu.",
+    `Ngôn ngữ bắt buộc của câu trả lời: ${detectReplyLanguage(userMessage)}.`,
+    "Hãy viết lại đúng ý nghĩa, tự nhiên hơn, không bịa thêm dữ liệu. Không đổi số lượng card/dữ liệu đã nói. Nếu ngôn ngữ bắt buộc là English thì trả lời hoàn toàn bằng tiếng Anh.",
   ].join("\n");
 
   return callOpenRouter({
