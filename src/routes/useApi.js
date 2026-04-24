@@ -8,6 +8,7 @@ import ownerPolicyRoute from "./owner/policy.route";
 import ownerGymRoute from "./owner/gym.route";
 import ownerMaintenanceRoute from "./owner/maintenance.route";
 import ownerEquipmentRoute from "./owner/equipment.route";
+import ownerEquipmentAssetRoute from "./owner/equipmentAsset.route";
 import ownerInventoryRoute from "./owner/inventory.route";
 import ownerTransferRoute from "./owner/transfer.route";
 import ownerPurchaseRoute from "./owner/purchase.route";
@@ -56,6 +57,7 @@ const useApi = (app) => {
   router.use("/owner/gyms", ownerGymRoute);
   router.use("/owner/maintenances", ownerMaintenanceRoute);
   router.use("/owner/equipment", ownerEquipmentRoute);
+  router.use("/owner/equipment-assets", ownerEquipmentAssetRoute);
   router.use("/owner/inventory", ownerInventoryRoute);
   router.use("/owner/transfers", ownerTransferRoute);
   router.use("/owner/purchases", ownerPurchaseRoute);

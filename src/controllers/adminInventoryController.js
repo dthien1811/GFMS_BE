@@ -12,7 +12,17 @@ const bad = (res, err, ctx = "") => {
     console.error("stack:", err?.stack);
   } catch (_) {}
 
-  return res.status(400).json({ message: err?.message || String(err || "Bad Request") });
+  const details = [
+    ...(Array.isArray(err?.errors) ? err.errors.map((item) => `${item.path || item.type || "field"}: ${item.message}`) : []),
+    err?.original?.sqlMessage,
+  ].filter(Boolean);
+
+  const message =
+    details.length
+      ? details.join(" | ")
+      : err?.message || String(err || "Bad Request");
+
+  return res.status(400).json({ message, details });
 };
 
 const adminInventoryController = {

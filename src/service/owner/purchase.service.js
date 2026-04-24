@@ -1,11 +1,13 @@
 import db from "../../models";
 import { Op, QueryTypes } from "sequelize";
+import ExcelJS from "exceljs";
 import procurementStockHelper from "../procurementStockHelper";
 import { getAdminWarehouseGymIdSet } from "../adminWarehouseGymScope";
 import realtimeService from "../realtime.service";
 import payosService from "../payment/payos.service";
 import equipmentUnitEventUtils from "../../utils/equipmentUnitEvent";
 import comboPurchaseFlowService from "../comboPurchaseFlow.service";
+import crypto from "crypto";
 
 const { buildStockContext, computeFulfillmentPlan, validateRequestReason } = procurementStockHelper;
 const { logEquipmentUnitEvents } = equipmentUnitEventUtils;
@@ -49,6 +51,28 @@ const ensure = (condition, message, statusCode = 400) => {
   if (!condition) throw { message, statusCode };
 };
 
+const pad6 = (n) => String(Math.max(0, Number(n) || 0)).padStart(6, "0");
+
+const buildPublicQrUrl = (publicToken) => {
+  const frontendOrigin = String(process.env.FRONTEND_URL || "http://localhost:3000").replace(/\/+$/, "");
+  return `${frontendOrigin}/equipment/scan/${encodeURIComponent(String(publicToken || ""))}`;
+};
+
+const genUniquePublicToken = async ({ transaction } = {}) => {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const token = crypto.randomBytes(16).toString("hex");
+    // eslint-disable-next-line no-await-in-loop
+    const exists = await EquipmentUnit.findOne({
+      where: { publicToken: token },
+      attributes: ["id"],
+      transaction,
+      lock: transaction?.LOCK?.SHARE,
+    });
+    if (!exists) return token;
+  }
+  return crypto.randomBytes(24).toString("hex");
+};
+
 const parseTxMetadata = (meta) => {
   if (!meta) return {};
   if (typeof meta === "string") {
@@ -59,6 +83,26 @@ const parseTxMetadata = (meta) => {
     }
   }
   return meta;
+};
+
+const statusLabelCombo = (status) =>
+  ({
+    submitted: "Chờ admin duyệt",
+    approved_waiting_payment: "Chờ thanh toán",
+    paid_waiting_admin_confirm: "Đã thanh toán, chờ admin bàn giao",
+    shipping: "Đang giao combo",
+    completed: "Hoàn tất",
+    rejected: "Bị từ chối",
+  }[String(status || "").toLowerCase()] || status || "-");
+
+const formatDateTimeVN = (value) => {
+  if (!value) return "";
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(date.getDate())}/${pad(date.getMonth() + 1)}/${date.getFullYear()} ${pad(
+    date.getHours()
+  )}:${pad(date.getMinutes())}`;
 };
 
 function buildPOSummary(poId, totalAmount, txs = []) {
@@ -733,6 +777,79 @@ const ownerPurchaseService = {
     };
   },
 
+  async exportPurchaseRequestsExcel(ownerUserId, query = {}) {
+    const list = await comboPurchaseFlowService.ownerListRequests(ownerUserId, {
+      ...query,
+      page: 1,
+      limit: Math.min(5000, Math.max(1, Number(query.limit) || 2000)),
+    });
+    const rows = list?.data || [];
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "GFMS";
+    workbook.created = new Date();
+    const ws = workbook.addWorksheet("Lich su mua combo", {
+      views: [{ state: "frozen", ySplit: 1 }],
+    });
+
+    ws.columns = [
+      { header: "Mã yêu cầu", key: "code", width: 22 },
+      { header: "Gym / Chi nhánh", key: "gym", width: 28 },
+      { header: "Combo", key: "combo", width: 28 },
+      { header: "Supplier", key: "supplier", width: 22 },
+      { header: "Trạng thái", key: "status", width: 26 },
+      { header: "Tổng tiền", key: "totalAmount", width: 14 },
+      { header: "Thanh toán", key: "payment", width: 12 },
+      { header: "Người liên hệ", key: "contactName", width: 18 },
+      { header: "SĐT", key: "contactPhone", width: 14 },
+      { header: "Email", key: "contactEmail", width: 22 },
+      { header: "Ghi chú", key: "note", width: 30 },
+      { header: "Ngày tạo", key: "createdAt", width: 18 },
+      { header: "Cập nhật", key: "updatedAt", width: 18 },
+    ];
+
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).alignment = { vertical: "middle" };
+
+    for (const r of rows) {
+      const combo = r?.combo || r?.comboSnapshot || {};
+      const supplierName =
+        r?.expectedSupplier?.name ||
+        combo?.supplier?.name ||
+        r?.stockSnapshot?.supplier?.name ||
+        "";
+
+      ws.addRow({
+        code: r?.code || `CBR-${r?.id || ""}`,
+        gym: r?.gym?.name || "",
+        combo: combo?.name || r?.stockSnapshot?.comboName || "",
+        supplier: supplierName,
+        status: statusLabelCombo(r?.status),
+        totalAmount: Number(r?.totalAmount || r?.payableAmount || 0),
+        payment: "100%",
+        contactName: r?.contactName || "",
+        contactPhone: r?.contactPhone || "",
+        contactEmail: r?.contactEmail || "",
+        note: r?.note || "",
+        createdAt: formatDateTimeVN(r?.createdAt),
+        updatedAt: formatDateTimeVN(r?.updatedAt),
+      });
+    }
+
+    // Number formatting
+    for (const key of ["totalAmount"]) {
+      ws.getColumn(key).numFmt = "#,##0";
+    }
+    ws.eachRow((row, rowNumber) => {
+      if (rowNumber === 1) return;
+      row.alignment = { vertical: "top", wrapText: true };
+    });
+
+    const buffer = await workbook.xlsx.writeBuffer();
+    const filename = `lich-su-mua-combo-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    return { filename, buffer };
+  },
+
   async createPurchaseRequestPayOSLink(ownerUserId, requestId, payload = {}) {
     const request = await PurchaseRequest.findByPk(requestId);
     if (request?.comboId) {
@@ -787,8 +904,8 @@ const ownerPurchaseService = {
       }));
 
     const returnBase = process.env.FRONTEND_URL || "http://localhost:3000";
-    const returnUrl = `${returnBase}/owner/purchase-requests?payos=success&orderCode=${encodeURIComponent(tx.id)}`;
-    const cancelUrl = `${returnBase}/owner/purchase-requests?payos=cancel`;
+    const returnUrl = `${returnBase}/owner/purchase-requests/history?payos=success&orderCode=${encodeURIComponent(tx.id)}`;
+    const cancelUrl = `${returnBase}/owner/purchase-requests/history?payos=cancel`;
 
     const { checkoutUrl, orderCode, paymentLinkId } = await payosService.createPackagePaymentLink({
       orderCode: tx.id,
@@ -808,10 +925,10 @@ const ownerPurchaseService = {
     return { checkoutUrl, orderCode, paymentLinkId, transactionId: tx.id, amount: Number(tx.amount || 0) };
   },
 
-  async confirmReceivePurchaseRequest(ownerUserId, requestId) {
+  async confirmReceivePurchaseRequest(ownerUserId, requestId, req) {
     const request = await PurchaseRequest.findByPk(requestId);
     if (request?.comboId) {
-      return comboPurchaseFlowService.confirmReceived(ownerUserId, requestId);
+      return comboPurchaseFlowService.confirmReceived(ownerUserId, requestId, req);
     }
 
     return sequelize.transaction(async (t) => {
@@ -923,19 +1040,44 @@ const ownerPurchaseService = {
       ownerStock.availableQuantity = Number(ownerStock.availableQuantity || 0) + addQty;
       await ownerStock.save({ transaction: t });
 
-      const codePrefix = `EQ-${String(pr.equipmentId).padStart(4, "0")}`;
-      const now = Date.now();
-      const seed = Math.floor(Math.random() * 1000000);
-      const units = Array.from({ length: addQty }).map((_, idx) => ({
-        equipmentId: pr.equipmentId,
-        gymId: pr.gymId,
-        assetCode: `${codePrefix}-GYM-${pr.gymId}-${now}-${seed}-${idx + 1}`,
-        status: "active",
-        usageStatus: "in_stock",
-      }));
+      const existingUnitsForRequest = await EquipmentUnit.count({
+        where: { purchaseRequestId: pr.id },
+        transaction: t,
+        lock: t.LOCK.SHARE,
+      });
+
       let createdUnits = [];
-      if (units.length) {
+      if (!existingUnitsForRequest && addQty > 0) {
+        const tmpPrefix = `TMP-${pr.id}-${pr.equipmentId}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+        const units = [];
+        for (let idx = 0; idx < addQty; idx += 1) {
+          // eslint-disable-next-line no-await-in-loop
+          const publicToken = await genUniquePublicToken({ transaction: t });
+          units.push({
+            equipmentId: pr.equipmentId,
+            gymId: pr.gymId,
+            assetCode: `${tmpPrefix}-${idx + 1}`,
+            publicToken,
+            qrUrl: buildPublicQrUrl(publicToken),
+            status: "active",
+            usageStatus: "in_stock",
+            lifecycleStatus: "active",
+            ownerId: ownerUserId || null,
+            purchaseRequestId: pr.id,
+            comboId: pr.comboId || null,
+            deliveredAt: new Date(),
+            notes: `Sinh ra từ yêu cầu mua thiết bị ${pr.code}`,
+          });
+        }
+
         createdUnits = await EquipmentUnit.bulkCreate(units, { transaction: t });
+        for (const unit of createdUnits) {
+          // eslint-disable-next-line no-await-in-loop
+          await EquipmentUnit.update(
+            { assetCode: `GFMS-EQ-${pad6(unit.id)}` },
+            { where: { id: unit.id }, transaction: t }
+          );
+        }
       }
 
       if (createdUnits.length) {

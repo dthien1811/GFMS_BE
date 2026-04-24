@@ -19,6 +19,7 @@ router.get("/equipments", ownerPurchaseController.getEquipmentsForPurchase);
 // Purchase requests (bước 1 — nhu cầu mua từ owner)
 router.get("/purchase-requests/stock-preview", ownerPurchaseController.previewPurchaseStock);
 router.post("/purchase-requests", ownerPurchaseController.createPurchaseRequest);
+router.get("/purchase-requests/export-excel", ownerPurchaseController.exportPurchaseRequestsExcel);
 router.get("/purchase-requests", ownerPurchaseController.getPurchaseRequests);
 router.get("/purchase-requests/:id", ownerPurchaseController.getPurchaseRequestDetail);
 router.post("/purchase-requests/:id/payos-link", ownerPurchaseController.createPurchaseRequestPayOSLink);

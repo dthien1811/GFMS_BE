@@ -14,6 +14,7 @@ import bodyParser from "body-parser";
 import cookieParser from "cookie-parser";
 import path from "path";
 import cors from "cors";
+import requestContext from "./middleware/requestContext";
 
 import initWebRoutes from "./routes/web";
 import authRoute from "./routes/auth";
@@ -40,6 +41,8 @@ adminInventoryApi = adminInventoryApi.default || adminInventoryApi;
 // ✅ NEW: public signing API (NO JWT)
 let publicFranchiseContractApi = require("./routes/publicFranchiseContractApi");
 publicFranchiseContractApi = publicFranchiseContractApi.default || publicFranchiseContractApi;
+let publicEquipmentAssetsApi = require("./routes/publicEquipmentAssetsApi");
+publicEquipmentAssetsApi = publicEquipmentAssetsApi.default || publicEquipmentAssetsApi;
 
 // ===== OPTIONAL ROUTES =====
 let gymRoute, uploadRoute, trainerRoutes;
@@ -111,6 +114,9 @@ app.use(cors(corsOptions));
 // Preflight
 app.options("*", cors(corsOptions));
 
+// ===== Request context (requestId + structured access logs) =====
+app.use(requestContext);
+
 // ===== BODY PARSER =====
 app.use(bodyParser.json({ limit: "50mb" }));
 app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
@@ -153,6 +159,7 @@ app.use('/api/owner', ownerRequestRoutes);
 // ===== ✅ PUBLIC SIGNING API (NO JWT) =====
 // Owner mở link /sign-contract?token=. → FE gọi xuống đây để load/sign
 app.use("/api/public", publicFranchiseContractApi);
+app.use("/api/public", publicEquipmentAssetsApi);
 
 // ===== ROUTES =====
 initWebRoutes(app);

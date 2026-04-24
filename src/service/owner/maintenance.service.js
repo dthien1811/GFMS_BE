@@ -221,6 +221,7 @@ const ownerMaintenanceService = {
         await unit.update(
           {
             status: "in_maintenance",
+            lifecycleStatus: "maintenance",
             notes: issueDescription ? String(issueDescription).trim() : unit.notes,
           },
           { transaction: t }
@@ -308,7 +309,15 @@ const ownerMaintenanceService = {
         });
         if (unit) {
           maintenanceSourceUsageStatus = unit.usageStatus || "in_stock";
-          await unit.update({ status: "active", usageStatus: unit.usageStatus || "in_stock", notes: unit.notes }, { transaction: t });
+          await unit.update(
+            {
+              status: "active",
+              lifecycleStatus: "active",
+              usageStatus: unit.usageStatus || "in_stock",
+              notes: unit.notes,
+            },
+            { transaction: t }
+          );
         }
       }
 

@@ -164,6 +164,21 @@ const ownerPurchaseController = {
     }
   },
 
+  async exportPurchaseRequestsExcel(req, res) {
+    try {
+      const result = await ownerPurchaseService.exportPurchaseRequestsExcel(req.user.id, req.query);
+      const filename = result?.filename || `lich-su-mua-combo-${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const buffer = result?.buffer;
+
+      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      return res.status(200).send(buffer);
+    } catch (e) {
+      console.error("Export purchase requests excel error:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
   async getPurchaseRequests(req, res) {
     try {
       const data = await ownerPurchaseService.getPurchaseRequests(req.user.id, req.query);
@@ -196,7 +211,7 @@ const ownerPurchaseController = {
 
   async confirmReceivePurchaseRequest(req, res) {
     try {
-      const data = await ownerPurchaseService.confirmReceivePurchaseRequest(req.user.id, req.params.id);
+      const data = await ownerPurchaseService.confirmReceivePurchaseRequest(req.user.id, req.params.id, req);
       return res.status(200).json({ data });
     } catch (e) {
       console.error("Confirm receive purchase request error:", e);
