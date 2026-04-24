@@ -18,58 +18,86 @@ async function getMessagePayload(messageId) {
 
 const trainerMessageService = {
   async getEligibleConversations(userId) {
-    const trainer = await db.Trainer.findOne({ where: { userId }, attributes: ["id"] });
-    if (!trainer) return [];
+  const trainer = await db.Trainer.findOne({
+    where: { userId },
+    attributes: ["id", "userId"],
+  });
 
-    const memberIds = await chatPolicyService.getAllowedMemberIdsForTrainer(userId);
-    if (!memberIds.length) return [];
+  if (!trainer) return [];
 
-    const members = await db.Member.findAll({
-      where: { id: memberIds },
-      attributes: ["id", "userId", "gymId"],
-      include: [{ model: db.User, attributes: ["id", "username", "avatar"] }],
-      order: [[db.User, "username", "ASC"]],
-    });
+  const memberIds = await chatPolicyService.getAllowedMemberIdsForTrainer(userId);
+  if (!Array.isArray(memberIds) || !memberIds.length) return [];
 
-    // Một user có thể có nhiều Member record (khác gym/khác thời điểm).
-    // Ở màn chat PT chỉ cần 1 hội thoại / 1 user để tránh hiển thị trùng.
-    const uniqueMembersByUser = new Map();
-    for (const member of members) {
-      const key = Number(member?.userId || 0);
-      if (!key) continue;
-      const existed = uniqueMembersByUser.get(key);
-      if (!existed || Number(member.id || 0) > Number(existed.id || 0)) {
-        uniqueMembersByUser.set(key, member);
-      }
+  const members = await db.Member.findAll({
+    where: { id: memberIds },
+    attributes: ["id", "userId", "gymId"],
+    include: [
+      {
+        model: db.User,
+        attributes: ["id", "username", "avatar"],
+        required: false,
+      },
+    ],
+  });
+
+  const uniqueMembersByUser = new Map();
+
+  for (const member of members || []) {
+    const memberUserId = Number(member?.userId || 0);
+    if (!memberUserId) continue;
+
+    const existed = uniqueMembersByUser.get(memberUserId);
+    if (!existed || Number(member.id || 0) > Number(existed.id || 0)) {
+      uniqueMembersByUser.set(memberUserId, member);
     }
-    const uniqueMembers = [...uniqueMembersByUser.values()];
+  }
 
-    const rows = await Promise.all(uniqueMembers.map(async (member) => {
+  const uniqueMembers = [...uniqueMembersByUser.values()];
+
+  const rows = await Promise.all(
+    uniqueMembers.map(async (member) => {
+      const memberUserId = Number(member.userId);
+
       const lastMessage = await db.Message.findOne({
         where: {
           [Op.or]: [
-            { senderId: userId, receiverId: member.userId },
-            { senderId: member.userId, receiverId: userId },
+            { senderId: userId, receiverId: memberUserId },
+            { senderId: memberUserId, receiverId: userId },
           ],
         },
         order: [["createdAt", "DESC"]],
       });
+
       const unreadCount = await db.Message.count({
-        where: { senderId: member.userId, receiverId: userId, isRead: false },
+        where: {
+          senderId: memberUserId,
+          receiverId: userId,
+          isRead: false,
+        },
       });
+
       return {
-        conversationKey: buildConversationKey(userId, member.userId),
+        conversationKey: buildConversationKey(userId, memberUserId),
         memberId: member.id,
-        memberUserId: member.userId,
+        memberUserId,
         memberName: member.User?.username || `Member #${member.id}`,
-        memberAvatar: member.User?.avatar || null,
+        memberAvatar:
+          member.User?.avatar &&
+          /^https?:\/\//i.test(String(member.User.avatar)) &&
+          !/default-avatar/i.test(String(member.User.avatar))
+            ? member.User.avatar
+            : null,
         lastMessage: chatPreviewService.previewTextFromContent(lastMessage?.content || "") || null,
         lastMessageAt: lastMessage?.createdAt || null,
         unreadCount,
       };
-    }));
-    return rows.sort((a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0));
-  },
+    })
+  );
+
+  return rows.sort(
+    (a, b) => new Date(b.lastMessageAt || 0) - new Date(a.lastMessageAt || 0)
+  );
+},
 
   async listMessages(currentUserId, peerUserId) {
     await chatPolicyService.assertTrainerCanChatMember(currentUserId, Number(peerUserId));
@@ -124,13 +152,13 @@ const trainerMessageService = {
     };
 
     realtimeService.emitMessage(conversationKey, payload);
-    await realtimeService.notifyUser(Number(peerUserId), {
+    realtimeService.notifyUser(Number(peerUserId), {
       title: "PT đã trả lời bạn",
       message: chatPreviewService.previewTextFromContent(trimmed).slice(0, 160),
       notificationType: "chat",
       relatedType: "message",
       relatedId: row.id,
-    });
+    }).catch((err) => console.error("notifyUser chat error:", err?.message || err));
 
     return payload;
   },

@@ -164,13 +164,13 @@ const messageService = {
     };
 
     realtimeService.emitMessage(conversationKey, payload);
-    await realtimeService.notifyUser(Number(peerUserId), {
+    realtimeService.notifyUser(Number(peerUserId), {
       title: "Tin nhắn mới từ hội viên",
       message: chatPreviewService.previewTextFromContent(trimmed).slice(0, 160),
       notificationType: "chat",
       relatedType: "message",
       relatedId: row.id,
-    });
+    }).catch((err) => console.error("notifyUser chat error:", err?.message || err));
 
     return payload;
   },

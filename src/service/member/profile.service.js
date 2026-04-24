@@ -427,12 +427,12 @@ const memberProfileService = {
         lock: t.LOCK.UPDATE,
       });
 
-      const nextEmail = String(payload.email || "").trim();
-      const nextUsername = String(payload.username || "").trim();
-      const nextPhone = String(payload.phone || "").trim();
-      const nextAddress = String(payload.address || "").trim();
+      const nextEmail = String(payload.email ?? user.email ?? "").trim();
+      const nextUsername = String(payload.username ?? user.username ?? "").trim();
+      const nextPhone = String(payload.phone ?? user.phone ?? "").trim();
+      const nextAddress = String(payload.address ?? user.address ?? "").trim();
       const nextSex = normalizeSex(payload.sex);
-      const nextAvatar = String(payload.avatar || "").trim();
+      const nextAvatar = String(payload.avatar ?? user.avatar ?? "").trim();
 
       if (!nextEmail) {
         const err = new Error("Email là bắt buộc");
@@ -514,9 +514,7 @@ const memberProfileService = {
       user.address = nextAddress;
       user.sex = nextSex;
 
-      if (nextAvatar) {
-        user.avatar = nextAvatar;
-      }
+      user.avatar = nextAvatar;
 
       if (!user.status) {
         user.status = normalizeStatus(user.status);
