@@ -89,19 +89,32 @@ const notifyGymOwnerTrainerCompletedSession = async ({
   });
 };
 
-const notifyMemberSessionCompletion = async (booking, activation) => {
+const notifyMemberSessionCompletion = async (booking, activation, { ptMemberFeedback } = {}) => {
   const member = booking?.memberId
     ? await db.Member.findByPk(booking.memberId, { attributes: ["userId"] })
     : null;
 
   if (member?.userId) {
-    await realtimeService.notifyUser(member.userId, {
-      title: "Buổi tập đã hoàn thành",
-      message: `Buổi tập ngày ${formatBookingSlotLabel(booking)} đã được PT xác nhận hoàn thành.`,
-      notificationType: "booking_update",
-      relatedType: "booking",
-      relatedId: booking.id,
-    });
+    const feedback = String(ptMemberFeedback || "").trim();
+    if (feedback) {
+      const preview =
+        feedback.length > 120 ? `${feedback.slice(0, 117)}…` : feedback;
+      await realtimeService.notifyUser(member.userId, {
+        title: "PT đã gửi nhận xét buổi tập",
+        message: `Buổi ${formatBookingSlotLabel(booking)}: ${preview}`,
+        notificationType: "session_feedback",
+        relatedType: "booking",
+        relatedId: booking.id,
+      });
+    } else {
+      await realtimeService.notifyUser(member.userId, {
+        title: "Buổi tập đã hoàn thành",
+        message: `Buổi tập ngày ${formatBookingSlotLabel(booking)} đã được PT xác nhận hoàn thành.`,
+        notificationType: "booking_update",
+        relatedType: "booking",
+        relatedId: booking.id,
+      });
+    }
   }
 
   if (!booking?.packageActivationId) return;
@@ -734,7 +747,10 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
 // ===================
 // Check-out (GIỮ NGUYÊN CODE CỦA BẠN - CÓ THÊM FIX CHỈNH SỬA)
 // ===================
-const checkOut = async ({ userId, bookingId, status = "absent" }) => {
+const MIN_PT_MEMBER_FEEDBACK_LEN = 8;
+const MAX_PT_MEMBER_FEEDBACK_LEN = 4000;
+
+const checkOut = async ({ userId, bookingId, status = "absent", ptMemberFeedback } = {}) => {
   const Booking = db.Booking || db.booking;
   const Attendance = db.Attendance || db.attendance;
 
@@ -759,6 +775,25 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   const normalizedStatus = String(status || "absent").toLowerCase();
   if (normalizedStatus !== "present" && normalizedStatus !== "absent" && normalizedStatus !== "completed") {
     throw Object.assign(new Error("Trạng thái điểm danh không hợp lệ"), { statusCode: 400 });
+  }
+
+  const feedbackTrimmed =
+    ptMemberFeedback === undefined || ptMemberFeedback === null
+      ? ""
+      : String(ptMemberFeedback).trim();
+
+  if (normalizedStatus === "present" || normalizedStatus === "completed") {
+    if (feedbackTrimmed.length < MIN_PT_MEMBER_FEEDBACK_LEN) {
+      throw Object.assign(
+        new Error(
+          `Vui lòng nhập nhận xét cho học viên (tối thiểu ${MIN_PT_MEMBER_FEEDBACK_LEN} ký tự) trước khi hoàn thành buổi tập.`
+        ),
+        { statusCode: 400 }
+      );
+    }
+    if (feedbackTrimmed.length > MAX_PT_MEMBER_FEEDBACK_LEN) {
+      throw Object.assign(new Error("Nhận xét quá dài."), { statusCode: 400 });
+    }
   }
 
   let attendance = await Attendance.findOne({
@@ -786,6 +821,11 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
   if (Booking.rawAttributes?.checkoutTime) {
     booking.checkoutTime = t;
   }
+  if (normalizedStatus === "present" || normalizedStatus === "completed") {
+    booking.ptMemberFeedback = feedbackTrimmed;
+  } else if (normalizedStatus === "absent") {
+    booking.ptMemberFeedback = null;
+  }
   await booking.save();
 
   let consumedActivation = null;
@@ -809,7 +849,9 @@ const checkOut = async ({ userId, bookingId, status = "absent" }) => {
 
   try {
     await syncPackageActivationCountersByActivationId(booking.packageActivationId, null);
-    await notifyMemberSessionCompletion(booking, consumedActivation);
+    await notifyMemberSessionCompletion(booking, consumedActivation, {
+      ptMemberFeedback: feedbackTrimmed || null,
+    });
   } catch (e) {
     console.error("[trainerAttendanceService] notify member error:", e.message);
   }
@@ -861,6 +903,7 @@ const resetAttendance = async ({ userId, bookingId }) => {
   }
 
   booking.status = "confirmed";
+  booking.ptMemberFeedback = null;
   await booking.save();
 
   if (previousBookingStatus === "completed" && ["present", "completed", "absent"].includes(previousAttendanceStatus)) {
