@@ -6,6 +6,8 @@ const { FranchiseRequest, Gym, FranchiseContractAudit, sequelize } = require("..
 
 const docSvc = require("./franchiseContractDocumentService");
 const auditSvc = require("./franchiseContractAuditService");
+const realtimeServiceModule = require("./realtime.service");
+const realtimeService = realtimeServiceModule.default || realtimeServiceModule;
 
 /**
  * Enterprise e-sign simulation (SIGN_PROVIDER=mock)
@@ -108,6 +110,24 @@ async function enforceInvitePolicy({ franchiseRequestId, toEmail, transaction })
   if (inDay >= pol.maxPerDay) throw err(429, `Invite limit/day exceeded (${inDay}/${pol.maxPerDay})`);
   if (recipientDay >= pol.maxPerRecipientPerDay)
     throw err(429, `Invite limit per-recipient/day exceeded (${recipientDay}/${pol.maxPerRecipientPerDay})`);
+}
+
+
+function emitFranchiseChanged(fr, action, extra = {}) {
+  if (!fr) return;
+  const payload = {
+    action,
+    franchiseRequestId: Number(fr.id),
+    requesterId: fr.requesterId || null,
+    status: fr.status || null,
+    contractStatus: fr.contractStatus || null,
+    contractUrl: fr.contractUrl || null,
+    gymId: fr.gymId || null,
+    ...extra,
+  };
+  realtimeService.emitGroup("Administrators", "franchise:changed", payload);
+  realtimeService.emitGroup("Administrator", "franchise:changed", payload);
+  if (fr.requesterId) realtimeService.emitUser(fr.requesterId, "franchise:changed", payload);
 }
 
 function validateSignatureDataUrl(signatureDataUrl) {
@@ -262,6 +282,8 @@ async function sendContract(req) {
       meta: { to: fr.contactEmail, expiresAt: expiresAt.toISOString() },
     });
 
+    emitFranchiseChanged(fr, "invite_sent", { expiresAt });
+
     return {
       ok: true,
       message: "Invite sent (mock)",
@@ -334,6 +356,8 @@ async function resendInvite(req) {
       meta: { to: fr.contactEmail, expiresAt: expiresAt.toISOString() },
     });
 
+    emitFranchiseChanged(fr, "invite_resent", { expiresAt });
+
     return {
       ok: true,
       message: "Invite resent (mock)",
@@ -386,6 +410,8 @@ async function markViewedByToken(rawToken, { ip = null, userAgent = null } = {})
         transaction: t,
       });
     }
+
+    if (changed) emitFranchiseChanged(fr, "owner_viewed");
 
     return { ok: true, data: fr };
   });
@@ -444,6 +470,8 @@ async function ownerSignByToken(rawToken, { signatureDataUrl, signerName, consen
       transaction: t,
       meta: { signerName: signerName || null, sha256: signRes.sha256, inputSha256: signRes.inputSha256 || null, consent: true, consentAt: consentAt.toISOString(), consentVersion, signingSessionId },
     });
+
+    emitFranchiseChanged(fr, "owner_signed", { documentId: signRes.doc?.id || null });
 
     return { ok: true, message: "Owner signed", data: fr, document: signRes.doc };
   });
@@ -541,6 +569,8 @@ async function countersign(req) {
       transaction: t,
     });
 
+    emitFranchiseChanged(fr, "completed", { gymId: fr.gymId || gym?.id || null, documentId: certRes.doc?.id || null });
+
     return {
       ok: true,
       message: "Countersigned + completed + gym created",
@@ -573,11 +603,13 @@ async function simulateEvent(req) {
     if (event === "viewed") {
       if (fr.contractStatus !== "sent") throw err(400, `Only SENT can be viewed (current=${fr.contractStatus})`);
       await fr.update({ contractStatus: "viewed" }, { transaction: t });
+      emitFranchiseChanged(fr, "owner_viewed");
       return { ok: true, message: "Mock VIEWED", data: fr };
     }
     if (event === "signed" || event === "owner_signed") {
       if (!["sent", "viewed"].includes(fr.contractStatus)) throw err(400, `Only SENT/VIEWED can be signed`);
       await fr.update({ contractStatus: "signed", contractSigned: 1, contractSignedAt: now() }, { transaction: t });
+      emitFranchiseChanged(fr, "owner_signed");
       return { ok: true, message: "Mock SIGNED", data: fr };
     }
     if (event === "completed") {
@@ -588,6 +620,7 @@ async function simulateEvent(req) {
         await fr.update({ gymId: gym.id, gymCreatedAt: now() }, { transaction: t });
       }
       await fr.update({ contractStatus: "completed", contractCompletedAt: now() }, { transaction: t });
+      emitFranchiseChanged(fr, "completed", { gymId: fr.gymId });
       return { ok: true, message: "Mock COMPLETED", data: fr };
     }
 
@@ -607,6 +640,7 @@ async function simulateEvent(req) {
         },
         { transaction: t }
       );
+      emitFranchiseChanged(fr, "reset");
       return { ok: true, message: "Mock RESET (contract re-issuable)", data: fr };
     }
     throw err(400, "Invalid event. Use: viewed | signed | owner_signed | completed | reset");

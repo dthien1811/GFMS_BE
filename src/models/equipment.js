@@ -87,6 +87,14 @@ module.exports = (sequelize, DataTypes) => {
 
       specifications: { type: DataTypes.JSON, allowNull: true },
 
+      // ===== Phase 3: Guides (template-level) =====
+      usageGuide: { type: DataTypes.TEXT, allowNull: true },
+      trainingInstructions: { type: DataTypes.TEXT, allowNull: true },
+      muscleGroups: { type: DataTypes.TEXT, allowNull: true },
+      safetyNotes: { type: DataTypes.TEXT, allowNull: true },
+      guideImages: { type: DataTypes.TEXT, allowNull: true },
+      guideVideoUrl: { type: DataTypes.STRING(512), allowNull: true },
+
       unit: { type: DataTypes.STRING, allowNull: false, defaultValue: 'piece' },
 
       price: { type: DataTypes.DECIMAL(15, 2), allowNull: false, defaultValue: 0 },

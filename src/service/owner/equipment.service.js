@@ -177,17 +177,21 @@ const ownerEquipmentService = {
       attributes: ["id"],
       raw: true,
     });
-    const gymIds = ownerGyms.map((g) => g.id);
+    const gymIds = ownerGyms.map((g) => Number(g.id)).filter((id) => Number.isInteger(id) && id > 0);
 
     if (gymIds.length === 0) {
       return { data: [], meta: { page, limit, totalItems: 0, totalPages: 0 } };
     }
 
-    const where = { gymId: { [Op.in]: gymIds } };
-
-    if (gymId) {
-      where.gymId = Number(gymId);
+    const requestedGymId = Number(gymId || 0);
+    if (requestedGymId && !gymIds.includes(requestedGymId)) {
+      const err = new Error("Gym không thuộc quyền quản lý");
+      err.statusCode = 403;
+      throw err;
     }
+
+    const scopedGymIds = requestedGymId ? [requestedGymId] : gymIds;
+    const where = { gymId: { [Op.in]: scopedGymIds } };
 
     const requestedStatus = String(status || "all").trim().toLowerCase();
 

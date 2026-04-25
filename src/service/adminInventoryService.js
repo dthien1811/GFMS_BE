@@ -211,7 +211,48 @@ async function upsertAdminEquipmentStockTotal(equipmentId, targetTotalQty, { tra
   );
 }
 
+const firstDefined = (...values) => values.find((value) => value !== undefined);
+
+const normalizeEquipmentPayload = (payload = {}) => {
+  const out = { ...payload };
+
+  // FE/BE compatibility aliases. DB columns stay canonical:
+  // usageGuide, trainingInstructions, muscleGroups, safetyNotes, guideImages, guideVideoUrl.
+  const categoryValue = firstDefined(payload.categoryId, payload.category?.id, payload.category);
+  if (categoryValue !== undefined) out.categoryId = categoryValue === "" ? null : categoryValue;
+
+  const supplierValue = firstDefined(
+    payload.preferredSupplierId,
+    payload.supplierId,
+    payload.supplier?.id,
+    payload.supplier
+  );
+  if (supplierValue !== undefined) out.preferredSupplierId = supplierValue === "" ? null : supplierValue;
+
+  const usageGuide = firstDefined(payload.usageGuide, payload.workoutInstructions, payload.instructionText, payload.guideText);
+  if (usageGuide !== undefined) out.usageGuide = usageGuide;
+
+  const trainingInstructions = firstDefined(payload.trainingInstructions, payload.workoutTips, payload.tips);
+  if (trainingInstructions !== undefined) out.trainingInstructions = trainingInstructions;
+
+  const muscleGroups = firstDefined(payload.muscleGroups, payload.targetMuscles);
+  if (muscleGroups !== undefined) out.muscleGroups = Array.isArray(muscleGroups) ? muscleGroups.join(", ") : muscleGroups;
+
+  const videoUrl = firstDefined(payload.guideVideoUrl, payload.videoUrl);
+  if (videoUrl !== undefined) out.guideVideoUrl = videoUrl;
+
+  if (payload.guideImages !== undefined && Array.isArray(payload.guideImages)) {
+    out.guideImages = payload.guideImages.filter(Boolean).join("\n");
+  }
+
+  // UI used "inactive" but DB enum is active/discontinued.
+  if (out.status === "inactive") out.status = "discontinued";
+
+  return out;
+};
+
 const pickEquipmentPayload = (payload = {}) => {
+  const normalized = normalizeEquipmentPayload(payload);
   const allowed = [
     "name",
     "code",
@@ -221,6 +262,12 @@ const pickEquipmentPayload = (payload = {}) => {
     "brand",
     "model",
     "specifications",
+    "usageGuide",
+    "trainingInstructions",
+    "muscleGroups",
+    "safetyNotes",
+    "guideImages",
+    "guideVideoUrl",
     "unit",
     "price",
     "minStockLevel",
@@ -229,7 +276,13 @@ const pickEquipmentPayload = (payload = {}) => {
   ];
   const out = {};
   for (const k of allowed) {
-    if (payload[k] !== undefined) out[k] = payload[k];
+    if (normalized[k] !== undefined) out[k] = normalized[k] === "" ? null : normalized[k];
+  }
+  if (Object.prototype.hasOwnProperty.call(out, "price") && (out.price === null || out.price === "")) {
+    out.price = 0;
+  }
+  if (Object.prototype.hasOwnProperty.call(out, "status") && out.status === null) {
+    out.status = "active";
   }
   delete out.gymId;
   delete out.supplierId;
@@ -237,25 +290,45 @@ const pickEquipmentPayload = (payload = {}) => {
 };
 
 const validateEquipmentPayload = (payload = {}, { isCreate = false } = {}) => {
+  const normalized = normalizeEquipmentPayload(payload);
   const errors = [];
-  const name = String(payload.name || "").trim();
-  const code = String(payload.code || "").trim();
-  const price = payload.price;
-  const quantity = payload.quantity;
+  const name = String(normalized.name || "").trim();
+  const code = String(normalized.code || "").trim();
+  const price = normalized.price;
+  const quantity = normalized.quantity;
+  const guideVideoUrl = String(normalized.guideVideoUrl || "").trim();
 
-  if (isCreate && !name) errors.push("Tên thiết bị là bắt buộc.");
-  if (payload.name !== undefined && !name) errors.push("Tên thiết bị không được để trống.");
+  if (isCreate && !name) errors.push("Field name: Tên thiết bị là bắt buộc.");
+  if (normalized.name !== undefined && !name) errors.push("Field name: Tên thiết bị không được để trống.");
 
   if (code && !/^[A-Za-z0-9._-]+$/.test(code)) {
-    errors.push("Mã thiết bị chỉ được chứa chữ, số và các ký tự . _ -");
+    errors.push("Field code: Mã thiết bị chỉ được chứa chữ, số và các ký tự . _ -");
   }
 
-  if (price !== undefined && price !== null && Number(price) < 0) {
-    errors.push("Giá bán không được âm.");
+  if (price !== undefined && price !== null && price !== "" && Number(price) < 0) {
+    errors.push("Field price: Giá bán không được âm.");
   }
 
-  if (quantity !== undefined && quantity !== null && Number(quantity) < 0) {
-    errors.push("Số lượng không được âm.");
+  if (quantity !== undefined && quantity !== null && quantity !== "" && Number(quantity) < 0) {
+    errors.push("Field quantity: Số lượng không được âm.");
+  }
+
+  if (normalized.status !== undefined && !["active", "discontinued"].includes(String(normalized.status))) {
+    errors.push("Field status: Trạng thái chỉ được là active hoặc discontinued.");
+  }
+
+  if (normalized.categoryId !== undefined && normalized.categoryId !== null && normalized.categoryId !== "" && !Number(normalized.categoryId)) {
+    errors.push("Field categoryId: Danh mục không hợp lệ.");
+  }
+
+  if (normalized.preferredSupplierId !== undefined && normalized.preferredSupplierId !== null && normalized.preferredSupplierId !== "" && !Number(normalized.preferredSupplierId)) {
+    errors.push("Field supplierId: Nhà cung cấp không hợp lệ.");
+  }
+
+  if (normalized.guideVideoUrl !== undefined && guideVideoUrl) {
+    const ok = /^https?:\/\/.+/i.test(guideVideoUrl);
+    if (!ok) errors.push("Field videoUrl: Video hướng dẫn phải là URL http(s).");
+    if (guideVideoUrl.length > 512) errors.push("Field videoUrl: Video hướng dẫn quá dài (tối đa 512 ký tự).");
   }
 
   return errors;
@@ -448,6 +521,19 @@ async getEquipments(query = {}) {
       e.brand,
       e.model,
       e.specifications,
+      e.usageGuide,
+      e.trainingInstructions,
+      e.muscleGroups,
+      e.safetyNotes,
+      e.guideImages,
+      e.guideVideoUrl,
+      e.usageGuide AS workoutInstructions,
+      e.usageGuide AS instructionText,
+      e.usageGuide AS guideText,
+      e.trainingInstructions AS workoutTips,
+      e.trainingInstructions AS tips,
+      e.muscleGroups AS targetMuscles,
+      e.guideVideoUrl AS videoUrl,
       e.unit,
       e.price,
       e.minStockLevel,

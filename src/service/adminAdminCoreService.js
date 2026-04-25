@@ -122,6 +122,15 @@ async function logMaintenanceUnitEvent({
   );
 }
 
+async function markUnitLifecycleMaintenance(m, t) {
+  if (!m?.equipmentUnitId) return;
+  const unit = await EquipmentUnit.findByPk(m.equipmentUnitId, { transaction: t, lock: t.LOCK.UPDATE });
+  if (!unit) return;
+  if (String(unit.lifecycleStatus || "") !== "maintenance") {
+    await unit.update({ lifecycleStatus: "maintenance" }, { transaction: t });
+  }
+}
+
 async function restoreMaintenanceUnitAndStock(m, t) {
   if (!m?.equipmentId || !m?.gymId) return;
 
@@ -138,6 +147,7 @@ async function restoreMaintenanceUnitAndStock(m, t) {
       await unit.update(
         {
           status: "active",
+          lifecycleStatus: "active",
           usageStatus: unit.usageStatus || "in_stock",
           transferId: null,
         },
@@ -242,6 +252,21 @@ function ensure(cond, msg, statusCode = 400) {
   }
 }
 
+
+function parseFutureDate(value, fieldLabel, { required = true, minMsFromNow = 60 * 1000 } = {}) {
+  if (!value) {
+    ensure(!required, `${fieldLabel} is required`);
+    return null;
+  }
+  const d = new Date(value);
+  ensure(!Number.isNaN(d.getTime()), `${fieldLabel} is invalid`);
+
+  // Chặn chọn quá khứ/sát hiện tại do lệch giây giữa FE và BE.
+  const min = Date.now() + minMsFromNow;
+  ensure(d.getTime() >= min, `${fieldLabel} must be in the future`);
+  return d;
+}
+
 function safeJson(modelInstance) {
   return modelInstance?.toJSON ? modelInstance.toJSON() : modelInstance;
 }
@@ -267,7 +292,7 @@ class AdminAdminCoreService {
 
   async getMaintenances(req) {
     const { page, limit, offset } = parsePaging(req.query);
-    const { status, gymId, q } = req.query;
+    const { status, gymId, q, overdue, overdueDays } = req.query;
 
     const where = {};
     if (status) where.status = status;
@@ -278,6 +303,14 @@ class AdminAdminCoreService {
         { issueDescription: { [Op.like]: `%${q}%` } },
         { notes: { [Op.like]: `%${q}%` } },
       ];
+    }
+
+    const isOverdue = ["1", "true", "yes", "y", "on"].includes(String(overdue || "").toLowerCase());
+    if (isOverdue) {
+      const days = Math.min(60, Math.max(1, Number(overdueDays || 7)));
+      const before = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      where.status = { [Op.in]: ["approve", "assigned", "in_progress"] };
+      where.updatedAt = { [Op.lte]: before };
     }
 
     const { rows, count } = await Maintenance.findAndCountAll({
@@ -386,7 +419,16 @@ async getTechnicians(req) {
     ensure(actorId, "Missing actor (req.user)", 401);
 
     const { scheduledDate, targetCompletionDate, estimatedCost, notes } = req.body || {};
-    ensure(scheduledDate, "scheduledDate is required");
+    const scheduledAt = parseFutureDate(scheduledDate, "Ngày giờ hẹn kiểm tra");
+    const targetCompletionAt = targetCompletionDate
+      ? parseFutureDate(targetCompletionDate, "Hạn hoàn tất dự kiến")
+      : null;
+    if (targetCompletionAt) {
+      ensure(
+        targetCompletionAt.getTime() > scheduledAt.getTime(),
+        "Hạn hoàn tất dự kiến phải sau ngày giờ hẹn kiểm tra"
+      );
+    }
 
     return sequelize.transaction(async (t) => {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
@@ -398,13 +440,15 @@ async getTechnicians(req) {
       await m.update(
         {
           status: "approve", // ✅ quan trọng: đổi status sang approve
-          scheduledDate: new Date(scheduledDate),
-          targetCompletionDate: targetCompletionDate ? new Date(targetCompletionDate) : (m.targetCompletionDate || null),
+          scheduledDate: scheduledAt,
+          targetCompletionDate: targetCompletionAt || m.targetCompletionDate || null,
           estimatedCost: estimatedCost ?? m.estimatedCost,
           notes: notes ?? m.notes,
         },
         { transaction: t }
       );
+
+      await markUnitLifecycleMaintenance(m, t);
 
       await createAudit({
         t,
@@ -577,6 +621,8 @@ async getTechnicians(req) {
         { transaction: t }
       );
 
+      await markUnitLifecycleMaintenance(m, t);
+
       await createAudit({
         t,
         req,
@@ -653,6 +699,8 @@ async getTechnicians(req) {
       const oldValues = safeJson(m);
 
       await m.update({ status: "in_progress" }, { transaction: t });
+
+      await markUnitLifecycleMaintenance(m, t);
 
       await createAudit({
         t,
@@ -1661,6 +1709,14 @@ async rejectFranchiseRequest(req) {
     };
     if (gymId) completedComboTxWhere.gymId = gymId;
 
+    const unitWhere = {};
+    if (gymId) unitWhere.gymId = gymId;
+
+    const maintenanceOverdueDays = Math.min(60, Math.max(3, Number(req.query?.maintenanceOverdueDays || 7)));
+    const shippingOverdueDays = Math.min(60, Math.max(1, Number(req.query?.shippingOverdueDays || 3)));
+    const maintenanceOverdueBefore = new Date(nowDt.getTime() - maintenanceOverdueDays * 24 * 60 * 60 * 1000);
+    const shippingOverdueBefore = new Date(nowDt.getTime() - shippingOverdueDays * 24 * 60 * 60 * 1000);
+
     const [
       franchisePending,
       maintenancePending,
@@ -1668,6 +1724,12 @@ async rejectFranchiseRequest(req) {
       activeGyms,
       sellingCombos,
       comboTransactions,
+      assetByLifecycle,
+      assetMissingQrCount,
+      paidWaitingShipCount,
+      paidWaitingShipOldest,
+      maintenanceOverdueCount,
+      maintenanceOverdueOldest,
     ] = await Promise.all([
       FranchiseRequest.count({ where: { status: "pending" } }).catch(() => 0),
       Maintenance.count({ where: { ...(gymId ? { gymId } : {}), status: "pending" } }).catch(() => 0),
@@ -1687,6 +1749,63 @@ async rejectFranchiseRequest(req) {
           { model: PurchaseRequest, as: "purchaseRequest", attributes: ["id", "code", "status", "comboId"], required: true, where: { comboId: { [Op.ne]: null } }, include: [{ model: EquipmentCombo, as: "combo", attributes: ["id", "name", "code"], required: false }] },
         ],
       }).catch(() => []),
+
+      // Asset lifecycle KPIs
+      EquipmentUnit.findAll({
+        where: unitWhere,
+        attributes: ["lifecycleStatus", [sequelize.fn("COUNT", sequelize.col("id")), "count"]],
+        group: ["lifecycleStatus"],
+        raw: true,
+      }).catch(() => []),
+
+      // Assets missing QR
+      EquipmentUnit.count({
+        where: {
+          ...unitWhere,
+          [Op.or]: [
+            { publicToken: null },
+            { publicToken: "" },
+            { assetCode: null },
+            { assetCode: "" },
+          ],
+        },
+      }).catch(() => 0),
+
+      // Paid but not shipped yet (combo)
+      PurchaseRequest.count({
+        where: {
+          ...comboRequestWhere,
+          status: "paid_waiting_admin_confirm",
+        },
+      }).catch(() => 0),
+      PurchaseRequest.findOne({
+        where: {
+          ...comboRequestWhere,
+          status: "paid_waiting_admin_confirm",
+          updatedAt: { [Op.lte]: shippingOverdueBefore },
+        },
+        order: [["updatedAt", "ASC"]],
+        attributes: ["id", "code", "updatedAt", "gymId", "status"],
+      }).catch(() => null),
+
+      // Maintenance overdue
+      Maintenance.count({
+        where: {
+          ...(gymId ? { gymId } : {}),
+          status: { [Op.in]: ["approve", "assigned", "in_progress"] },
+          updatedAt: { [Op.lte]: maintenanceOverdueBefore },
+        },
+      }).catch(() => 0),
+      Maintenance.findOne({
+        where: {
+          ...(gymId ? { gymId } : {}),
+          status: { [Op.in]: ["approve", "assigned", "in_progress"] },
+          updatedAt: { [Op.lte]: maintenanceOverdueBefore },
+        },
+        order: [["updatedAt", "ASC"]],
+        attributes: ["id", "maintenanceCode", "status", "updatedAt", "gymId"],
+        include: [{ model: Gym, attributes: ["id", "name"], required: false }],
+      }).catch(() => null),
     ]);
 
     const comboRevenue30d = (comboTransactions || []).reduce((sum, tx) => sum + Number(tx?.amount || 0), 0);
@@ -1756,6 +1875,56 @@ async rejectFranchiseRequest(req) {
         activeGyms,
         comboRevenue30d,
       },
+      assetKpis: {
+        byLifecycleStatus: (assetByLifecycle || []).reduce((acc, row) => {
+          const key = row.lifecycleStatus || "active";
+          acc[key] = Number(row.count || 0);
+          return acc;
+        }, {}),
+        missingQrCount: Number(assetMissingQrCount || 0),
+      },
+      alerts: [
+        {
+          key: "paid_not_shipped",
+          severity: paidWaitingShipOldest ? "warning" : "info",
+          title: "Combo đã thanh toán nhưng chưa bàn giao",
+          count: Number(paidWaitingShipCount || 0),
+          thresholdDays: shippingOverdueDays,
+          oldest: paidWaitingShipOldest
+            ? {
+                id: paidWaitingShipOldest.id,
+                code: paidWaitingShipOldest.code,
+                updatedAt: paidWaitingShipOldest.updatedAt,
+                gymId: paidWaitingShipOldest.gymId,
+              }
+            : null,
+          link: { to: `/admin/purchase-workflow?status=paid_waiting_admin_confirm`, hint: "Mở trang workflow" },
+        },
+        {
+          key: "assets_missing_qr",
+          severity: Number(assetMissingQrCount || 0) > 0 ? "warning" : "ok",
+          title: "Tài sản thiết bị thiếu QR / mã tài sản",
+          count: Number(assetMissingQrCount || 0),
+          link: { to: "/admin/equipment-assets?missingQr=1", hint: "Mở trang tài sản thiết bị" },
+        },
+        {
+          key: "maintenance_overdue",
+          severity: maintenanceOverdueOldest ? "danger" : (Number(maintenanceOverdueCount || 0) ? "warning" : "ok"),
+          title: "Bảo trì quá lâu chưa hoàn tất",
+          count: Number(maintenanceOverdueCount || 0),
+          thresholdDays: maintenanceOverdueDays,
+          oldest: maintenanceOverdueOldest
+            ? {
+                id: maintenanceOverdueOldest.id,
+                code: maintenanceOverdueOldest.maintenanceCode || `M-${maintenanceOverdueOldest.id}`,
+                status: maintenanceOverdueOldest.status,
+                updatedAt: maintenanceOverdueOldest.updatedAt,
+                gym: maintenanceOverdueOldest.Gym ? { id: maintenanceOverdueOldest.Gym.id, name: maintenanceOverdueOldest.Gym.name } : null,
+              }
+            : null,
+          link: { to: `/admin/maintenance?overdue=1&overdueDays=${maintenanceOverdueDays}`, hint: "Mở trang bảo trì" },
+        },
+      ],
       sellingCombos: sellingComboRows,
       revenue30dSeries,
       comboSalesTransactions,

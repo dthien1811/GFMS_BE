@@ -812,7 +812,7 @@ const getMyTrainerShares = async (userId, query = {}) => {
   });
 
   return {
-    trainerShares: rows.map(serializeOwnerShare),
+    data: rows.map(serializeOwnerShare),
     pagination: {
       total: count,
       page: parseInt(page),
@@ -1934,6 +1934,7 @@ const buildSharePaymentSnapshotPayload = (j, borrowerGymName) => ({
   borrowerDisputeResponseNote: j.borrowerDisputeResponseNote || null,
   borrowerDisputeResponseAt: j.borrowerDisputeResponseAt || null,
   paymentProofImageUrls: parsePaymentProofImageUrls(j.paymentProofImageUrls),
+  paymentNote: j.paymentNote || null,
   sharePaymentPtAcknowledgedAt: j.sharePaymentPtAcknowledgedAt || null,
 });
 
@@ -1984,6 +1985,7 @@ const attachSharePaymentSnapshotsBatchForTrainerBookings = async (plainBookings)
         "borrowerDisputeResponseNote",
         "borrowerDisputeResponseAt",
         "paymentProofImageUrls",
+        "paymentNote",
         "sharePaymentPtAcknowledgedAt",
       ],
       include: [{ model: Gym, as: "toGym", attributes: ["id", "name"] }],
@@ -2338,6 +2340,11 @@ const confirmBorrowerSharePayment = async (userId, shareId, body = {}) => {
     trainerShare.paymentProofImageUrls = uniqueUrls;
   }
 
+  const note = body.note ? String(body.note).trim() : null;
+  if (note) {
+    trainerShare.paymentNote = note;
+  }
+
   trainerShare.sharePaymentStatus = "paid";
   trainerShare.paymentMarkedPaidAt = new Date();
   await trainerShare.save();
@@ -2546,24 +2553,7 @@ const acknowledgeBorrowerSharePaymentResponseByBookingId = async (userId, bookin
     throw error;
   }
 
-  const ptHadComplaint = String(trainerShare.sharePaymentDisputeNote || "").trim().length > 0;
-  const proofs = parsePaymentProofImageUrls(trainerShare.paymentProofImageUrls);
-  const hasBorrowerReply = !!trainerShare.borrowerDisputeResponseAt;
-
-  if (!ptHadComplaint) {
-    const error = new Error("Không có phản ánh từ phía bạn để đối chiếu — không cần xác nhận thêm");
-    error.statusCode = 400;
-    throw error;
-  }
-
-  if (!hasBorrowerReply && proofs.length === 0) {
-    const error = new Error(
-      "Chủ phòng chưa gửi phản hồi hoặc ảnh chứng từ — vui lòng đợi hoặc cập nhật phản ánh",
-    );
-    error.statusCode = 400;
-    throw error;
-  }
-
+  // PT có thể xác nhận đã nhận tiền ngay cả khi chưa khiếu nại hoặc owner chưa phản hồi
   trainerShare.sharePaymentPtAcknowledgedAt = new Date();
   await trainerShare.save();
 

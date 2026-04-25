@@ -54,7 +54,7 @@ module.exports = (sequelize, DataTypes) => {
       metadata: DataTypes.JSON,
       transactionDate: DataTypes.DATE,
       purchaseRequestId: DataTypes.INTEGER,
-      paymentPhase: { type: DataTypes.ENUM('deposit', 'final'), allowNull: true },
+      paymentPhase: { type: DataTypes.ENUM('deposit', 'final', 'full'), allowNull: true },
       paymentProvider: DataTypes.STRING,
       payosOrderCode: DataTypes.STRING,
       paymentLink: DataTypes.TEXT,
