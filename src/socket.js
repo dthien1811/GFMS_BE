@@ -53,8 +53,20 @@ function canJoinConversation(actorUserId, conversationKey) {
 
 export const initSocket = (httpServer) => {
   const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+  const isAllowedSocketOrigin = (origin) => {
+    if (!origin) return true;
+    const o = String(origin);
+    if (o === FRONTEND_URL) return true;
+    const localOrigin = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(o);
+    const feLocal = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/i.test(String(FRONTEND_URL));
+    return Boolean(feLocal && localOrigin);
+  };
+
   io = new SocketIOServer(httpServer, {
-    cors: { origin: FRONTEND_URL, credentials: true },
+    cors: {
+      origin: (origin, cb) => cb(null, isAllowedSocketOrigin(origin)),
+      credentials: true,
+    },
   });
 
   io.use(async (socket, next) => {

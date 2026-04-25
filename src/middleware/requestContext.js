@@ -15,9 +15,18 @@ function requestContext(req, res, next) {
   res.on("finish", () => {
     const ms = Date.now() - start;
     const status = res.statusCode;
+    // ACCESS_LOG:
+    // - none  (default): no access logs
+    // - error: only 4xx/5xx
+    // - all  : log everything
+    const shouldLogAccess = String(process.env.ACCESS_LOG || "none").toLowerCase();
+    const isError = status >= 400;
+
+    if (shouldLogAccess === "none") return;
+    if (shouldLogAccess !== "all" && !isError) return;
+
     const level = status >= 500 ? "ERROR" : status >= 400 ? "WARN" : "INFO";
-    // Keep as single-line for log collectors
-    console.log(
+    console[isError ? "warn" : "log"](
       JSON.stringify({
         level,
         requestId: rid,
