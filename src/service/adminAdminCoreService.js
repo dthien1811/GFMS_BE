@@ -252,6 +252,21 @@ function ensure(cond, msg, statusCode = 400) {
   }
 }
 
+
+function parseFutureDate(value, fieldLabel, { required = true, minMsFromNow = 60 * 1000 } = {}) {
+  if (!value) {
+    ensure(!required, `${fieldLabel} is required`);
+    return null;
+  }
+  const d = new Date(value);
+  ensure(!Number.isNaN(d.getTime()), `${fieldLabel} is invalid`);
+
+  // Chặn chọn quá khứ/sát hiện tại do lệch giây giữa FE và BE.
+  const min = Date.now() + minMsFromNow;
+  ensure(d.getTime() >= min, `${fieldLabel} must be in the future`);
+  return d;
+}
+
 function safeJson(modelInstance) {
   return modelInstance?.toJSON ? modelInstance.toJSON() : modelInstance;
 }
@@ -404,7 +419,16 @@ async getTechnicians(req) {
     ensure(actorId, "Missing actor (req.user)", 401);
 
     const { scheduledDate, targetCompletionDate, estimatedCost, notes } = req.body || {};
-    ensure(scheduledDate, "scheduledDate is required");
+    const scheduledAt = parseFutureDate(scheduledDate, "Ngày giờ hẹn kiểm tra");
+    const targetCompletionAt = targetCompletionDate
+      ? parseFutureDate(targetCompletionDate, "Hạn hoàn tất dự kiến")
+      : null;
+    if (targetCompletionAt) {
+      ensure(
+        targetCompletionAt.getTime() > scheduledAt.getTime(),
+        "Hạn hoàn tất dự kiến phải sau ngày giờ hẹn kiểm tra"
+      );
+    }
 
     return sequelize.transaction(async (t) => {
       const m = await Maintenance.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
@@ -416,8 +440,8 @@ async getTechnicians(req) {
       await m.update(
         {
           status: "approve", // ✅ quan trọng: đổi status sang approve
-          scheduledDate: new Date(scheduledDate),
-          targetCompletionDate: targetCompletionDate ? new Date(targetCompletionDate) : (m.targetCompletionDate || null),
+          scheduledDate: scheduledAt,
+          targetCompletionDate: targetCompletionAt || m.targetCompletionDate || null,
           estimatedCost: estimatedCost ?? m.estimatedCost,
           notes: notes ?? m.notes,
         },

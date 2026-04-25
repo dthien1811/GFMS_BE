@@ -126,6 +126,8 @@ app.use(cookieParser());
 
 // ===== API STATUS LOG (minimal) =====
 app.use((req, res, next) => {
+  if (String(process.env.API_STATUS_LOG || "").trim() !== "1") return next();
+
   const targets = [
     "/api/owner/transactions",
     "/api/owner/commissions",
