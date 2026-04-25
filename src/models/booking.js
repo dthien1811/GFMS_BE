@@ -53,6 +53,8 @@ module.exports = (sequelize, DataTypes) => {
 
       rating: { type: DataTypes.INTEGER, validate: { min: 1, max: 5 } },
       reviewComment: DataTypes.TEXT,
+      /** Nhận xét buổi tập PT gửi cho hội viên (sau hoàn thành có mặt). */
+      ptMemberFeedback: DataTypes.TEXT,
       isRescheduled: { type: DataTypes.BOOLEAN, defaultValue: false },
       rescheduledAt: DataTypes.DATE,
       originalBookingDate: DataTypes.DATEONLY,
