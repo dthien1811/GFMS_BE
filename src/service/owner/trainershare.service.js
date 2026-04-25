@@ -1934,6 +1934,7 @@ const buildSharePaymentSnapshotPayload = (j, borrowerGymName) => ({
   borrowerDisputeResponseNote: j.borrowerDisputeResponseNote || null,
   borrowerDisputeResponseAt: j.borrowerDisputeResponseAt || null,
   paymentProofImageUrls: parsePaymentProofImageUrls(j.paymentProofImageUrls),
+  paymentNote: j.paymentNote || null,
   sharePaymentPtAcknowledgedAt: j.sharePaymentPtAcknowledgedAt || null,
 });
 
@@ -1984,6 +1985,7 @@ const attachSharePaymentSnapshotsBatchForTrainerBookings = async (plainBookings)
         "borrowerDisputeResponseNote",
         "borrowerDisputeResponseAt",
         "paymentProofImageUrls",
+        "paymentNote",
         "sharePaymentPtAcknowledgedAt",
       ],
       include: [{ model: Gym, as: "toGym", attributes: ["id", "name"] }],
@@ -2336,6 +2338,11 @@ const confirmBorrowerSharePayment = async (userId, shareId, body = {}) => {
   }
   if (uniqueUrls.length) {
     trainerShare.paymentProofImageUrls = uniqueUrls;
+  }
+
+  const note = body.note ? String(body.note).trim() : null;
+  if (note) {
+    trainerShare.paymentNote = note;
   }
 
   trainerShare.sharePaymentStatus = "paid";
