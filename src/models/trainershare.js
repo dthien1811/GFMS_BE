@@ -67,6 +67,8 @@ module.exports = (sequelize, DataTypes) => {
     borrowerDisputeResponseNote: DataTypes.TEXT,
     borrowerDisputeResponseAt: DataTypes.DATE,
     paymentProofImageUrls: DataTypes.JSON,
+    /** Ghi chú khi owner xác nhận thanh toán cho bên cho mượn PT */
+    paymentNote: DataTypes.TEXT,
     /** PT xác nhận đã nhận tiền / đồng ý phản hồi chủ phòng mượn */
     sharePaymentPtAcknowledgedAt: DataTypes.DATE,
     /** Liên kết đến yêu cầu báo bận gốc (BUSY_SLOT request) - khi owner chuyển sang luồng mượn PT */
