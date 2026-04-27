@@ -555,7 +555,7 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
       include: [{
         model: db.User,
         as: 'User',
-        attributes: ['username']
+        attributes: ['id', 'username', 'avatar']
       }]
     });
   }
