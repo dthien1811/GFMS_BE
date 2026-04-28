@@ -930,7 +930,9 @@ const bookingService = {
         transaction: t,
       });
       const membershipPlan = membershipDecision.plan;
-      const totalAmount = Number(plan.package.price || 0) + Number(membershipDecision.additionalAmount || 0);
+      const packageAmount = Number(plan.package.price || 0);
+      const membershipAmount = Number(membershipDecision.additionalAmount || 0);
+      const totalAmount = packageAmount + membershipAmount;
 
       const selectedSlot = plan.slots.find((s) => `${s.start}:00` === selectedStartTime);
       if (!selectedSlot) {
@@ -954,7 +956,7 @@ const bookingService = {
           trainerId: plan.trainer.id,
           gymId: plan.package.gymId,
           packageId: plan.package.id,
-          amount: totalAmount,
+          amount: packageAmount,
           transactionType: "package_purchase",
           paymentMethod,
           paymentStatus: isPayOS ? "pending" : "completed",
@@ -980,6 +982,38 @@ const bookingService = {
         },
         { transaction: t }
       );
+      let membershipTx = null;
+      if (membershipDecision.requireCardPurchase) {
+        membershipTx = await db.Transaction.create(
+          {
+            transactionCode: genCode("MCB"),
+            memberId: member.id,
+            gymId: plan.package.gymId,
+            amount: membershipAmount,
+            transactionType: "membership_card_purchase",
+            paymentMethod,
+            paymentStatus: isPayOS ? "pending" : "completed",
+            description: isPayOS
+              ? `Thanh toán thẻ thành viên kèm gói (PayOS): ${plan.package.name}`
+              : `Mua thẻ thành viên kèm gói: ${plan.package.name}`,
+            ...(isPayOS ? {} : { transactionDate: new Date() }),
+            processedBy: userId,
+            metadata: {
+              membershipCard: {
+                planId: membershipPlan.id,
+                planCode: membershipPlan.code,
+                planMonths: membershipPlan.months,
+                planPrice: membershipPlan.price,
+              },
+              bundle: {
+                source: "package_bundle",
+                packageTransactionId: tx.id,
+              },
+            },
+          },
+          { transaction: t }
+        );
+      }
 
       let payosCheckoutUrl = null;
       if (isPayOS) {
@@ -999,6 +1033,14 @@ const bookingService = {
           {
             metadata: {
               ...(tx.metadata || {}),
+              bundle: membershipTx
+                ? {
+                    membershipTransactionId: membershipTx.id,
+                    packageAmount,
+                    membershipAmount,
+                    totalAmount,
+                  }
+                : undefined,
               payos: {
                 orderCode: payosResp.orderCode,
                 checkoutUrl: payosResp.checkoutUrl,
@@ -1040,10 +1082,26 @@ const bookingService = {
           memberId: member.id,
           gymId: plan.package.gymId,
           plan: membershipPlan,
-          transactionId: tx.id,
+          transactionId: membershipTx?.id || tx.id,
           purchaseSource: "package_bundle",
           transaction: t,
         });
+        if (membershipTx) {
+          await tx.update(
+            {
+              metadata: {
+                ...(tx.metadata || {}),
+                bundle: {
+                  membershipTransactionId: membershipTx.id,
+                  packageAmount,
+                  membershipAmount,
+                  totalAmount,
+                },
+              },
+            },
+            { transaction: t }
+          );
+        }
       }
 
       const startTimeFixed = `${selectedSlot.start}:00`;
