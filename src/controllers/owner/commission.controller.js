@@ -15,6 +15,20 @@ const ownerCommissionController = {
     }
   },
 
+  async getPendingAttendanceWindow(req, res) {
+    try {
+      const userId = req.user.id;
+      const result = await ownerCommissionService.getPendingAttendanceWindow(userId, req.query);
+      return res.status(200).json({
+        data: result.data,
+        pagination: result.pagination,
+      });
+    } catch (e) {
+      console.error("Error in getPendingAttendanceWindow controller:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
   async getGymCommissionRate(req, res) {
     try {
       const userId = req.user.id;

@@ -9,6 +9,7 @@ router.use(jwtAction.checkUserJWT);
 router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owners"]));
 
 router.get("/", ownerCommissionController.getCommissions);
+router.get("/pending-attendance-window", ownerCommissionController.getPendingAttendanceWindow);
 router.get("/export", ownerCommissionController.exportCommissions);
 router.get("/gym/:gymId/rate", ownerCommissionController.getGymCommissionRate);
 router.post("/gym/rate", ownerCommissionController.setGymCommissionRate);

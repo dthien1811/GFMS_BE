@@ -5,6 +5,10 @@ import { applyPackageActivationCompletion, removePendingCommissionForBooking } f
 
 const DEFAULT_RETENTION_REASON =
   "Buổi tập đã qua giờ, huấn luyện viên không điểm danh — toàn bộ giá trị buổi ghi nhận cho chủ phòng tập.";
+const ATTENDANCE_EDIT_GRACE_HOURS = Number(process.env.ATTENDANCE_EDIT_GRACE_HOURS || 24);
+const PT_REMINDER_AFTER_HOURS = Number(process.env.PT_ATTENDANCE_REMINDER_AFTER_HOURS || 6);
+const OWNER_REMINDER_MARKER = "[ATTENDANCE_OWNER_REMINDER]";
+const PT_REMINDER_MARKER = "[ATTENDANCE_PT_REMINDER]";
 
 /** Ngày YYYY-MM-DD theo giờ local server (tránh lệch ngày so với toISOString UTC). */
 const toYmdLocal = (d) => {
@@ -170,6 +174,64 @@ const bookingSlotEnd = (booking) => {
   return Number.isNaN(d.getTime()) ? null : d;
 };
 
+const bookingAttendanceDeadline = (booking) => {
+  const end = bookingSlotEnd(booking);
+  if (!end) return null;
+  return new Date(end.getTime() + ATTENDANCE_EDIT_GRACE_HOURS * 60 * 60 * 1000);
+};
+
+const bookingPtReminderAt = (booking) => {
+  const end = bookingSlotEnd(booking);
+  if (!end) return null;
+  return new Date(end.getTime() + PT_REMINDER_AFTER_HOURS * 60 * 60 * 1000);
+};
+
+const hasMarker = (notes, marker) => String(notes || "").includes(marker);
+
+const appendMarker = (notes, marker, extra = "") => {
+  const current = String(notes || "");
+  if (current.includes(marker)) return current;
+  const line = `${marker}${extra ? ` ${extra}` : ""}`.trim();
+  return current ? `${current}\n${line}` : line;
+};
+
+const notifyAttendancePendingReminder = async ({
+  booking,
+  trainerUserId,
+  ownerId,
+  gymName,
+  deadline,
+  notifyOwner,
+  notifyPt,
+}) => {
+  const slot = formatSlotLabel(booking);
+  const deadlineLabel = deadline
+    ? new Date(deadline).toLocaleString("vi-VN")
+    : `${ATTENDANCE_EDIT_GRACE_HOURS} giờ sau giờ kết thúc`;
+
+  if (notifyOwner && ownerId) {
+    await realtimeService.notifyUser(ownerId, {
+      title: "PT chưa điểm danh buổi tập",
+      message: `Buổi ${slot} chưa được PT điểm danh. Vui lòng nhắc PT cập nhật trước ${deadlineLabel}. Quá hạn hệ thống sẽ tự ghi nhận doanh thu về chủ phòng tập.${
+        gymName ? ` Chi nhánh: ${gymName}.` : ""
+      }`,
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId: booking.id,
+    });
+  }
+
+  if (notifyPt && trainerUserId) {
+    await realtimeService.notifyUser(trainerUserId, {
+      title: "Nhắc cập nhật điểm danh buổi tập",
+      message: `Buổi ${slot} chưa được điểm danh. Bạn có thể cập nhật trong vòng ${ATTENDANCE_EDIT_GRACE_HOURS} giờ sau giờ kết thúc (đến ${deadlineLabel}). Quá hạn doanh thu buổi sẽ chuyển về chủ phòng tập.`,
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId: booking.id,
+    });
+  }
+};
+
 const emitOwnersForGyms = async (gymIds) => {
   const uniq = [...new Set((gymIds || []).map(Number).filter((n) => n > 0))];
   if (!uniq.length) return;
@@ -187,6 +249,7 @@ const emitOwnersForGyms = async (gymIds) => {
 async function processOneBooking(bookingId) {
   const { Booking, Trainer, Attendance, Commission } = db;
   const t = await db.sequelize.transaction();
+  let reminderPayload = null;
   try {
     const booking = await Booking.findByPk(bookingId, {
       transaction: t,
@@ -253,6 +316,47 @@ async function processOneBooking(bookingId) {
     });
     if (ownerLine) {
       await t.rollback();
+      return false;
+    }
+
+    const deadline = bookingAttendanceDeadline(booking);
+    const beforeDeadline = deadline && deadline > new Date();
+    if (beforeDeadline) {
+      const gym = await db.Gym.findByPk(booking.gymId, {
+        attributes: ["ownerId", "name"],
+        transaction: t,
+      });
+      const now = new Date();
+      const ptReminderAt = bookingPtReminderAt(booking);
+      const notifyOwner = !hasMarker(booking.notes, OWNER_REMINDER_MARKER);
+      const notifyPt =
+        !hasMarker(booking.notes, PT_REMINDER_MARKER) &&
+        !!ptReminderAt &&
+        now >= ptReminderAt;
+      if (notifyOwner || notifyPt) {
+        let nextNotes = booking.notes;
+        if (notifyOwner) {
+          nextNotes = appendMarker(nextNotes, OWNER_REMINDER_MARKER, new Date().toISOString());
+        }
+        if (notifyPt) {
+          nextNotes = appendMarker(nextNotes, PT_REMINDER_MARKER, new Date().toISOString());
+        }
+        booking.notes = nextNotes;
+        await booking.save({ transaction: t, fields: ["notes", "updatedAt"] });
+        reminderPayload = {
+          booking: booking.toJSON ? booking.toJSON() : booking,
+          trainerUserId: Number(trainer.userId || 0) || null,
+          ownerId: Number(gym?.ownerId || 0) || null,
+          gymName: gym?.name || null,
+          deadline,
+          notifyOwner,
+          notifyPt,
+        };
+      }
+      await t.commit();
+      if (reminderPayload) {
+        await notifyAttendancePendingReminder(reminderPayload);
+      }
       return false;
     }
 

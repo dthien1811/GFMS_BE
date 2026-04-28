@@ -10,6 +10,7 @@ const {
   Trainer,
   User,
   Booking,
+  Attendance,
   Member,
   PackageActivation,
   Package,
@@ -18,6 +19,8 @@ const {
   Withdrawal,
   Policy,
 } = db;
+const ATTENDANCE_EDIT_GRACE_HOURS = Number(process.env.ATTENDANCE_EDIT_GRACE_HOURS || 24);
+const PT_REMINDER_AFTER_HOURS = Number(process.env.PT_ATTENDANCE_REMINDER_AFTER_HOURS || 6);
 
 const emitCommissionChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
@@ -178,6 +181,132 @@ const ownerCommissionService = {
       include,
       order: [["sessionDate", "DESC"], ["createdAt", "DESC"]],
     });
+  },
+
+  async getPendingAttendanceWindow(ownerUserId, query = {}) {
+    const { page, limit } = parsePaging(query);
+    const now = new Date();
+    const ownerGyms = await Gym.findAll({
+      where: { ownerId: ownerUserId },
+      attributes: ["id"],
+      raw: true,
+    });
+    const gymIds = ownerGyms.map((g) => Number(g.id)).filter((n) => Number.isFinite(n) && n > 0);
+    if (!gymIds.length) {
+      return { data: [], pagination: { total: 0, page, limit, totalPages: 0 } };
+    }
+
+    const minDate = new Date(now.getTime() - (ATTENDANCE_EDIT_GRACE_HOURS + 36) * 60 * 60 * 1000);
+    const minYmd = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, "0")}-${String(minDate.getDate()).padStart(2, "0")}`;
+    const maxYmd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+    const rows = await Booking.findAll({
+      where: {
+        gymId: { [Op.in]: gymIds },
+        status: { [Op.in]: ["confirmed", "in_progress"] },
+        bookingDate: { [Op.between]: [minYmd, maxYmd] },
+        ...(query.gymId ? { gymId: Number(query.gymId) } : {}),
+      },
+      attributes: ["id", "gymId", "memberId", "trainerId", "bookingDate", "startTime", "endTime", "status", "sessionType"],
+      include: [
+        { model: Gym, attributes: ["id", "name"], required: false },
+        {
+          model: Trainer,
+          attributes: ["id", "userId"],
+          required: false,
+          include: [{ model: User, attributes: ["id", "username", "email"], required: false }],
+        },
+        {
+          model: Member,
+          attributes: ["id", "userId"],
+          required: false,
+          include: [{ model: User, attributes: ["id", "username", "email"], required: false }],
+        },
+      ],
+      order: [["bookingDate", "DESC"], ["id", "DESC"]],
+      limit: 500,
+    });
+
+    const slotEnd = (booking) => {
+      const dateStr = String(booking?.bookingDate || "").slice(0, 10);
+      if (!dateStr) return null;
+      let end = String(booking?.endTime || "23:59:59");
+      if (end.length === 5) end = `${end}:00`;
+      const d = new Date(`${dateStr}T${end}`);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+    const reminderAt = (booking) => {
+      const end = slotEnd(booking);
+      if (!end) return null;
+      return new Date(end.getTime() + PT_REMINDER_AFTER_HOURS * 60 * 60 * 1000);
+    };
+    const deadlineAt = (booking) => {
+      const end = slotEnd(booking);
+      if (!end) return null;
+      return new Date(end.getTime() + ATTENDANCE_EDIT_GRACE_HOURS * 60 * 60 * 1000);
+    };
+
+    const bookingIds = rows.map((r) => Number(r.id)).filter((n) => Number.isFinite(n) && n > 0);
+    const attendances = bookingIds.length
+      ? await Attendance.findAll({
+          where: { bookingId: { [Op.in]: bookingIds }, attendanceType: "trainer" },
+          attributes: ["bookingId", "userId", "status"],
+        })
+      : [];
+    const attByBookingId = new Map();
+    attendances.forEach((a) => {
+      const key = Number(a.bookingId);
+      const list = attByBookingId.get(key) || [];
+      list.push(a);
+      attByBookingId.set(key, list);
+    });
+
+    const waiting = rows
+      .filter((b) => String(b?.sessionType || "").toLowerCase() !== "trainer_share")
+      .map((b) => {
+        const end = slotEnd(b);
+        const remind = reminderAt(b);
+        const deadline = deadlineAt(b);
+        if (!end || !remind || !deadline) return null;
+        if (!(now >= remind && now < deadline)) return null;
+        const trainerUserId = Number(b?.Trainer?.userId || 0);
+        const atts = attByBookingId.get(Number(b.id)) || [];
+        const hasTrainerAttendance = atts.some((a) => Number(a.userId) === trainerUserId);
+        if (hasTrainerAttendance) return null;
+        return {
+          bookingId: b.id,
+          gymId: b.gymId,
+          gymName: b?.Gym?.name || null,
+          trainerId: b?.Trainer?.id || b.trainerId || null,
+          trainerName: b?.Trainer?.User?.username || null,
+          trainerEmail: b?.Trainer?.User?.email || null,
+          memberId: b?.Member?.id || b.memberId || null,
+          memberName: b?.Member?.User?.username || null,
+          memberEmail: b?.Member?.User?.email || null,
+          bookingDate: b.bookingDate,
+          startTime: b.startTime,
+          endTime: b.endTime,
+          status: b.status,
+          reminderAt: remind,
+          attendanceDeadline: deadline,
+          remainingMs: Math.max(0, deadline.getTime() - now.getTime()),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => new Date(a.attendanceDeadline).getTime() - new Date(b.attendanceDeadline).getTime());
+
+    const total = waiting.length;
+    const offset = (page - 1) * limit;
+    const data = waiting.slice(offset, offset + limit);
+    return {
+      data,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit) || 0,
+      },
+    };
   },
 
   async getGymCommissionRate(ownerUserId, gymId) {
