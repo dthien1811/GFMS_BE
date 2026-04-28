@@ -23,10 +23,13 @@ const calcRemainingMonths = (endDateInput, nowInput = new Date()) => {
   if (Number.isNaN(end.getTime()) || Number.isNaN(now.getTime())) return 0;
   if (end.getTime() < now.getTime()) return 0;
 
+  // Đồng bộ theo tháng lịch:
+  // - Vừa mua 1 tháng => hiển thị 1 tháng (không cộng dư thành 2).
+  // - Gia hạn thêm 1 tháng => tăng đúng thêm 1.
   let months =
     (end.getFullYear() - now.getFullYear()) * 12 +
     (end.getMonth() - now.getMonth());
-  if (end.getDate() >= now.getDate()) months += 1;
+  if (end.getDate() < now.getDate()) months -= 1;
   return Math.max(0, months);
 };
 
@@ -362,12 +365,17 @@ const notifyOwnerAboutMembershipCardPurchase = async ({
     member?.User?.username ||
     (member?.User?.email ? String(member.User.email).split("@")[0] : "") ||
     `Member #${memberId}`;
+  let transactionCode = null;
+  if (transactionId) {
+    const tx = await db.Transaction.findByPk(transactionId, { attributes: ["id", "transactionCode"] });
+    transactionCode = tx?.transactionCode || (tx?.id ? `TX-${tx.id}` : null);
+  }
 
   return realtimeService.notifyUser(gym.ownerId, {
     title: "Có hội viên mua thẻ thành viên",
     message: `${memberName} vừa mua ${plan?.label || "thẻ thành viên"} tại ${gym.name || "gym"} (hạn đến ${new Date(
       card?.endDate || Date.now()
-    ).toLocaleDateString("vi-VN")}).`,
+    ).toLocaleDateString("vi-VN")}).${transactionCode ? ` Mã giao dịch: ${transactionCode}.` : ""}`,
     notificationType: "membership_card_purchase",
     relatedType: "transaction",
     relatedId: transactionId || card?.id || null,
