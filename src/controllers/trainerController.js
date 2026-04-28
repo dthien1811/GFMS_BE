@@ -574,7 +574,7 @@ exports.getMyCommissions = async (req, res) => {
     const userId = req.user?.id;
     const trainer = await getTrainerByUserId(userId);
 
-    const { status, fromDate, toDate } = req.query || {};
+    const { status, fromDate, toDate, page: pageRaw, limit: limitRaw } = req.query || {};
     const where = { trainerId: trainer.id };
 
     if (status) where.status = status;
@@ -584,21 +584,45 @@ exports.getMyCommissions = async (req, res) => {
       if (toDate) where.sessionDate[db.Sequelize.Op.lte] = new Date(toDate);
     }
 
-    const rows = await CommissionModel.findAll({
+    const include = [
+      { model: GymModel, attributes: ['id', 'name'], required: false },
+      {
+        model: PackageActivationModel,
+        attributes: ['id', 'packageId'],
+        required: false,
+        include: [{ model: PackageModel, attributes: ['id', 'name', 'sessions', 'price'], required: false }],
+      },
+    ];
+    const order = [['sessionDate', 'DESC'], ['createdAt', 'DESC']];
+
+    const hasPagination = pageRaw !== undefined || limitRaw !== undefined;
+    if (!hasPagination) {
+      const rows = await CommissionModel.findAll({ where, include, order });
+      return res.status(200).json({ data: rows });
+    }
+
+    const page = Math.max(1, Number.parseInt(pageRaw, 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(limitRaw, 10) || 20));
+    const offset = (page - 1) * limit;
+
+    const { count, rows } = await CommissionModel.findAndCountAll({
       where,
-      include: [
-        { model: GymModel, attributes: ['id', 'name'], required: false },
-        {
-          model: PackageActivationModel,
-          attributes: ['id', 'packageId'],
-          required: false,
-          include: [{ model: PackageModel, attributes: ['id', 'name', 'sessions', 'price'], required: false }],
-        },
-      ],
-      order: [['sessionDate', 'DESC'], ['createdAt', 'DESC']],
+      include,
+      order,
+      limit,
+      offset,
+      distinct: true,
     });
 
-    return res.status(200).json({ data: rows });
+    return res.status(200).json({
+      data: rows,
+      pagination: {
+        total: Number(count || 0),
+        page,
+        limit,
+        totalPages: Math.max(1, Math.ceil(Number(count || 0) / limit)),
+      },
+    });
   } catch (error) {
     console.error('[getMyCommissions] Error:', error);
     return res.status(error.statusCode || 500).json({ message: error.message });
