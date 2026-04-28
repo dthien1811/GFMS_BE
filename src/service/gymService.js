@@ -41,19 +41,27 @@ const emitGymLifecycleChanged = async (gym, action) => {
 };
 
 const gymService = {
+  includeGymRelations(ownerAttrs = ['id', 'username', 'email', 'phone']) {
+    return [
+      {
+        model: db.User,
+        as: 'owner',
+        attributes: ownerAttrs
+      },
+      {
+        model: db.FranchiseRequest,
+        attributes: ['id', 'contactPerson', 'contactPhone', 'contactEmail', 'businessName']
+      }
+    ];
+  },
+
   /**
    * Lấy tất cả gym
    */
   getAllGyms: async () => {
     try {
       const gyms = await db.Gym.findAll({
-        include: [
-          {
-            model: db.User,
-            as: 'owner',
-            attributes: ['id', 'username', 'email', 'phone']
-          }
-        ],
+        include: gymService.includeGymRelations(),
         order: [['createdAt', 'DESC']]
       });
       return {
@@ -78,13 +86,7 @@ const gymService = {
     try {
       const gym = await db.Gym.findOne({
         where: { id },
-        include: [
-          {
-            model: db.User,
-            as: 'owner',
-            attributes: ['id', 'username', 'email', 'phone']
-          }
-        ]
+        include: gymService.includeGymRelations()
       });
 
       if (!gym) {
@@ -188,13 +190,7 @@ const gymService = {
       // Lấy lại gym với thông tin owner
       const gymWithOwner = await db.Gym.findOne({
         where: { id: newGym.id },
-        include: [
-          {
-            model: db.User,
-            as: 'owner',
-            attributes: ['id', 'username', 'email', 'phone']
-          }
-        ]
+        include: gymService.includeGymRelations()
       });
 
       return {
@@ -298,13 +294,7 @@ const gymService = {
       // Lấy lại gym đã cập nhật
       const updatedGym = await db.Gym.findOne({
         where: { id },
-        include: [
-          {
-            model: db.User,
-            as: 'owner',
-            attributes: ['id', 'username', 'email', 'phone']
-          }
-        ]
+        include: gymService.includeGymRelations()
       });
 
       return {
@@ -397,13 +387,7 @@ const gymService = {
       // Lấy lại gym đã cập nhật
       const updatedGym = await db.Gym.findOne({
         where: { id },
-        include: [
-          {
-            model: db.User,
-            as: 'owner',
-            attributes: ['id', 'username', 'email', 'phone']
-          }
-        ]
+        include: gymService.includeGymRelations()
       });
 
       return {
@@ -454,13 +438,7 @@ const gymService = {
       // Lấy lại gym đã cập nhật
       const updatedGym = await db.Gym.findOne({
         where: { id },
-        include: [
-          {
-            model: db.User,
-            as: 'owner',
-            attributes: ['id', 'username', 'email', 'phone']
-          }
-        ]
+        include: gymService.includeGymRelations()
       });
 
       return {
@@ -486,11 +464,7 @@ const gymService = {
       const gym = await db.Gym.findOne({
         where: { id },
         include: [
-          {
-            model: db.User,
-            as: 'owner',
-            attributes: ['id', 'username', 'email', 'phone', 'address', 'avatar']
-          },
+          ...gymService.includeGymRelations(['id', 'username', 'email', 'phone', 'address', 'avatar']),
           {
             model: db.Member,
             attributes: ['id'],

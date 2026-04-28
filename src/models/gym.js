@@ -104,6 +104,12 @@ module.exports = (sequelize, DataTypes) => {
       });
     }
 
+    if (models.Trainer) {
+      Gym.hasMany(models.Trainer, {
+        foreignKey: 'gymId',
+      });
+    }
+
     if (models.Package) {
       Gym.hasMany(models.Package, {
         foreignKey: 'gymId',
