@@ -12,6 +12,38 @@ const timeToMinutes = (t) => {
 const overlap = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && bStart < aEnd;
 const toHHMM = (t) => String(t || '').slice(0, 5);
 
+const isValidYMD = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || '').slice(0, 10));
+const isValidHHmm = (s) => /^([01]\d|2[0-3]):([0-5]\d)$/.test(String(s || '').slice(0, 5));
+const todayYMD = () => {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const assertRequestedSlotValid = (row) => {
+  const date = String(row?.requestedDate || '').slice(0, 10);
+  const st = String(row?.requestedStartTime || '').slice(0, 5);
+  const et = String(row?.requestedEndTime || '').slice(0, 5);
+  if (!isValidYMD(date)) {
+    const e = new Error('Ngày đề xuất không hợp lệ');
+    e.statusCode = 400;
+    throw e;
+  }
+  if (!isValidHHmm(st) || !isValidHHmm(et) || timeToMinutes(st) >= timeToMinutes(et)) {
+    const e = new Error('Khung giờ đề xuất không hợp lệ');
+    e.statusCode = 400;
+    throw e;
+  }
+  if (date < todayYMD()) {
+    const e = new Error('Không thể xử lý đổi lịch cho ngày quá khứ');
+    e.statusCode = 400;
+    throw e;
+  }
+  return { date, st, et };
+};
+
 const getTrainerByUserId = async (userId) => {
   const trainer = await db.Trainer.findOne({ where: { userId }, attributes: ['id', 'userId'] });
   if (!trainer) {
@@ -100,6 +132,7 @@ const approveRescheduleRequest = async (trainerUserId, requestId, payload = {}) 
   const t = await db.sequelize.transaction();
   try {
     const row = await getRequestOrThrow(trainerUserId, requestId, t);
+    assertRequestedSlotValid(row);
     if (String(row.status).toLowerCase() !== 'pending') {
       const e = new Error('Yêu cầu này đã được xử lý');
       e.statusCode = 400;
@@ -192,6 +225,7 @@ const rejectRescheduleRequest = async (trainerUserId, requestId, payload = {}) =
   const t = await db.sequelize.transaction();
   try {
     const row = await getRequestOrThrow(trainerUserId, requestId, t);
+    assertRequestedSlotValid(row);
     if (String(row.status).toLowerCase() !== 'pending') {
       const e = new Error('Yêu cầu này đã được xử lý');
       e.statusCode = 400;

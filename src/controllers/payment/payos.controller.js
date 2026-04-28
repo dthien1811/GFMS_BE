@@ -15,19 +15,27 @@ const toAllowedStatus = (raw) => {
 };
 
 async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
-  const membershipMeta = parseMeta(tx.metadata)?.membershipCard || null;
+  const parsedMeta = parseMeta(tx.metadata);
+  const membershipMeta = parsedMeta?.membershipCard || null;
+  const bundleMeta = parsedMeta?.bundle || {};
   const membershipPlan = membershipMeta?.planId
     ? await membershipCardService.getPlanById(Number(membershipMeta.planId), tx.gymId)
     : membershipMeta?.planMonths
       ? membershipCardService.getPlanByMonths(Number(membershipMeta.planMonths))
       : null;
+  const bundleMembershipTxId = Number(bundleMeta?.membershipTransactionId || 0) || null;
+  const bundlePackageAmount = Number(bundleMeta?.packageAmount || 0);
+  const bundleMembershipAmount = Number(bundleMeta?.membershipAmount || 0);
+  const normalizedPackageAmount = bundleMembershipTxId && bundlePackageAmount > 0
+    ? bundlePackageAmount
+    : (amount || tx.amount);
 
   if (tx.packageActivationId) {
     await tx.update(
       {
         paymentStatus: "completed",
         transactionDate: new Date(),
-        amount: amount || tx.amount,
+        amount: normalizedPackageAmount,
         metadata: {
           ...(tx.metadata || {}),
           [metaKey]: metaValue,
@@ -35,16 +43,36 @@ async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
       },
       { silent: false }
     );
+    if (bundleMembershipTxId && bundleMembershipAmount > 0) {
+      await db.Transaction.update(
+        {
+          paymentStatus: "completed",
+          transactionDate: new Date(),
+          amount: bundleMembershipAmount,
+          metadata: {
+            ...(parsedMeta || {}),
+            [metaKey]: metaValue,
+          },
+        },
+        { where: { id: bundleMembershipTxId }, silent: false }
+      );
+    }
+    let membershipCard = null;
     if (membershipPlan) {
-      await membershipCardService.createOrExtendMembershipCard({
+      membershipCard = await membershipCardService.createOrExtendMembershipCard({
         memberId: tx.memberId,
         gymId: tx.gymId,
-        transactionId: tx.id,
+        transactionId: bundleMembershipTxId || tx.id,
         plan: membershipPlan,
         purchaseSource: "package_bundle",
       });
     }
-    return { id: tx.packageActivationId };
+    return {
+      id: tx.packageActivationId,
+      membershipCard,
+      membershipPlan,
+      membershipTransactionId: bundleMembershipTxId || null,
+    };
   }
 
   const member = await db.Member.findByPk(tx.memberId);
@@ -80,7 +108,7 @@ async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
       paymentStatus: "completed",
       transactionDate: new Date(),
       packageActivationId: activation.id,
-      amount: amount || tx.amount,
+      amount: normalizedPackageAmount,
       metadata: {
         ...(tx.metadata || {}),
         [metaKey]: metaValue,
@@ -89,17 +117,38 @@ async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
     { silent: false }
   );
 
+  if (bundleMembershipTxId && bundleMembershipAmount > 0) {
+    await db.Transaction.update(
+      {
+        paymentStatus: "completed",
+        transactionDate: new Date(),
+        amount: bundleMembershipAmount,
+        metadata: {
+          ...(parsedMeta || {}),
+          [metaKey]: metaValue,
+        },
+      },
+      { where: { id: bundleMembershipTxId }, silent: false }
+    );
+  }
+
+  let membershipCard = null;
   if (membershipPlan) {
-    await membershipCardService.createOrExtendMembershipCard({
+    membershipCard = await membershipCardService.createOrExtendMembershipCard({
       memberId: tx.memberId,
       gymId: tx.gymId,
-      transactionId: tx.id,
+      transactionId: bundleMembershipTxId || tx.id,
       plan: membershipPlan,
       purchaseSource: "package_bundle",
     });
   }
 
-  return activation;
+  return {
+    id: activation.id,
+    membershipCard,
+    membershipPlan,
+    membershipTransactionId: bundleMembershipTxId || null,
+  };
 }
 
 const parseMeta = (value) => {
@@ -340,13 +389,27 @@ const payosController = {
       }
       if (pkg?.gymId) {
         const gym = await db.Gym.findByPk(pkg.gymId, { attributes: ["ownerId"] });
+        const member = await db.Member.findByPk(tx.memberId, {
+          attributes: ["id", "userId"],
+          include: [{ model: db.User, attributes: ["id", "username", "email"] }],
+        });
+        const memberName = member?.User?.username || "Một hội viên";
         await realtimeService.notifyUser(gym?.ownerId, {
           title: "Gym có giao dịch mới",
-          message: `Một hội viên vừa thanh toán gói ${pkg?.name || "tập"} thành công.`,
+          message: `${memberName} vừa thanh toán gói ${pkg?.name || "tập"} thành công. Mã giao dịch: ${tx.transactionCode || `TX-${tx.id}`}.`,
           notificationType: "package_purchase",
           relatedType: "transaction",
           relatedId: tx.id,
         });
+        if (activation?.membershipCard && activation?.membershipPlan) {
+          await membershipCardService.notifyOwnerAboutMembershipCardPurchase({
+            gymId: tx.gymId,
+            memberId: tx.memberId,
+            plan: activation.membershipPlan,
+            card: activation.membershipCard,
+            transactionId: activation.membershipTransactionId,
+          });
+        }
       }
       return res.status(200).json({ message: "OK", activationId: activation.id });
     } catch (e) {
@@ -540,13 +603,27 @@ const payosController = {
       }
       if (pkg?.gymId) {
         const gym = await db.Gym.findByPk(pkg.gymId, { attributes: ["ownerId"] });
+        const member = await db.Member.findByPk(tx.memberId, {
+          attributes: ["id", "userId"],
+          include: [{ model: db.User, attributes: ["id", "username", "email"] }],
+        });
+        const memberName = member?.User?.username || "Một hội viên";
         await realtimeService.notifyUser(gym?.ownerId, {
           title: "Gym có giao dịch mới",
-          message: `Một hội viên vừa thanh toán gói ${pkg?.name || "tập"} thành công.`,
+          message: `${memberName} vừa thanh toán gói ${pkg?.name || "tập"} thành công. Mã giao dịch: ${tx.transactionCode || `TX-${tx.id}`}.`,
           notificationType: "package_purchase",
           relatedType: "transaction",
           relatedId: tx.id,
         });
+        if (activation?.membershipCard && activation?.membershipPlan) {
+          await membershipCardService.notifyOwnerAboutMembershipCardPurchase({
+            gymId: tx.gymId,
+            memberId: tx.memberId,
+            plan: activation.membershipPlan,
+            card: activation.membershipCard,
+            transactionId: activation.membershipTransactionId,
+          });
+        }
       }
       return res.status(200).json({ message: "OK", activationId: activation.id });
     } catch (e) {

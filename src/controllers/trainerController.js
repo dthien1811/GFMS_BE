@@ -318,6 +318,21 @@ exports.createTrainer = async (req, res) => {
     if (payload.experienceYears !== undefined && !isPositiveNumber(payload.experienceYears)) {
       return res.status(400).json({ message: 'experienceYears must be a non-negative number' });
     }
+    if (payload.maxSessionsPerDay !== undefined && !isPositiveNumber(payload.maxSessionsPerDay)) {
+      return res.status(400).json({ message: 'maxSessionsPerDay must be a non-negative number' });
+    }
+    if (payload.minBookingNotice !== undefined && !isPositiveNumber(payload.minBookingNotice)) {
+      return res.status(400).json({ message: 'minBookingNotice must be a non-negative number' });
+    }
+    if (payload.commissionRate !== undefined && !isPositiveNumber(payload.commissionRate)) {
+      return res.status(400).json({ message: 'commissionRate must be a non-negative number' });
+    }
+    if (payload.rating !== undefined) {
+      const r = Number(payload.rating);
+      if (Number.isNaN(r) || r < 1 || r > 5) {
+        return res.status(400).json({ message: 'rating must be between 1 and 5' });
+      }
+    }
 
     const newTrainer = await TrainerModel.create(payload);
 
@@ -358,6 +373,21 @@ exports.updateTrainer = async (req, res) => {
     }
     if (payload.experienceYears !== undefined && !isPositiveNumber(payload.experienceYears)) {
       return res.status(400).json({ message: 'experienceYears must be a non-negative number' });
+    }
+    if (payload.maxSessionsPerDay !== undefined && !isPositiveNumber(payload.maxSessionsPerDay)) {
+      return res.status(400).json({ message: 'maxSessionsPerDay must be a non-negative number' });
+    }
+    if (payload.minBookingNotice !== undefined && !isPositiveNumber(payload.minBookingNotice)) {
+      return res.status(400).json({ message: 'minBookingNotice must be a non-negative number' });
+    }
+    if (payload.commissionRate !== undefined && !isPositiveNumber(payload.commissionRate)) {
+      return res.status(400).json({ message: 'commissionRate must be a non-negative number' });
+    }
+    if (payload.rating !== undefined) {
+      const r = Number(payload.rating);
+      if (Number.isNaN(r) || r < 1 || r > 5) {
+        return res.status(400).json({ message: 'rating must be between 1 and 5' });
+      }
     }
 
     await trainer.update(payload);
@@ -544,7 +574,7 @@ exports.getMyCommissions = async (req, res) => {
     const userId = req.user?.id;
     const trainer = await getTrainerByUserId(userId);
 
-    const { status, fromDate, toDate } = req.query || {};
+    const { status, fromDate, toDate, page: pageRaw, limit: limitRaw } = req.query || {};
     const where = { trainerId: trainer.id };
 
     if (status) where.status = status;
@@ -554,21 +584,45 @@ exports.getMyCommissions = async (req, res) => {
       if (toDate) where.sessionDate[db.Sequelize.Op.lte] = new Date(toDate);
     }
 
-    const rows = await CommissionModel.findAll({
+    const include = [
+      { model: GymModel, attributes: ['id', 'name'], required: false },
+      {
+        model: PackageActivationModel,
+        attributes: ['id', 'packageId'],
+        required: false,
+        include: [{ model: PackageModel, attributes: ['id', 'name', 'sessions', 'price'], required: false }],
+      },
+    ];
+    const order = [['sessionDate', 'DESC'], ['createdAt', 'DESC']];
+
+    const hasPagination = pageRaw !== undefined || limitRaw !== undefined;
+    if (!hasPagination) {
+      const rows = await CommissionModel.findAll({ where, include, order });
+      return res.status(200).json({ data: rows });
+    }
+
+    const page = Math.max(1, Number.parseInt(pageRaw, 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(limitRaw, 10) || 20));
+    const offset = (page - 1) * limit;
+
+    const { count, rows } = await CommissionModel.findAndCountAll({
       where,
-      include: [
-        { model: GymModel, attributes: ['id', 'name'], required: false },
-        {
-          model: PackageActivationModel,
-          attributes: ['id', 'packageId'],
-          required: false,
-          include: [{ model: PackageModel, attributes: ['id', 'name', 'sessions', 'price'], required: false }],
-        },
-      ],
-      order: [['sessionDate', 'DESC'], ['createdAt', 'DESC']],
+      include,
+      order,
+      limit,
+      offset,
+      distinct: true,
     });
 
-    return res.status(200).json({ data: rows });
+    return res.status(200).json({
+      data: rows,
+      pagination: {
+        total: Number(count || 0),
+        page,
+        limit,
+        totalPages: Math.max(1, Math.ceil(Number(count || 0) / limit)),
+      },
+    });
   } catch (error) {
     console.error('[getMyCommissions] Error:', error);
     return res.status(error.statusCode || 500).json({ message: error.message });
@@ -1249,9 +1303,6 @@ exports.getTrainerBookings = async (req, res) => {
   try {
     // 1. Nếu dùng route /me/bookings
     if (id === 'me') {
-      // Log để kiểm tra ID từ Token (phải là 6 mới đúng dữ liệu bạn gửi)
-      console.log(">>> Request từ User ID:", req.user.id);
-
       const trainer = await TrainerModel.findOne({ 
         where: { userId: req.user.id } 
       });
@@ -1270,7 +1321,6 @@ exports.getTrainerBookings = async (req, res) => {
        return res.status(400).json({ message: "Trainer ID không hợp lệ (undefined)" });
     }
 
-    console.log(">>> Đang lấy lịch cho Trainer ID thật:", id);
     const bookings = await trainerService.getTrainerBookings(id);
     return res.status(200).json(bookings);
 

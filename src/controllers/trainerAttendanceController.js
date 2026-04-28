@@ -35,8 +35,6 @@ module.exports = {
       const userId = getUserId(req);
       const { bookingId, method, status } = req.body || {};
 
-      console.log(">>> CHECK-IN REQUEST:", { userId, bookingId, method, status });
-
       if (!bookingId) return res.status(400).json({ EM: "bookingId is required" });
 
       const result = await attendanceService.checkIn({
@@ -45,21 +43,10 @@ module.exports = {
         method,
         status,
       });
-
-      console.log(">>> CHECK-IN SUCCESS");
       res.status(200).json(result);
 
     } catch (e) {
-      // LOG CHI TIẾT RA TERMINAL ĐỂ DEBUG
-      console.error("---------- CHECK-IN ERROR ----------");
-      console.error("Message:", e.message);
-      console.error("Stack:", e.stack);
-      if (e.name === 'SequelizeDatabaseError') {
-          console.error("SQL Error Detail:", e.parent);
-      }
-      console.error("------------------------------------");
-
-      // Trả về lỗi chi tiết cho Frontend dễ sửa
+      // Giữ lỗi gọn để tránh spam terminal khi deploy.
       res.status(e.statusCode || 500).json({
         EM: "Internal Server Error",
         DT: e.message,

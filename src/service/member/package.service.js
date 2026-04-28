@@ -116,7 +116,9 @@ const memberPackageService = {
         transaction: t,
       });
       const membershipPlan = membershipDecision.plan;
-      const totalAmount = Number(pkg.price || 0) + Number(membershipDecision.additionalAmount || 0);
+      const packageAmount = Number(pkg.price || 0);
+      const membershipAmount = Number(membershipDecision.additionalAmount || 0);
+      const totalAmount = packageAmount + membershipAmount;
 
       // 3) VALIDATE PAYMENT METHOD
       const paymentMethod = String(payload?.paymentMethod || "cash").toLowerCase();
@@ -145,7 +147,7 @@ const memberPackageService = {
             trainerId,
             gymId: pkg.gymId,
             packageId: pkg.id,
-            amount: totalAmount,
+            amount: packageAmount,
             transactionType: "package_purchase",
             paymentMethod,
             paymentStatus: "pending",
@@ -167,6 +169,36 @@ const memberPackageService = {
           { transaction: t }
         );
 
+        let membershipTx = null;
+        if (membershipDecision.requireCardPurchase) {
+          membershipTx = await db.Transaction.create(
+            {
+              transactionCode: genCode("MCB"),
+              memberId: member.id,
+              gymId: pkg.gymId,
+              amount: membershipAmount,
+              transactionType: "membership_card_purchase",
+              paymentMethod,
+              paymentStatus: "pending",
+              description: `Mua thẻ thành viên kèm gói ${pkg.name}`,
+              processedBy: userId,
+              metadata: {
+                membershipCard: {
+                  planId: membershipPlan.id,
+                  planCode: membershipPlan.code,
+                  planMonths: membershipPlan.months,
+                  planPrice: membershipPlan.price,
+                },
+                bundle: {
+                  source: "package_bundle",
+                  packageTransactionId: tx.id,
+                },
+              },
+            },
+            { transaction: t }
+          );
+        }
+
         const payosResp = await payosService.createPackagePaymentLink({
           orderCode: tx.id,
           amount: totalAmount,
@@ -179,6 +211,14 @@ const memberPackageService = {
           {
             metadata: {
               ...(tx.metadata || {}),
+              bundle: membershipTx
+                ? {
+                    membershipTransactionId: membershipTx.id,
+                    packageAmount,
+                    membershipAmount,
+                    totalAmount,
+                  }
+                : undefined,
               payos: {
                 orderCode: payosResp.orderCode,
                 checkoutUrl: payosResp.checkoutUrl,
@@ -212,7 +252,7 @@ const memberPackageService = {
           trainerId,
           gymId: pkg.gymId,
           packageId: pkg.id,
-          amount: totalAmount,
+          amount: packageAmount,
           transactionType: "package_purchase",
           paymentMethod,
           paymentStatus: "completed",
@@ -259,14 +299,55 @@ const memberPackageService = {
 
       await tx.update({ packageActivationId: activation.id }, { transaction: t });
       if (membershipDecision.requireCardPurchase) {
+        const membershipTx = await db.Transaction.create(
+          {
+            transactionCode: genCode("MCB"),
+            memberId: member.id,
+            gymId: pkg.gymId,
+            amount: membershipAmount,
+            transactionType: "membership_card_purchase",
+            paymentMethod,
+            paymentStatus: "completed",
+            description: `Mua thẻ thành viên kèm gói ${pkg.name}`,
+            transactionDate: new Date(),
+            processedBy: userId,
+            metadata: {
+              membershipCard: {
+                planId: membershipPlan.id,
+                planCode: membershipPlan.code,
+                planMonths: membershipPlan.months,
+                planPrice: membershipPlan.price,
+              },
+              bundle: {
+                source: "package_bundle",
+                packageTransactionId: tx.id,
+              },
+            },
+          },
+          { transaction: t }
+        );
         await membershipCardService.createOrExtendMembershipCard({
           memberId: member.id,
           gymId: pkg.gymId,
           plan: membershipPlan,
-          transactionId: tx.id,
+          transactionId: membershipTx.id,
           purchaseSource: "package_bundle",
           transaction: t,
         });
+        await tx.update(
+          {
+            metadata: {
+              ...(tx.metadata || {}),
+              bundle: {
+                membershipTransactionId: membershipTx.id,
+                packageAmount,
+                membershipAmount,
+                totalAmount,
+              },
+            },
+          },
+          { transaction: t }
+        );
       }
 
       await t.commit();
@@ -291,11 +372,32 @@ const memberPackageService = {
       const gym = await db.Gym.findByPk(pkg.gymId, { attributes: ["ownerId"] });
       await realtimeService.notifyUser(gym?.ownerId, {
         title: "Gym có giao dịch gói mới",
-        message: `Một hội viên vừa mua gói ${pkg.name}.`,
+        message: `${member?.User?.username || "Một hội viên"} vừa mua gói ${pkg.name}. Mã giao dịch: ${tx.transactionCode || `TX-${tx.id}`}.`,
         notificationType: "package_purchase",
         relatedType: "transaction",
         relatedId: tx.id,
       });
+      if (membershipDecision.requireCardPurchase) {
+        const membershipTx = await db.Transaction.findOne({
+          where: {
+            memberId: member.id,
+            gymId: pkg.gymId,
+            transactionType: "membership_card_purchase",
+            paymentMethod,
+          },
+          order: [["id", "DESC"]],
+        });
+        if (membershipTx) {
+          const summary = await membershipCardService.getMembershipCardSummary(member.id);
+          await membershipCardService.notifyOwnerAboutMembershipCardPurchase({
+            gymId: pkg.gymId,
+            memberId: member.id,
+            plan: membershipPlan,
+            card: summary || { id: null, endDate: new Date() },
+            transactionId: membershipTx.id,
+          });
+        }
+      }
       return { transaction: tx, activation };
     } catch (e) {
       await t.rollback();
