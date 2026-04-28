@@ -20,6 +20,9 @@ const normalizeDateOnly = (dateStr) => {
 
 const now = () => new Date();
 const BUSY_REQUEST_NOTE_MARKER = "[PT_BUSY_REQUEST]";
+const ATTENDANCE_EDIT_GRACE_HOURS = Number(process.env.ATTENDANCE_EDIT_GRACE_HOURS || 24);
+const OWNER_REMINDER_MARKER = "[ATTENDANCE_OWNER_REMINDER]";
+const PT_REMINDER_MARKER = "[ATTENDANCE_PT_REMINDER]";
 
 
 const formatDateVN = (value) => {
@@ -39,6 +42,42 @@ const formatBookingSlotLabel = (booking) => {
   const start = toHHMM(booking?.startTime);
   const end = toHHMM(booking?.endTime);
   return `${dateLabel}${start && end ? ` (${start}-${end})` : ""}`;
+};
+
+const notifyOwnerAttendanceUpdatedAfterReminder = async ({ booking, trainer, attendanceStatus }) => {
+  try {
+    const notes = String(booking?.notes || "");
+    if (!notes.includes(OWNER_REMINDER_MARKER) && !notes.includes(PT_REMINDER_MARKER)) return;
+
+    const gym = await db.Gym.findByPk(booking?.gymId, { attributes: ["id", "name", "ownerId"] });
+    const ownerId = Number(gym?.ownerId || 0);
+    if (!ownerId) return;
+
+    let trainerName = "Huấn luyện viên";
+    if (trainer?.userId) {
+      const trainerUser = await db.User.findByPk(trainer.userId, { attributes: ["username"] });
+      if (trainerUser?.username) trainerName = trainerUser.username;
+    }
+
+    const statusMap = {
+      present: "có mặt",
+      completed: "hoàn thành",
+      absent: "vắng mặt",
+    };
+    const statusLabel = statusMap[String(attendanceStatus || "").toLowerCase()] || "đã cập nhật";
+
+    await realtimeService.notifyUser(ownerId, {
+      title: "PT đã cập nhật điểm danh sau nhắc nhở",
+      message: `${trainerName} đã điểm danh trạng thái "${statusLabel}" cho buổi ${formatBookingSlotLabel(booking)}.${
+        gym?.name ? ` Chi nhánh: ${gym.name}.` : ""
+      }`,
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId: booking.id,
+    });
+  } catch (error) {
+    console.error("[trainerAttendanceService] notify owner after reminder error:", error.message);
+  }
 };
 
 /** Owner phòng nhận (gym của booking) — khi PT bấm hoàn thành buổi, kể cả PT mượn. */
@@ -203,6 +242,12 @@ const getBookingSlotEndDate = (booking) => {
   return Number.isNaN(d.getTime()) ? null : d;
 };
 
+const getAttendanceEditDeadline = (booking) => {
+  const end = getBookingSlotEndDate(booking);
+  if (!end) return null;
+  return new Date(end.getTime() + ATTENDANCE_EDIT_GRACE_HOURS * 60 * 60 * 1000);
+};
+
 const assertAttendanceDateWindow = (booking) => {
   const bookingDay = toDateOnly(booking?.bookingDate);
   if (!bookingDay) return;
@@ -216,10 +261,10 @@ const assertAttendanceDateWindow = (booking) => {
     throw err;
   }
 
-  // Đã qua giờ kết thúc buổi tập thì không điểm danh (đồng bộ với luồng doanh thu chủ sau slot).
-  const slotEnd = getBookingSlotEndDate(booking);
-  if (slotEnd && Date.now() > slotEnd.getTime()) {
-    const err = new Error("Buổi tập đã qua giờ kết thúc, không thể điểm danh.");
+  // Cho PT chỉnh/sửa điểm danh trong thời gian grace sau giờ kết thúc slot.
+  const editDeadline = getAttendanceEditDeadline(booking);
+  if (editDeadline && Date.now() > editDeadline.getTime()) {
+    const err = new Error(`Đã quá thời hạn ${ATTENDANCE_EDIT_GRACE_HOURS} giờ sau giờ kết thúc buổi tập, không thể điểm danh.`);
     err.statusCode = 400;
     throw err;
   }
@@ -739,6 +784,12 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
     console.error("[trainerAttendanceService] commission sync error (checkIn):", e.message);
   }
 
+  await notifyOwnerAttendanceUpdatedAfterReminder({
+    booking,
+    trainer,
+    attendanceStatus: normalizedStatus,
+  });
+
   await emitBookingStatusRealtime({ booking, trainer, attendanceStatus: normalizedStatus });
 
   return { booking, attendance };
@@ -861,6 +912,12 @@ const checkOut = async ({ userId, bookingId, status = "absent", ptMemberFeedback
   } catch (e) {
     console.error("[trainerAttendanceService] commission sync error (checkOut):", e.message);
   }
+
+  await notifyOwnerAttendanceUpdatedAfterReminder({
+    booking,
+    trainer,
+    attendanceStatus: normalizedStatus,
+  });
 
   await emitBookingStatusRealtime({
     booking,
