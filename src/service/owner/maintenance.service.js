@@ -67,16 +67,31 @@ const ownerMaintenanceService = {
 
     const { rows, count } = await Maintenance.findAndCountAll({
       where,
+      attributes: [
+        "id",
+        "gymId",
+        "equipmentId",
+        "equipmentUnitId",
+        "status",
+        "issueDescription",
+        "notes",
+        "createdAt",
+        "targetCompletionDate",
+        "scheduledDate",
+        "estimatedCost",
+        "actualCost",
+      ],
       include: [
         safeEquipmentInclude(),
         { model: EquipmentUnit, as: "equipmentUnit", required: false, attributes: ["id", "assetCode", "status"] },
-        { model: Gym, required: false },
-        { model: User, as: "requester", required: false },
-        { model: User, as: "technician", required: false },
+        { model: Gym, required: false, attributes: ["id", "name"] },
+        { model: User, as: "requester", required: false, attributes: ["id", "username", "email"] },
+        { model: User, as: "technician", required: false, attributes: ["id", "username", "email"] },
       ],
       order: [["createdAt", "DESC"]],
       limit,
       offset,
+      distinct: true,
     });
 
     return {

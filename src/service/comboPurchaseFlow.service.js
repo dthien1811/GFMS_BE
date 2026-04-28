@@ -248,36 +248,63 @@ async function listCombos({ activeOnly = false, query = {}, forAdmin = false } =
       { description: { [Op.like]: `%${keyword}%` } },
     ];
   }
-  const { rows, count } = await EquipmentCombo.findAndCountAll({
+  const soldStatuses = [
+    REQUEST_STATUSES.PAID_WAITING_ADMIN_CONFIRM,
+    REQUEST_STATUSES.SHIPPING,
+    REQUEST_STATUSES.COMPLETED,
+  ];
+  const soldCountLiteral = sequelize.literal(`(
+    SELECT COUNT(1)
+    FROM purchaserequest AS pr
+    WHERE pr.comboId = EquipmentCombo.id
+      AND pr.status IN (${soldStatuses.map((s) => `'${s}'`).join(',')})
+  )`);
+
+  const { rows: baseRows, count } = await EquipmentCombo.findAndCountAll({
     where,
-    include: [
-      { model: Supplier, as: 'supplier', required: false, attributes: ['id', 'name', 'code'] },
-      {
-        model: EquipmentComboItem,
-        as: 'items',
-        required: false,
-        include: [{
-          model: Equipment,
-          as: 'equipment',
-          attributes: ['id', 'name', 'code', 'description', 'price', 'brand', 'model', 'status', 'specifications'],
-          include: [
-            { model: EquipmentImage, as: 'images', required: false, attributes: ['id', 'url', 'isPrimary', 'sortOrder', 'altText'] },
-            { model: EquipmentCategory, as: 'category', required: false, attributes: ['id', 'name', 'code'] },
-            { model: Supplier, as: 'preferredSupplier', required: false, attributes: ['id', 'name', 'code'] },
-          ],
-        }],
-      },
-    ],
-    order: [['createdAt', 'DESC'], [{ model: EquipmentComboItem, as: 'items' }, 'sortOrder', 'ASC']],
+    attributes: { include: [[soldCountLiteral, 'soldCount']] },
+    order: [[soldCountLiteral, 'DESC'], ['createdAt', 'DESC']],
     limit,
     offset,
-    distinct: true,
   });
 
-  const data = rows.map((row) => ({
-    ...serializeCombo(row),
-    canToggleSelling: forAdmin,
-  }));
+  const comboIds = baseRows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0);
+  const detailRows = comboIds.length
+    ? await EquipmentCombo.findAll({
+        where: { id: { [Op.in]: comboIds } },
+        include: [
+          { model: Supplier, as: 'supplier', required: false, attributes: ['id', 'name', 'code'] },
+          {
+            model: EquipmentComboItem,
+            as: 'items',
+            required: false,
+            include: [{
+              model: Equipment,
+              as: 'equipment',
+              attributes: ['id', 'name', 'code', 'description', 'price', 'brand', 'model', 'status'],
+              include: [
+                { model: EquipmentImage, as: 'images', required: false, attributes: ['id', 'url', 'isPrimary', 'sortOrder'] },
+                { model: EquipmentCategory, as: 'category', required: false, attributes: ['id', 'name', 'code'] },
+                { model: Supplier, as: 'preferredSupplier', required: false, attributes: ['id', 'name', 'code'] },
+              ],
+            }],
+          },
+        ],
+        order: [[{ model: EquipmentComboItem, as: 'items' }, 'sortOrder', 'ASC']],
+      })
+    : [];
+  const detailMap = new Map(detailRows.map((row) => [Number(row.id), row]));
+
+  const data = baseRows.map((row) => {
+    const detail = detailMap.get(Number(row.id));
+    const comboData = serializeCombo(detail || row);
+    const soldCount = Number(row.get?.('soldCount') || row.dataValues?.soldCount || 0);
+    return {
+      ...comboData,
+      soldCount,
+      canToggleSelling: forAdmin,
+    };
+  });
 
   return { data, meta: { page, limit, totalItems: count, totalPages: Math.ceil(count / limit) } };
 }
@@ -528,6 +555,29 @@ async function createOwnerComboRequest(ownerUserId, payload) {
   ensure(gym && Number(gym.ownerId) === Number(ownerUserId), 'Gym not found or not authorized', 403);
 
   return sequelize.transaction(async (t) => {
+    const existingActiveRequest = await PurchaseRequest.findOne({
+      where: {
+        gymId,
+        comboId: combo.id,
+        status: {
+          [Op.in]: [
+            REQUEST_STATUSES.SUBMITTED,
+            REQUEST_STATUSES.APPROVED_WAITING_PAYMENT,
+            REQUEST_STATUSES.PAID_WAITING_ADMIN_CONFIRM,
+            REQUEST_STATUSES.SHIPPING,
+          ],
+        },
+      },
+      order: [['id', 'DESC']],
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+    ensure(
+      !existingActiveRequest,
+      "Bạn đã có yêu cầu mua combo đang xử lý cho chi nhánh này. Vui lòng chờ hoàn tất trước khi gửi thêm.",
+      409
+    );
+
     const count = await PurchaseRequest.count({ transaction: t });
     const totalAmount = roundMoney(combo.price);
     const firstEquipmentId = combo.items?.[0]?.equipmentId || null;
