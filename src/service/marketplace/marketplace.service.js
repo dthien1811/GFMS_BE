@@ -34,6 +34,11 @@ const DAY_LABEL = {
 };
 
 const MARKETPLACE_BOOKING_STATUSES = ["confirmed", "completed", "pending"];
+const ACTIVE_PACKAGE_STATUS = ["active", "ACTIVE"];
+const ACTIVE_PACKAGE_WHERE = {
+  isActive: true,
+  [Op.or]: [{ status: { [Op.in]: ACTIVE_PACKAGE_STATUS } }, { status: null }],
+};
 
 const parseJsonSafe = (value, fallback = null) => {
   try {
@@ -357,7 +362,7 @@ const marketplaceService = {
 
   async listGymPackages(gymId) {
     return db.Package.findAll({
-      where: { gymId, isActive: true, packageType: "personal_training" },
+      where: { gymId, packageType: "personal_training", ...ACTIVE_PACKAGE_WHERE },
     });
   },
 
@@ -486,14 +491,14 @@ const marketplaceService = {
     return db.Package.findAll({
       where: {
         gymId: trainer.gymId,
-        isActive: true,
+        ...ACTIVE_PACKAGE_WHERE,
         packageType: "personal_training",
       },
     });
   },
 
   async listPackages({ gymId, q, page, limit } = {}) {
-    const where = { isActive: true, packageType: "personal_training" };
+    const where = { packageType: "personal_training", ...ACTIVE_PACKAGE_WHERE };
 
     if (gymId) where.gymId = gymId;
     if (q) where.name = { [Op.like]: `%${q}%` };
@@ -520,7 +525,8 @@ const marketplaceService = {
   },
 
   async getPackageDetail(id) {
-    return db.Package.findByPk(id, {
+    return db.Package.findOne({
+      where: { id, ...ACTIVE_PACKAGE_WHERE },
       include: [{ model: db.Gym, attributes: ["id", "name", "address"] }],
     });
   },
@@ -533,7 +539,7 @@ const marketplaceService = {
         include: [{ model: db.User, attributes: ["id", "username", "avatar"] }, { model: db.Gym, attributes: ["id", "name", "address"] }],
       }),
       db.Package.findAll({
-        where: { isActive: true },
+        where: ACTIVE_PACKAGE_WHERE,
         include: [{ model: db.Gym, attributes: ["id", "name", "address"] }],
       }),
       db.Booking.findAll({
@@ -661,10 +667,11 @@ const marketplaceService = {
     }
 
     const pkg = await db.Package.findByPk(pId, {
-      attributes: ["id", "isActive"],
+      attributes: ["id", "isActive", "status"],
     });
 
-    if (!pkg || pkg.isActive === false) {
+    const pkgStatus = String(pkg?.status || "").trim().toLowerCase();
+    if (!pkg || pkg.isActive === false || (pkgStatus && pkgStatus !== "active")) {
       const err = new Error("Gói tập không tồn tại hoặc đã ngừng hoạt động");
       err.statusCode = 404;
       throw err;
