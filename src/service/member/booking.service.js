@@ -105,6 +105,13 @@ const genMembershipNumber = () =>
 const overlap = (aStart, aEnd, bStart, bEnd) =>
   aStart < bEnd && bStart < aEnd;
 
+const isPackageActive = (pkg) => {
+  if (!pkg) return false;
+  const status = String(pkg.status || "").trim().toLowerCase();
+  if (status && status !== "active") return false;
+  return pkg.isActive !== false;
+};
+
 /* ================= BUSINESS HELPERS ================= */
 
 function trainerMatchPackage(trainer, pkg) {
@@ -623,7 +630,7 @@ async function buildValidatedFixedPlan(userId, payload, transaction = null) {
   }
 
   const pkg = await db.Package.findByPk(packageId, { transaction });
-  if (!pkg || !pkg.isActive) {
+  if (!isPackageActive(pkg)) {
     const e = new Error("Gói tập không tồn tại hoặc đã ngừng hoạt động");
     e.statusCode = 404;
     throw e;
