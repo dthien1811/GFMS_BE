@@ -22,6 +22,7 @@ const {
 const ATTENDANCE_EDIT_GRACE_HOURS = Number(process.env.ATTENDANCE_EDIT_GRACE_HOURS || 24);
 const PT_REMINDER_AFTER_HOURS = Number(process.env.PT_ATTENDANCE_REMINDER_AFTER_HOURS || 6);
 const OWNER_REMINDER_MARKER = "[ATTENDANCE_OWNER_REMINDER]";
+const PT_REMINDER_MARKER = "[ATTENDANCE_PT_REMINDER]";
 
 const emitCommissionChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
@@ -215,7 +216,7 @@ const ownerCommissionService = {
         bookingDate: { [Op.between]: [minYmd, maxYmd] },
         ...(query.gymId ? { gymId: Number(query.gymId) } : {}),
       },
-      attributes: ["id", "gymId", "memberId", "trainerId", "bookingDate", "startTime", "endTime", "status", "sessionType"],
+      attributes: ["id", "gymId", "memberId", "trainerId", "bookingDate", "startTime", "endTime", "status", "sessionType", "notes"],
       include: [
         { model: Gym, attributes: ["id", "name"], required: false },
         {
@@ -276,7 +277,12 @@ const ownerCommissionService = {
         const remind = reminderAt(b);
         const deadline = deadlineAt(b);
         if (!end || !remind || !deadline) return null;
-        if (!(now >= remind && now < deadline)) return null;
+        const notes = String(b?.notes || "");
+        const hasReminderMarker =
+          notes.includes(OWNER_REMINDER_MARKER) || notes.includes(PT_REMINDER_MARKER);
+        const inAutoReminderWindow = now >= remind && now < deadline;
+        const inManualReminderWindow = hasReminderMarker && now < deadline;
+        if (!(inAutoReminderWindow || inManualReminderWindow)) return null;
         const trainerUserId = Number(b?.Trainer?.userId || 0);
         const atts = attByBookingId.get(Number(b.id)) || [];
         const hasTrainerAttendance = atts.some((a) => Number(a.userId) === trainerUserId);
@@ -298,6 +304,7 @@ const ownerCommissionService = {
           reminderAt: remind,
           attendanceDeadline: deadline,
           remainingMs: Math.max(0, deadline.getTime() - now.getTime()),
+          reminded: hasReminderMarker,
         };
       })
       .filter(Boolean)
