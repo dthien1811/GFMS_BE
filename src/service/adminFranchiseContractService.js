@@ -130,6 +130,19 @@ function emitFranchiseChanged(fr, action, extra = {}) {
   if (fr.requesterId) realtimeService.emitUser(fr.requesterId, "franchise:changed", payload);
 }
 
+async function notifyOwnerGymCreated(fr, gym) {
+  const ownerId = Number(fr?.requesterId || gym?.ownerId || 0);
+  const gymName = String(gym?.name || fr?.businessName || "phòng gym mới").trim();
+  if (!ownerId) return;
+  await realtimeService.notifyUser(ownerId, {
+    title: "Tạo phòng gym thành công",
+    message: `Hợp đồng nhượng quyền đã hoàn tất. Hệ thống đã tạo phòng gym "${gymName}" cho tài khoản của bạn.`,
+    notificationType: "franchise",
+    relatedType: "gym",
+    relatedId: Number(gym?.id || fr?.gymId || 0) || null,
+  });
+}
+
 function validateSignatureDataUrl(signatureDataUrl) {
   if (!signatureDataUrl) throw err(400, "Missing signatureDataUrl");
   const s = String(signatureDataUrl);
@@ -534,6 +547,8 @@ async function countersign(req) {
         transaction: t,
         meta: { gymId: gym.id },
       });
+
+      await notifyOwnerGymCreated(fr, gym);
     }
 
     // Mark completed
@@ -618,6 +633,7 @@ async function simulateEvent(req) {
       if (!fr.gymId) {
         const gym = await Gym.create({ name: fr.businessName, address: fr.location, ownerId: fr.requesterId }, { transaction: t });
         await fr.update({ gymId: gym.id, gymCreatedAt: now() }, { transaction: t });
+        await notifyOwnerGymCreated(fr, gym);
       }
       await fr.update({ contractStatus: "completed", contractCompletedAt: now() }, { transaction: t });
       emitFranchiseChanged(fr, "completed", { gymId: fr.gymId });
