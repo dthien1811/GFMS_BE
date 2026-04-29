@@ -43,10 +43,23 @@ const notificationService = {
       db.Notification.findAll({ where: { userId, isRead: false }, attributes: baseAttributes, raw: true }),
     ]);
 
-    const [enrichedItems, enrichedUnreadItems] = await Promise.all([
-      attachGymIdsToNotifications(allItems),
-      attachGymIdsToNotifications(allUnreadItems),
-    ]);
+    const mergedById = new Map();
+    [...allItems, ...allUnreadItems].forEach((item) => {
+      const id = Number(item?.id);
+      if (Number.isInteger(id) && id > 0 && !mergedById.has(id)) {
+        mergedById.set(id, item);
+      }
+    });
+
+    const enrichedUnion = await attachGymIdsToNotifications([...mergedById.values()]);
+    const enrichedById = new Map(
+      enrichedUnion.map((item) => [Number(item.id), item])
+    );
+
+    const enrichedItems = allItems.map((item) => enrichedById.get(Number(item.id)) || item);
+    const enrichedUnreadItems = allUnreadItems.map(
+      (item) => enrichedById.get(Number(item.id)) || item
+    );
 
     return {
       items: enrichedItems.filter((item) => matchesNotificationGym(item, scopedGymId)).slice(0, parsedLimit),

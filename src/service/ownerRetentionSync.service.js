@@ -7,8 +7,17 @@ const DEFAULT_RETENTION_REASON =
   "Buổi tập đã qua giờ, huấn luyện viên không điểm danh — toàn bộ giá trị buổi ghi nhận cho chủ phòng tập.";
 const ATTENDANCE_EDIT_GRACE_HOURS = Number(process.env.ATTENDANCE_EDIT_GRACE_HOURS || 24);
 const PT_REMINDER_AFTER_HOURS = Number(process.env.PT_ATTENDANCE_REMINDER_AFTER_HOURS || 6);
+const PT_REMINDER_TOTAL_COUNT = Math.max(1, Number(process.env.PT_ATTENDANCE_REMINDER_TOTAL_COUNT || 4));
+const PT_REMINDER_INTERVAL_HOURS = Math.max(
+  1,
+  Number(
+    process.env.PT_ATTENDANCE_REMINDER_INTERVAL_HOURS ||
+      Math.max(1, Math.floor(ATTENDANCE_EDIT_GRACE_HOURS / PT_REMINDER_TOTAL_COUNT))
+  )
+);
 const OWNER_REMINDER_MARKER = "[ATTENDANCE_OWNER_REMINDER]";
 const PT_REMINDER_MARKER = "[ATTENDANCE_PT_REMINDER]";
+const PT_REMINDER_COUNT_MARKER = "[ATTENDANCE_PT_REMINDER_COUNT:";
 
 /** Ngày YYYY-MM-DD theo giờ local server (tránh lệch ngày so với toISOString UTC). */
 const toYmdLocal = (d) => {
@@ -195,6 +204,23 @@ const appendMarker = (notes, marker, extra = "") => {
   return current ? `${current}\n${line}` : line;
 };
 
+const getPtReminderCount = (notes) => {
+  const raw = String(notes || "");
+  const m = raw.match(/\[ATTENDANCE_PT_REMINDER_COUNT:(\d+)\]/);
+  const parsed = m ? Number(m[1]) : 0;
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+};
+
+const setPtReminderCount = (notes, count) => {
+  const safeCount = Math.max(0, Number(count) || 0);
+  const raw = String(notes || "");
+  const line = `${PT_REMINDER_COUNT_MARKER}${safeCount}]`;
+  if (raw.match(/\[ATTENDANCE_PT_REMINDER_COUNT:(\d+)\]/)) {
+    return raw.replace(/\[ATTENDANCE_PT_REMINDER_COUNT:(\d+)\]/, line);
+  }
+  return raw ? `${raw}\n${line}` : line;
+};
+
 const notifyAttendancePendingReminder = async ({
   booking,
   trainerUserId,
@@ -203,6 +229,7 @@ const notifyAttendancePendingReminder = async ({
   deadline,
   notifyOwner,
   notifyPt,
+  ptReminderSequence,
 }) => {
   const slot = formatSlotLabel(booking);
   const deadlineLabel = deadline
@@ -222,9 +249,13 @@ const notifyAttendancePendingReminder = async ({
   }
 
   if (notifyPt && trainerUserId) {
+    const remindLabel =
+      Number.isInteger(Number(ptReminderSequence))
+        ? ` (lần ${ptReminderSequence}/${PT_REMINDER_TOTAL_COUNT})`
+        : "";
     await realtimeService.notifyUser(trainerUserId, {
       title: "Nhắc cập nhật điểm danh buổi tập",
-      message: `Buổi ${slot} chưa được điểm danh. Bạn có thể cập nhật trong vòng ${ATTENDANCE_EDIT_GRACE_HOURS} giờ sau giờ kết thúc (đến ${deadlineLabel}). Quá hạn doanh thu buổi sẽ chuyển về chủ phòng tập.`,
+      message: `Buổi ${slot} chưa được điểm danh${remindLabel}. Bạn có thể cập nhật trong vòng ${ATTENDANCE_EDIT_GRACE_HOURS} giờ sau giờ kết thúc (đến ${deadlineLabel}). Quá hạn doanh thu buổi sẽ chuyển về chủ phòng tập.`,
       notificationType: "booking_update",
       relatedType: "booking",
       relatedId: booking.id,
@@ -320,6 +351,10 @@ async function processOneBooking(bookingId) {
     }
 
     const deadline = bookingAttendanceDeadline(booking);
+    if (!deadline) {
+      await t.rollback();
+      return false;
+    }
     const beforeDeadline = deadline && deadline > new Date();
     if (beforeDeadline) {
       const gym = await db.Gym.findByPk(booking.gymId, {
@@ -329,10 +364,14 @@ async function processOneBooking(bookingId) {
       const now = new Date();
       const ptReminderAt = bookingPtReminderAt(booking);
       const notifyOwner = !hasMarker(booking.notes, OWNER_REMINDER_MARKER);
-      const notifyPt =
-        !hasMarker(booking.notes, PT_REMINDER_MARKER) &&
-        !!ptReminderAt &&
-        now >= ptReminderAt;
+      const remindedCount = getPtReminderCount(booking.notes);
+      const nextReminderAt = ptReminderAt
+        ? new Date(
+            ptReminderAt.getTime() + remindedCount * PT_REMINDER_INTERVAL_HOURS * 60 * 60 * 1000
+          )
+        : null;
+      const canNotifyPt = remindedCount < PT_REMINDER_TOTAL_COUNT;
+      const notifyPt = canNotifyPt && !!nextReminderAt && now >= nextReminderAt;
       if (notifyOwner || notifyPt) {
         let nextNotes = booking.notes;
         if (notifyOwner) {
@@ -340,6 +379,7 @@ async function processOneBooking(bookingId) {
         }
         if (notifyPt) {
           nextNotes = appendMarker(nextNotes, PT_REMINDER_MARKER, new Date().toISOString());
+          nextNotes = setPtReminderCount(nextNotes, remindedCount + 1);
         }
         booking.notes = nextNotes;
         await booking.save({ transaction: t, fields: ["notes", "updatedAt"] });
@@ -351,6 +391,7 @@ async function processOneBooking(bookingId) {
           deadline,
           notifyOwner,
           notifyPt,
+          ptReminderSequence: notifyPt ? remindedCount + 1 : null,
         };
       }
       await t.commit();

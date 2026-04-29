@@ -10,6 +10,7 @@ router.use(requireGroupName(["owner", "Owner", "Gym Owner", "Gym Owners", "Owner
 
 router.get("/", ownerCommissionController.getCommissions);
 router.get("/pending-attendance-window", ownerCommissionController.getPendingAttendanceWindow);
+router.post("/:bookingId/remind-attendance", ownerCommissionController.remindPendingAttendance);
 router.get("/export", ownerCommissionController.exportCommissions);
 router.get("/gym/:gymId/rate", ownerCommissionController.getGymCommissionRate);
 router.post("/gym/rate", ownerCommissionController.setGymCommissionRate);
