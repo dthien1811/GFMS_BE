@@ -21,6 +21,7 @@ const {
 } = db;
 const ATTENDANCE_EDIT_GRACE_HOURS = Number(process.env.ATTENDANCE_EDIT_GRACE_HOURS || 24);
 const PT_REMINDER_AFTER_HOURS = Number(process.env.PT_ATTENDANCE_REMINDER_AFTER_HOURS || 6);
+const OWNER_REMINDER_MARKER = "[ATTENDANCE_OWNER_REMINDER]";
 
 const emitCommissionChanged = (userIds = [], payload = {}) => {
   [...new Set((userIds || []).filter(Boolean).map(Number))].forEach((userId) => {
@@ -55,6 +56,13 @@ const ensureGymOwned = async (ownerUserId, gymId) => {
     throw err;
   }
   return gym;
+};
+
+const appendMarker = (notes, marker, extra = "") => {
+  const current = String(notes || "");
+  if (current.includes(marker)) return current;
+  const line = `${marker}${extra ? ` ${extra}` : ""}`.trim();
+  return current ? `${current}\n${line}` : line;
 };
 
 const buildCommissionQuery = async (ownerUserId, query = {}) => {
@@ -306,6 +314,140 @@ const ownerCommissionService = {
         limit,
         totalPages: Math.ceil(total / limit) || 0,
       },
+    };
+  },
+
+  async remindPendingAttendance(ownerUserId, bookingId) {
+    const id = Number(bookingId);
+    if (!Number.isFinite(id) || id <= 0) {
+      const err = new Error("bookingId không hợp lệ.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const booking = await Booking.findByPk(id, {
+      attributes: ["id", "gymId", "memberId", "trainerId", "bookingDate", "startTime", "endTime", "status", "sessionType", "notes"],
+      include: [
+        { model: Gym, attributes: ["id", "name", "ownerId"], required: false },
+        {
+          model: Trainer,
+          attributes: ["id", "userId"],
+          required: false,
+          include: [{ model: User, attributes: ["id", "username", "email"], required: false }],
+        },
+        {
+          model: Member,
+          attributes: ["id", "userId"],
+          required: false,
+          include: [{ model: User, attributes: ["id", "username", "email"], required: false }],
+        },
+      ],
+    });
+
+    if (!booking) {
+      const err = new Error("Không tìm thấy buổi tập.");
+      err.statusCode = 404;
+      throw err;
+    }
+
+    if (Number(booking?.Gym?.ownerId || 0) !== Number(ownerUserId || 0)) {
+      const err = new Error("Bạn không có quyền nhắc PT cho buổi tập này.");
+      err.statusCode = 403;
+      throw err;
+    }
+
+    if (!["confirmed", "in_progress"].includes(String(booking.status || "").toLowerCase())) {
+      const err = new Error("Buổi tập này không còn ở trạng thái chờ điểm danh.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    if (String(booking?.sessionType || "").toLowerCase() === "trainer_share") {
+      const err = new Error("Buổi trainer share không áp dụng nhắc điểm danh theo flow này.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const dateStr = String(booking?.bookingDate || "").slice(0, 10);
+    let end = String(booking?.endTime || "23:59:59");
+    if (end.length === 5) end = `${end}:00`;
+    const endAt = new Date(`${dateStr}T${end}`);
+    if (Number.isNaN(endAt.getTime())) {
+      const err = new Error("Không thể xác định thời gian kết thúc buổi tập.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const now = new Date();
+    const reminderAt = new Date(endAt.getTime() + PT_REMINDER_AFTER_HOURS * 60 * 60 * 1000);
+    const deadline = new Date(endAt.getTime() + ATTENDANCE_EDIT_GRACE_HOURS * 60 * 60 * 1000);
+    if (now < reminderAt) {
+      const err = new Error(`Chưa tới thời điểm nhắc PT (sau ${PT_REMINDER_AFTER_HOURS} giờ từ lúc kết thúc buổi).`);
+      err.statusCode = 400;
+      throw err;
+    }
+    if (now >= deadline) {
+      const err = new Error("Buổi tập đã quá hạn điểm danh, không thể gửi nhắc thủ công.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const trainerUserId = Number(booking?.Trainer?.userId || 0);
+    if (!trainerUserId) {
+      const err = new Error("Không tìm thấy tài khoản PT để gửi nhắc nhở.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const trainerAtt = await Attendance.findOne({
+      where: {
+        bookingId: booking.id,
+        attendanceType: "trainer",
+        userId: trainerUserId,
+      },
+      attributes: ["id"],
+    });
+    if (trainerAtt) {
+      const err = new Error("PT đã điểm danh buổi này, không cần gửi nhắc.");
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const trainerName = booking?.Trainer?.User?.username || `PT #${booking?.Trainer?.id || booking?.trainerId || "?"}`;
+    const memberName = booking?.Member?.User?.username || `Hội viên #${booking?.memberId || "?"}`;
+    const gymName = booking?.Gym?.name || "phòng tập";
+    const dateLabel = new Date(`${dateStr}T00:00:00`).toLocaleDateString("vi-VN");
+    const timeLabel = `${String(booking?.startTime || "").slice(0, 5)}-${String(booking?.endTime || "").slice(0, 5)}`;
+    const deadlineLabel = deadline.toLocaleString("vi-VN");
+
+    await realtimeService.notifyUser(trainerUserId, {
+      title: "Owner nhắc điểm danh buổi tập",
+      message: `Bạn chưa điểm danh buổi ${dateLabel} (${timeLabel}) với ${memberName} tại ${gymName}. Vui lòng cập nhật trước ${deadlineLabel}.`,
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId: booking.id,
+    });
+
+    const nextNotes = appendMarker(booking.notes, OWNER_REMINDER_MARKER, new Date().toISOString());
+    if (nextNotes !== String(booking.notes || "")) {
+      booking.notes = nextNotes;
+      await booking.save({ fields: ["notes", "updatedAt"] });
+    }
+
+    emitCommissionChanged([ownerUserId], {
+      gymId: Number(booking.gymId),
+      bookingId: Number(booking.id),
+      action: "owner_manual_attendance_reminder",
+    });
+
+    return {
+      bookingId: Number(booking.id),
+      trainerName,
+      trainerEmail: booking?.Trainer?.User?.email || null,
+      memberName,
+      gymName,
+      attendanceDeadline: deadline,
+      reminderSentAt: now,
     };
   },
 

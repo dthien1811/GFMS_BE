@@ -29,6 +29,21 @@ const ownerCommissionController = {
     }
   },
 
+  async remindPendingAttendance(req, res) {
+    try {
+      const userId = req.user.id;
+      const { bookingId } = req.params;
+      const result = await ownerCommissionService.remindPendingAttendance(userId, bookingId);
+      return res.status(200).json({
+        data: result,
+        message: "Đã gửi nhắc nhở điểm danh cho PT.",
+      });
+    } catch (e) {
+      console.error("Error in remindPendingAttendance controller:", e);
+      return res.status(e.statusCode || 500).json({ message: e.message });
+    }
+  },
+
   async getGymCommissionRate(req, res) {
     try {
       const userId = req.user.id;
