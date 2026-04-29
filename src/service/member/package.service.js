@@ -1,5 +1,6 @@
 // src/service/member/package.service.js
 import db from "../../models";
+import { Op } from "sequelize";
 import payosService from "../payment/payos.service";
 import realtimeService from "../realtime.service";
 import membershipCardService from "./membershipCard.service";
@@ -49,6 +50,13 @@ function parseGymIdMaybe(v) {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+function isPackageActive(pkg) {
+  if (!pkg) return false;
+  const status = String(pkg.status || "").trim().toLowerCase();
+  if (status && status !== "active") return false;
+  return pkg.isActive !== false;
+}
+
 const memberPackageService = {
   // ================= LIST PACKAGES =================
   async listPackages(userId, { gymId } = {}) {
@@ -66,7 +74,11 @@ const memberPackageService = {
 
       if (members.length === 1) {
         return db.Package.findAll({
-          where: { gymId: members[0].gymId, isActive: true },
+          where: {
+            gymId: members[0].gymId,
+            isActive: true,
+            [Op.or]: [{ status: { [Op.in]: ["ACTIVE", "active"] } }, { status: null }],
+          },
           order: [["createdAt", "DESC"]],
         });
       }
@@ -85,7 +97,11 @@ const memberPackageService = {
     }
 
     return db.Package.findAll({
-      where: { gymId: wantedGymId, isActive: true },
+      where: {
+        gymId: wantedGymId,
+        isActive: true,
+        [Op.or]: [{ status: { [Op.in]: ["ACTIVE", "active"] } }, { status: null }],
+      },
       order: [["createdAt", "DESC"]],
     });
   },
@@ -96,7 +112,7 @@ const memberPackageService = {
     try {
       // 1) LOAD PACKAGE
       const pkg = await db.Package.findByPk(packageId, { transaction: t });
-      if (!pkg || !pkg.isActive) {
+      if (!isPackageActive(pkg)) {
         const err = new Error("Gói không tồn tại hoặc chưa được công bố.");
         err.statusCode = 404;
         throw err;

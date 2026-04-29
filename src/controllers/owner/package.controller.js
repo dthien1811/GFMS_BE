@@ -30,6 +30,11 @@ const normalizeSpecializationSelection = (raw) => {
   return Array.from(dedup.values()).sort((a, b) => a.localeCompare(b, "vi"));
 };
 
+const isPackageStatusActive = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase() === "active";
+
 const getGymSpecializations = async (gymId) => {
   const trainers = await Trainer.findAll({
     where: {
@@ -315,6 +320,7 @@ const packageController = {
         validityType: 'sessions',
         maxSessionsPerWeek: maxSessionsPerWeek || null,
         status: 'INACTIVE', // mặc định chưa công bố
+        isActive: false,
       });
 
       emitPackageChanged([ownerId], {
@@ -482,6 +488,7 @@ const packageController = {
       }
 
       pkg.status = pkg.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+      pkg.isActive = isPackageStatusActive(pkg.status);
       await pkg.save();
 
       emitPackageChanged([ownerId], {
