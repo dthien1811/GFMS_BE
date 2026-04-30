@@ -5,7 +5,11 @@ import { applyPackageActivationCompletion, removePendingCommissionForBooking } f
 
 const DEFAULT_RETENTION_REASON =
   "Buổi tập đã qua giờ, huấn luyện viên không điểm danh — toàn bộ giá trị buổi ghi nhận cho chủ phòng tập.";
-const ATTENDANCE_EDIT_GRACE_HOURS = Number(process.env.ATTENDANCE_EDIT_GRACE_HOURS || 24);
+const ATTENDANCE_EDIT_GRACE_HOURS_RAW = Number(process.env.ATTENDANCE_EDIT_GRACE_HOURS || 24);
+const ATTENDANCE_EDIT_GRACE_HOURS =
+  Number.isFinite(ATTENDANCE_EDIT_GRACE_HOURS_RAW) && ATTENDANCE_EDIT_GRACE_HOURS_RAW >= 24
+    ? ATTENDANCE_EDIT_GRACE_HOURS_RAW
+    : 24;
 const PT_REMINDER_AFTER_HOURS = Number(process.env.PT_ATTENDANCE_REMINDER_AFTER_HOURS || 6);
 const PT_REMINDER_TOTAL_COUNT = Math.max(1, Number(process.env.PT_ATTENDANCE_REMINDER_TOTAL_COUNT || 4));
 const PT_REMINDER_INTERVAL_HOURS = Math.max(
@@ -187,6 +191,11 @@ const bookingAttendanceDeadline = (booking) => {
   const end = bookingSlotEnd(booking);
   if (!end) return null;
   return new Date(end.getTime() + ATTENDANCE_EDIT_GRACE_HOURS * 60 * 60 * 1000);
+};
+
+const isPastAttendanceDeadline = (booking, now = new Date()) => {
+  const deadline = bookingAttendanceDeadline(booking);
+  return !!deadline && now >= deadline;
 };
 
 const bookingPtReminderAt = (booking) => {
@@ -483,7 +492,9 @@ export async function backfillOwnerCommissionRowsForGyms(gymIds, { limit = 150 }
 
   let backfilled = 0;
   const touchedGyms = new Set();
+  const now = new Date();
   for (const b of rows) {
+    if (!isPastAttendanceDeadline(b, now)) continue;
     const hasOwner = await db.Commission.findOne({
       where: { bookingId: b.id, payee: "owner" },
     });
