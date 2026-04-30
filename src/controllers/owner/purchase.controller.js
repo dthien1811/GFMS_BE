@@ -159,7 +159,11 @@ const ownerPurchaseController = {
       const data = await ownerPurchaseService.createPurchaseRequest(req.user.id, req.body);
       return res.status(201).json({ data });
     } catch (e) {
-      console.error("Create purchase request error:", e);
+      if (Number(e?.statusCode || 500) < 500) {
+        console.warn("Create purchase request warning:", e?.message || e);
+      } else {
+        console.error("Create purchase request error:", e);
+      }
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },

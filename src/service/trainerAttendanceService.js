@@ -207,9 +207,18 @@ const SAFE_ATT_COLS = [
 ];
 
 // Không cho phép chỉnh sửa điểm danh nếu buổi đã được chi trả / chốt kỳ
-const ensureAttendanceEditable = async (bookingId) => {
+const ensureAttendanceEditable = async (bookingInput) => {
   const Commission = db.Commission || db.commission;
   mustHaveModel(Commission, "Commission");
+  const bookingId = Number(
+    typeof bookingInput === "object" && bookingInput
+      ? bookingInput.id
+      : bookingInput
+  );
+  const bookingNotes =
+    typeof bookingInput === "object" && bookingInput
+      ? String(bookingInput.notes || "")
+      : "";
 
   const existing = await Commission.findOne({
     where: {
@@ -218,6 +227,17 @@ const ensureAttendanceEditable = async (bookingId) => {
     },
   });
   if (existing) {
+    if (
+      String(existing.payee || "").toLowerCase() === "owner" &&
+      (bookingNotes.includes(OWNER_REMINDER_MARKER) ||
+        bookingNotes.includes(PT_REMINDER_MARKER))
+    ) {
+      const err = new Error(
+        "Bạn đã không điểm danh dù đã được nhắc nhở nên buổi này đã bị chủ phòng ghi nhận doanh thu. Không thể điểm danh slot này."
+      );
+      err.statusCode = 400;
+      throw err;
+    }
     const err = new Error(
       "Buổi tập này đã ghi nhận doanh thu chủ / chốt kỳ lương hoặc đã chi trả cho PT. Không thể thay đổi điểm danh."
     );
@@ -735,7 +755,7 @@ const checkIn = async ({ userId, bookingId, method = "manual", status = "present
   }
 
   // chặn sửa nếu đã chi trả
-  await ensureAttendanceEditable(booking.id);
+  await ensureAttendanceEditable(booking);
   assertAttendanceDateWindow(booking);
 
   const t = now();
@@ -819,7 +839,7 @@ const checkOut = async ({ userId, bookingId, status = "absent", ptMemberFeedback
   }
 
   // chặn sửa nếu đã chi trả
-  await ensureAttendanceEditable(booking.id);
+  await ensureAttendanceEditable(booking);
   assertAttendanceDateWindow(booking);
 
   const t = now();
@@ -946,7 +966,7 @@ const resetAttendance = async ({ userId, bookingId }) => {
     throw Object.assign(new Error("Không có quyền cập nhật điểm danh buổi này"), { statusCode: 403 });
   }
 
-  await ensureAttendanceEditable(booking.id);
+  await ensureAttendanceEditable(booking);
   assertAttendanceDateWindow(booking);
 
   const attendance = await Attendance.findOne({
