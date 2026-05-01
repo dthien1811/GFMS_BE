@@ -1487,7 +1487,7 @@ const listAvailableTrainerShareRequestsForTrainer = async (userId, query = {}) =
 const claimTrainerShareRequest = async (userId, requestId) => {
   const trainer = await Trainer.findOne({
     where: { userId },
-    attributes: ["id", "gymId", "availableHours", "specialization"],
+    attributes: ["id", "userId", "gymId", "availableHours", "specialization"],
   });
   if (!trainer) {
     const error = new Error("Không tìm thấy hồ sơ huấn luyện viên");
@@ -1595,6 +1595,33 @@ const claimTrainerShareRequest = async (userId, requestId) => {
     request.approvedBy = userId;
     request.acceptedAt = new Date();
     await request.save({ transaction });
+
+    // ✅ NEW: Notify owner bên mượn (toGym) khi PT ngoài chi nhánh đã nhận lịch
+    try {
+      const borrowerOwnerId = Number(request?.toGym?.ownerId || 0);
+      const isExternalBorrow = Number(request?.fromGymId || 0) !== Number(request?.toGymId || 0);
+      if (borrowerOwnerId && isExternalBorrow && Array.isArray(scheduleDates) && scheduleDates.length) {
+        const trainerUser = trainer.userId
+          ? await User.findByPk(trainer.userId, { attributes: ["id", "username"], transaction })
+          : null;
+        const trainerName = trainerUser?.username || `PT #${trainer.id}`;
+
+        const first = scheduleDates[0];
+        const slotLabel = `${first.date} (${String(first.startTime || "").slice(0, 5)}-${String(first.endTime || "").slice(0, 5)})`;
+        const more = scheduleDates.length > 1 ? ` và ${scheduleDates.length - 1} khung giờ khác` : "";
+        const gymName = request?.toGym?.name || (request?.toGymId ? `Chi nhánh #${request.toGymId}` : "chi nhánh");
+
+        await realtimeService.notifyUser(borrowerOwnerId, {
+          title: "Đã có PT nhận lịch mượn ngoài chi nhánh",
+          message: `${trainerName} đã nhận lịch mượn tại ${gymName} vào ${slotLabel}${more}.`,
+          notificationType: "trainer_share",
+          relatedType: "trainerShare",
+          relatedId: request.id,
+        });
+      }
+    } catch (e) {
+      console.error("[trainer_share] notify borrower owner on claim failed:", e.message);
+    }
 
     // Nếu yêu cầu mượn này đến từ yêu cầu báo bận (busySlotRequestId), cập nhật trạng thái yêu cầu báo bận gốc thành APPROVED
     if (request.busySlotRequestId) {

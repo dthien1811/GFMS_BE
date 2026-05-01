@@ -936,16 +936,31 @@ module.exports = {
             });
           }
         }
-        const currentNotes = String(booking.notes || "");
-        if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
+        const BUSY_MARKER = BUSY_REQUEST_NOTE_MARKER;
+        const SUBSTITUTE_MARKER = "[PT_SUBSTITUTE]";
+
+        let currentNotes = String(booking.notes || "");
+
+        // Khi đã xếp PT khác vào dạy thay, cần đánh dấu rõ để UI PT hiển thị "Lịch dạy thay"
+        // và tránh nhầm với trạng thái "PT đã báo bận" của PT gốc.
+        if (replacement && !currentNotes.includes(SUBSTITUTE_MARKER)) {
+          const previousTrainerId = Number(request?.data?.trainerId || 0) || null;
+          const subNote = `${SUBSTITUTE_MARKER} Thay PT #${previousTrainerId || "?"} lúc ${new Date().toISOString()}`;
+          currentNotes = currentNotes ? `${currentNotes}\n${subNote}` : subNote;
+        }
+
+        // Giữ marker BUSY để audit/trace nhưng không tạo trùng dòng.
+        if (!currentNotes.includes(BUSY_MARKER)) {
           const assignmentNote = replacement
             ? ` | Đã điều phối nội bộ cho huấn luyện viên ${replacement?.User?.username || `#${replacement.id}`}`
             : shouldAutoAssignInternal
             ? " | Không tìm thấy huấn luyện viên nội bộ phù hợp"
             : " | Owner chọn chuyển sang luồng mượn huấn luyện viên";
-          const note = `${BUSY_REQUEST_NOTE_MARKER} Owner đã duyệt yêu cầu báo bận #${request.id}${assignmentNote}`;
-          booking.notes = currentNotes ? `${currentNotes}\n${note}` : note;
+          const note = `${BUSY_MARKER} Owner đã duyệt yêu cầu báo bận #${request.id}${assignmentNote}`;
+          currentNotes = currentNotes ? `${currentNotes}\n${note}` : note;
         }
+
+        booking.notes = currentNotes;
         await booking.save({ transaction: t });
 
         request.data = {
@@ -1004,6 +1019,46 @@ module.exports = {
       logReq("approve:notifyOk", { id: savedRequest.id });
     } catch (notifyErr) {
       logReqError("approve:notifyFailed", notifyErr);
+    }
+
+    // ✅ NEW: Notify PT nội bộ được điều phối (dạy thay) khi duyệt BUSY_SLOT
+    try {
+      const normalizedType = String(savedRequest?.requestType || "").trim().toUpperCase();
+      if (normalizedType === "BUSY_SLOT") {
+        const replacementTrainerId = Number(savedRequest?.data?.internalReplacementTrainerId || 0);
+        const bookingId = Number(savedRequest?.data?.bookingId || savedRequest?.data?.data?.bookingId || 0);
+        const bookingDate = String(savedRequest?.data?.bookingDate || "").slice(0, 10);
+        const startTime = String(savedRequest?.data?.startTime || "").slice(0, 5);
+        const endTime = String(savedRequest?.data?.endTime || "").slice(0, 5);
+        const gymId = Number(savedRequest?.data?.gymId || 0);
+
+        if (replacementTrainerId > 0) {
+          const trainerRow = await Trainer.findByPk(replacementTrainerId, {
+            attributes: ["id", "userId"],
+            include: [{ model: User, attributes: ["id", "username"], required: false }],
+          });
+          const replacementUserId = Number(trainerRow?.userId || 0) || Number(trainerRow?.User?.id || 0);
+          const replacementName = trainerRow?.User?.username || savedRequest?.data?.internalReplacementTrainerName || `PT #${replacementTrainerId}`;
+
+          const gymRow = gymId
+            ? await Gym.findByPk(gymId, { attributes: ["id", "name"] })
+            : null;
+          const gymName = gymRow?.name || (gymId ? `Chi nhánh #${gymId}` : "chi nhánh");
+
+          if (replacementUserId) {
+            const slotLabel = bookingDate && startTime && endTime ? `${bookingDate} (${startTime}-${endTime})` : "khung giờ đã điều phối";
+            await realtimeService.notifyUser(replacementUserId, {
+              title: "Bạn có lịch dạy thay mới",
+              message: `${replacementName} được xếp lịch dạy thay vào ${slotLabel} tại ${gymName}.`,
+              notificationType: "booking_update",
+              relatedType: bookingId ? "booking" : "request",
+              relatedId: bookingId || savedRequest.id,
+            });
+          }
+        }
+      }
+    } catch (e) {
+      logReqError("approve:notifyInternalReplacementFailed", e);
     }
 
     logReq("approve:done", { id: savedRequest.id });
