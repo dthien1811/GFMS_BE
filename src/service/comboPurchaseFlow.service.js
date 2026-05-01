@@ -976,6 +976,29 @@ async function findActivePendingPayment(requestId, phase, transaction) {
   });
 }
 
+async function isReusablePayOSPending(tx) {
+  if (!tx) return false;
+  const paymentLink = String(tx.paymentLink || tx?.metadata?.payos?.checkoutUrl || '').trim();
+  if (!paymentLink) return false;
+
+  const meta = parseMeta(tx.metadata);
+  const paymentLinkId =
+    meta?.payos?.paymentLinkId ||
+    meta?.payos?.paymentLinkID ||
+    meta?.paymentLinkId ||
+    meta?.paymentLinkID ||
+    null;
+  const lookupId = paymentLinkId || tx.payosOrderCode || tx.id;
+  if (!lookupId) return false;
+
+  const info = await payosService.getPaymentLinkInformation(lookupId);
+  if (!info) return false;
+
+  const status = String(info.status || '').toUpperCase();
+  // Reuse only when PayOS still keeps payment in pending-like state.
+  return ['PENDING', 'PROCESSING', 'OPEN'].includes(status);
+}
+
 async function createPaymentLink(ownerUserId, requestId, phase) {
   return sequelize.transaction(async (t) => {
     const request = await PurchaseRequest.findByPk(requestId, { transaction: t, lock: t.LOCK.UPDATE, include: [{ model: Gym, as: 'gym', attributes: ['id', 'ownerId'] }, { model: EquipmentCombo, as: 'combo', attributes: ['id', 'name', 'code', 'price'] }] });
@@ -989,7 +1012,7 @@ async function createPaymentLink(ownerUserId, requestId, phase) {
     }
 
     const existing = await findActivePendingPayment(request.id, normalizedPhase, t);
-    if (existing) {
+    if (existing && (await isReusablePayOSPending(existing))) {
       return {
         checkoutUrl: existing.paymentLink || existing.metadata?.payos?.checkoutUrl || null,
         orderCode: existing.payosOrderCode || existing.id,
@@ -997,6 +1020,20 @@ async function createPaymentLink(ownerUserId, requestId, phase) {
         amount: Number(existing.amount || 0),
         reused: true,
       };
+    }
+
+    // Existing pending tx is no longer reusable (cancelled/expired/not found on PayOS),
+    // close it before creating a fresh payment link for the same combo request.
+    if (existing) {
+      existing.paymentStatus = 'cancelled';
+      existing.metadata = {
+        ...(existing.metadata || {}),
+        payosRetry: {
+          markedAt: new Date().toISOString(),
+          reason: 'stale_or_invalid_payment_link',
+        },
+      };
+      await existing.save({ transaction: t });
     }
 
     const amount = phaseAmountFromRequest(request, normalizedPhase);
