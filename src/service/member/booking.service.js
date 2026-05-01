@@ -6,6 +6,8 @@ import membershipCardService from "./membershipCard.service";
 
 const SLOT_MINUTES = 60;
 const MIN_BOOKING_LEAD_MINUTES = 120;
+const FIXED_PLAN_OPTIONS_CACHE_TTL_MS = 60000;
+const fixedPlanOptionsCache = new Map();
 
 const formatDateVN = (value) => {
   if (!value) return "ngày đã chọn";
@@ -104,6 +106,33 @@ const genMembershipNumber = () =>
 
 const overlap = (aStart, aEnd, bStart, bEnd) =>
   aStart < bEnd && bStart < aEnd;
+
+const stableStringify = (value) => {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+const normalizeFixedPlanPayloadForCache = (payload = {}) => ({
+  packageId: Number(payload?.packageId || 0),
+  trainerId: Number(payload?.trainerId || 0),
+  startDate: String(payload?.startDate || ""),
+  pattern: Array.isArray(payload?.pattern)
+    ? payload.pattern.map((d) => Number(d)).filter((d) => Number.isInteger(d)).sort((a, b) => a - b)
+    : [],
+});
+
+const buildFixedPlanOptionsCacheKey = (userId, payload = {}) =>
+  `${Number(userId) || 0}:${stableStringify(normalizeFixedPlanPayloadForCache(payload))}`;
+
+const cloneJsonSafe = (value) => JSON.parse(JSON.stringify(value));
 
 const isPackageActive = (pkg) => {
   if (!pkg) return false;
@@ -885,9 +914,15 @@ const bookingService = {
   },
 
   async getFixedPlanOptions(userId, payload) {
+    const cacheKey = buildFixedPlanOptionsCacheKey(userId, payload);
+    const cached = fixedPlanOptionsCache.get(cacheKey);
+    if (cached && Date.now() - Number(cached.ts || 0) < FIXED_PLAN_OPTIONS_CACHE_TTL_MS) {
+      return cloneJsonSafe(cached.data);
+    }
+
     const plan = await buildValidatedFixedPlan(userId, payload);
 
-    return {
+    const result = {
       warning: plan.warning,
       slots: plan.slots,
       bookingDates: plan.bookingDates,
@@ -903,9 +938,21 @@ const bookingService = {
         username: plan.trainer?.User?.username || "PT",
       },
     };
+
+    fixedPlanOptionsCache.set(cacheKey, {
+      ts: Date.now(),
+      data: cloneJsonSafe(result),
+    });
+
+    return result;
   },
 
   async confirmFixedPlan(userId, payload) {
+    const userPrefix = `${Number(userId) || 0}:`;
+    for (const key of fixedPlanOptionsCache.keys()) {
+      if (key.startsWith(userPrefix)) fixedPlanOptionsCache.delete(key);
+    }
+
     const paymentMethod = String(payload?.paymentMethod || "payos").toLowerCase();
     if (!ALLOWED_PAYMENT.has(paymentMethod)) {
       const e = new Error("paymentMethod không hợp lệ. Flow này chỉ hỗ trợ PayOS.");
@@ -1053,10 +1100,25 @@ const bookingService = {
                 checkoutUrl: payosResp.checkoutUrl,
                 paymentLinkId: payosResp.paymentLinkId,
               },
+              fixedPlanDraft: {
+                trainerId: plan.trainer.id,
+                startTime: `${selectedSlot.start}:00`,
+                endTime: `${selectedSlot.end}:00`,
+                bookingDates: plan.bookingDates,
+              },
             },
           },
           { transaction: t }
         );
+
+        await t.commit();
+        return {
+          activation: null,
+          createdCount: 0,
+          createdBookings: [],
+          paymentProvider: "payos",
+          paymentUrl: payosCheckoutUrl,
+        };
       }
 
       let expiryDate = null;

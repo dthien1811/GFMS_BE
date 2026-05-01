@@ -5,7 +5,7 @@ const marketplaceController = {
     res.json({ EC: 0, EM: "OK", DT: await marketplaceService.listGyms(req.query) }),
 
   getGymDetail: async (req, res) =>
-    res.json({ EC: 0, EM: "OK", DT: await marketplaceService.getGymDetail(req.params.id) }),
+    res.json({ EC: 0, EM: "OK", DT: await marketplaceService.getGymDetail(req.params.id, req.query) }),
 
   listGymTrainers: async (req, res) =>
     res.json({ EC: 0, EM: "OK", DT: await marketplaceService.listGymTrainers(req.params.id) }),

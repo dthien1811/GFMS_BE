@@ -8,6 +8,7 @@ const router = express.Router();
 router.use(requireGroupName(["Members", "Member"]));
 
 router.get("/", memberMyPackageController.getMyPackages);
+router.post("/transactions/:transactionId/retry-payment", memberMyPackageController.retryPendingPayment);
 router.get("/:activationId/materials", activationMaterialController.listForMember);
 router.get("/:activationId", memberMyPackageController.getMyPackageDetail);
 

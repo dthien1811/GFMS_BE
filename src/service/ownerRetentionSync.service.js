@@ -11,12 +11,11 @@ const ATTENDANCE_EDIT_GRACE_HOURS =
     ? ATTENDANCE_EDIT_GRACE_HOURS_RAW
     : 24;
 const PT_REMINDER_AFTER_HOURS = Number(process.env.PT_ATTENDANCE_REMINDER_AFTER_HOURS || 6);
-const PT_REMINDER_TOTAL_COUNT = Math.max(1, Number(process.env.PT_ATTENDANCE_REMINDER_TOTAL_COUNT || 4));
 const PT_REMINDER_INTERVAL_HOURS = Math.max(
   1,
   Number(
     process.env.PT_ATTENDANCE_REMINDER_INTERVAL_HOURS ||
-      Math.max(1, Math.floor(ATTENDANCE_EDIT_GRACE_HOURS / PT_REMINDER_TOTAL_COUNT))
+      6
   )
 );
 const OWNER_REMINDER_MARKER = "[ATTENDANCE_OWNER_REMINDER]";
@@ -220,6 +219,14 @@ const getPtReminderCount = (notes) => {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
 };
 
+const hasRequiredReminderEvidence = (notes) => {
+  const raw = String(notes || "");
+  const hasOwnerReminder = raw.includes(OWNER_REMINDER_MARKER);
+  const hasPtReminder = raw.includes(PT_REMINDER_MARKER);
+  const ptReminderCount = getPtReminderCount(raw);
+  return hasOwnerReminder && hasPtReminder && ptReminderCount >= 1;
+};
+
 const setPtReminderCount = (notes, count) => {
   const safeCount = Math.max(0, Number(count) || 0);
   const raw = String(notes || "");
@@ -260,7 +267,7 @@ const notifyAttendancePendingReminder = async ({
   if (notifyPt && trainerUserId) {
     const remindLabel =
       Number.isInteger(Number(ptReminderSequence))
-        ? ` (lần ${ptReminderSequence}/${PT_REMINDER_TOTAL_COUNT})`
+        ? ` (lần ${ptReminderSequence})`
         : "";
     await realtimeService.notifyUser(trainerUserId, {
       title: "Nhắc cập nhật điểm danh buổi tập",
@@ -379,8 +386,7 @@ async function processOneBooking(bookingId) {
             ptReminderAt.getTime() + remindedCount * PT_REMINDER_INTERVAL_HOURS * 60 * 60 * 1000
           )
         : null;
-      const canNotifyPt = remindedCount < PT_REMINDER_TOTAL_COUNT;
-      const notifyPt = canNotifyPt && !!nextReminderAt && now >= nextReminderAt;
+      const notifyPt = !!nextReminderAt && now >= nextReminderAt && now < deadline;
       if (notifyOwner || notifyPt) {
         let nextNotes = booking.notes;
         if (notifyOwner) {
@@ -401,6 +407,45 @@ async function processOneBooking(bookingId) {
           notifyOwner,
           notifyPt,
           ptReminderSequence: notifyPt ? remindedCount + 1 : null,
+        };
+      }
+      await t.commit();
+      if (reminderPayload) {
+        await notifyAttendancePendingReminder(reminderPayload);
+      }
+      return false;
+    }
+
+    // Safety gate: never retain revenue unless reminders to owner/PT were recorded.
+    // If deadline is already passed but reminders are missing, push reminder now and defer retention.
+    if (!hasRequiredReminderEvidence(booking.notes)) {
+      const gym = await db.Gym.findByPk(booking.gymId, {
+        attributes: ["ownerId", "name"],
+        transaction: t,
+      });
+      const existingCount = getPtReminderCount(booking.notes);
+      const notifyOwner = !hasMarker(booking.notes, OWNER_REMINDER_MARKER);
+      const notifyPt = !hasMarker(booking.notes, PT_REMINDER_MARKER) || existingCount < 1;
+      if (notifyOwner || notifyPt) {
+        let nextNotes = booking.notes;
+        if (notifyOwner) {
+          nextNotes = appendMarker(nextNotes, OWNER_REMINDER_MARKER, new Date().toISOString());
+        }
+        if (notifyPt) {
+          nextNotes = appendMarker(nextNotes, PT_REMINDER_MARKER, new Date().toISOString());
+          nextNotes = setPtReminderCount(nextNotes, Math.max(1, existingCount + 1));
+        }
+        booking.notes = nextNotes;
+        await booking.save({ transaction: t, fields: ["notes", "updatedAt"] });
+        reminderPayload = {
+          booking: booking.toJSON ? booking.toJSON() : booking,
+          trainerUserId: Number(trainer.userId || 0) || null,
+          ownerId: Number(gym?.ownerId || 0) || null,
+          gymName: gym?.name || null,
+          deadline,
+          notifyOwner,
+          notifyPt,
+          ptReminderSequence: notifyPt ? Math.max(1, existingCount + 1) : null,
         };
       }
       await t.commit();
@@ -495,6 +540,7 @@ export async function backfillOwnerCommissionRowsForGyms(gymIds, { limit = 150 }
   const now = new Date();
   for (const b of rows) {
     if (!isPastAttendanceDeadline(b, now)) continue;
+    if (!hasRequiredReminderEvidence(b.notes)) continue;
     const hasOwner = await db.Commission.findOne({
       where: { bookingId: b.id, payee: "owner" },
     });
