@@ -386,10 +386,9 @@ const ownerCommissionService = {
     }
 
     const now = new Date();
-    const reminderAt = new Date(endAt.getTime() + PT_REMINDER_AFTER_HOURS * 60 * 60 * 1000);
     const deadline = new Date(endAt.getTime() + ATTENDANCE_EDIT_GRACE_HOURS * 60 * 60 * 1000);
-    if (now < reminderAt) {
-      const err = new Error(`Chưa tới thời điểm nhắc PT (sau ${PT_REMINDER_AFTER_HOURS} giờ từ lúc kết thúc buổi).`);
+    if (now < endAt) {
+      const err = new Error("Buổi tập chưa kết thúc, chưa thể gửi nhắc PT.");
       err.statusCode = 400;
       throw err;
     }

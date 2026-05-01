@@ -14,6 +14,13 @@ const toAllowedStatus = (raw) => {
   return ALLOWED_STATUSES.has(v) ? v : "pending";
 };
 
+const isPayosPaid = ({ status, amountPaid, amountTotal }) => {
+  const normalized = String(status || "").toUpperCase();
+  const paid = Number(amountPaid || 0);
+  const total = Number(amountTotal || 0);
+  return PAID_STATUSES.has(normalized) || (total > 0 && paid >= total);
+};
+
 async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
   const parsedMeta = parseMeta(tx.metadata);
   const membershipMeta = parsedMeta?.membershipCard || null;
@@ -151,6 +158,55 @@ async function activatePackageFromTransaction(tx, amount, metaKey, metaValue) {
   };
 }
 
+async function applyFixedPlanDraftAfterPayment(tx, activationId) {
+  if (!activationId) return { createdCount: 0 };
+  const meta = parseMeta(tx.metadata);
+  const draft = meta?.fixedPlanDraft;
+  if (!draft) return { createdCount: 0 };
+
+  const existed = await db.Booking.count({
+    where: { packageActivationId: activationId },
+  });
+  if (existed > 0) return { createdCount: 0 };
+
+  const trainerId = Number(draft.trainerId || tx.trainerId || 0) || null;
+  const bookingDates = Array.isArray(draft.bookingDates)
+    ? draft.bookingDates.map((d) => String(d || "").trim()).filter(Boolean)
+    : [];
+  const startTime = String(draft.startTime || "").trim();
+  const endTime = String(draft.endTime || "").trim();
+
+  if (!trainerId || !bookingDates.length || !startTime || !endTime) {
+    return { createdCount: 0 };
+  }
+
+  const rows = bookingDates.map((bookingDate) => ({
+    memberId: tx.memberId,
+    trainerId,
+    gymId: tx.gymId,
+    packageId: tx.packageId,
+    packageActivationId: activationId,
+    bookingDate,
+    startTime,
+    endTime,
+    status: "confirmed",
+    createdBy: tx.processedBy || null,
+  }));
+  const created = await db.Booking.bulkCreate(rows);
+
+  await tx.update(
+    {
+      metadata: {
+        ...(meta || {}),
+        fixedPlanAppliedAt: new Date().toISOString(),
+      },
+    },
+    { silent: false }
+  );
+
+  return { createdCount: created.length };
+}
+
 const parseMeta = (value) => {
   if (!value) return {};
   if (typeof value === "object") return value;
@@ -221,13 +277,6 @@ const payosController = {
       const orderCode = data.orderCode || rawBody?.data?.orderCode;
       const amount = Number(data.amount || rawBody?.data?.amount || 0);
       const status = data.status || data.paymentStatus || "";
-      const success =
-        data.success === true ||
-        data.code === "00" ||
-        rawBody?.success === true ||
-        rawBody?.code === "00" ||
-        (verified?.success === true) ||
-        (verified?.code === "00");
 
       if (!orderCode) {
         // PayOS có thể gửi request xác thực webhook không kèm orderCode
@@ -248,10 +297,21 @@ const payosController = {
 
       // Chỉ xử lý khi trạng thái thành công
       const normalized = String(status).toUpperCase();
-      const isPaid =
-        PAID_STATUSES.has(normalized) ||
-        success;
-      console.log("[payOS webhook] normalized:", normalized, "isPaid:", isPaid, "success:", success);
+      const isPaid = isPayosPaid({
+        status: normalized,
+        amountPaid: data.amountPaid,
+        amountTotal: amount || tx.amount,
+      });
+      console.log(
+        "[payOS webhook] normalized:",
+        normalized,
+        "amountPaid:",
+        Number(data.amountPaid || 0),
+        "amountTotal:",
+        Number(amount || tx.amount || 0),
+        "isPaid:",
+        isPaid
+      );
 
       if (!isPaid) {
         // Có thể log thêm trạng thái khác nếu cần
@@ -368,6 +428,7 @@ const payosController = {
       }
 
       const activation = await activatePackageFromTransaction(tx, amount, "payosWebhook", data);
+      await applyFixedPlanDraftAfterPayment(tx, activation.id);
       const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
       const memberUserId = tx.processedBy || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId;
       await realtimeService.notifyUser(memberUserId, {
@@ -466,7 +527,11 @@ const payosController = {
       const normalized = String(info.status || "").toUpperCase();
       const amountPaid = Number(info.amountPaid || 0);
       const amountTotal = Number(info.amount || tx.amount || 0);
-      const isPaid = PAID_STATUSES.has(normalized) || (amountPaid > 0 && amountPaid >= amountTotal);
+      const isPaid = isPayosPaid({
+        status: normalized,
+        amountPaid,
+        amountTotal,
+      });
 
       if (!isPaid) {
         await tx.update(
@@ -582,6 +647,7 @@ const payosController = {
       }
 
       const activation = await activatePackageFromTransaction(tx, amountPaid || amountTotal, "payosConfirm", info);
+      await applyFixedPlanDraftAfterPayment(tx, activation.id);
       const pkg = tx.packageId ? await db.Package.findByPk(tx.packageId, { attributes: ["id", "name", "gymId"] }) : null;
       const memberUserId = userId || (await db.Member.findByPk(tx.memberId, { attributes: ["userId"] }))?.userId;
       await realtimeService.notifyUser(memberUserId, {

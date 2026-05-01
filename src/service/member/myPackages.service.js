@@ -1,6 +1,7 @@
 // src/service/member/myPackages.service.js
 import db from "../../models";
 import { Op } from "sequelize";
+import payosService from "../payment/payos.service";
 
 const SLOT_MINUTES = 60;
 
@@ -33,6 +34,16 @@ const parseHHMM = (t) => {
 const dayKeyFromISODate = (date) => {
   const keys = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
   return keys[new Date(`${date}T00:00:00`).getDay()];
+};
+
+const parseMeta = (value) => {
+  if (!value) return {};
+  if (typeof value === "object") return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
 };
 
 const toLocalISO = (d) => d.toLocaleDateString("en-CA");
@@ -363,7 +374,7 @@ const memberMyPackageService = {
         where: {
           memberId: memberIds,
           transactionType: "package_purchase",
-          paymentStatus: "pending",
+          paymentStatus: { [Op.in]: ["pending", "cancelled", "failed"] },
           packageActivationId: null,
         },
         include: [
@@ -373,6 +384,19 @@ const memberMyPackageService = {
             attributes: ["id", "gymId"],
             include: [{ model: db.Gym, attributes: ["id", "name"] }],
           },
+        ],
+        attributes: [
+          "id",
+          "transactionCode",
+          "amount",
+          "paymentMethod",
+          "paymentStatus",
+          "transactionDate",
+          "createdAt",
+          "description",
+          "gymId",
+          "trainerId",
+          "metadata",
         ],
         order: [["createdAt", "DESC"]],
       });
@@ -398,6 +422,7 @@ const memberMyPackageService = {
           description: tx.description,
           gymId: tx.gymId,
           trainerId: tx.trainerId || null,
+          paymentUrl: tx?.metadata?.payos?.checkoutUrl || null,
         },
         Member: tx.Member,
         Gym: tx.Member?.Gym,
@@ -411,6 +436,138 @@ const memberMyPackageService = {
     } catch (e) {
       console.error('[memberMyPackageService.getMyPackages] error:', e?.message || e);
       throw e;
+    }
+  },
+
+  async retryPendingPayment(userId, transactionId) {
+    const txId = Number(transactionId || 0);
+    if (!txId) {
+      const e = new Error("transactionId không hợp lệ");
+      e.statusCode = 400;
+      throw e;
+    }
+
+    const members = await getMembersByUserId(userId);
+    const memberIds = members.map((m) => Number(m.id)).filter(Boolean);
+    if (!memberIds.length) {
+      const e = new Error("Không tìm thấy thành viên");
+      e.statusCode = 404;
+      throw e;
+    }
+
+    const oldTx = await db.Transaction.findOne({
+      where: {
+        id: txId,
+        memberId: memberIds,
+        transactionType: "package_purchase",
+        paymentMethod: "payos",
+        packageActivationId: null,
+        paymentStatus: { [Op.in]: ["pending", "cancelled", "failed"] },
+      },
+    });
+    if (!oldTx) {
+      const e = new Error("Không tìm thấy giao dịch cần thanh toán lại");
+      e.statusCode = 404;
+      throw e;
+    }
+
+    const oldMeta = parseMeta(oldTx.metadata);
+    const bundle = oldMeta.bundle || {};
+    const packageAmount = Number(bundle.packageAmount || oldTx.amount || 0);
+    const membershipAmount = Number(bundle.membershipAmount || 0);
+    const totalAmount = Number(bundle.totalAmount || packageAmount + membershipAmount);
+
+    const t = await db.sequelize.transaction();
+    try {
+      const newTx = await db.Transaction.create(
+        {
+          transactionCode: oldTx.transactionCode,
+          memberId: oldTx.memberId,
+          trainerId: oldTx.trainerId,
+          gymId: oldTx.gymId,
+          packageId: oldTx.packageId,
+          amount: packageAmount,
+          transactionType: oldTx.transactionType,
+          paymentMethod: "payos",
+          paymentStatus: "pending",
+          description: oldTx.description,
+          processedBy: userId,
+          metadata: {
+            ...oldMeta,
+            payos: undefined,
+            payosConfirm: undefined,
+            payosWebhook: undefined,
+            retriedFromTransactionId: oldTx.id,
+          },
+        },
+        { transaction: t }
+      );
+
+      let membershipTx = null;
+      if (membershipAmount > 0) {
+        membershipTx = await db.Transaction.create(
+          {
+            transactionCode: `MCB-RETRY-${Date.now()}`,
+            memberId: oldTx.memberId,
+            gymId: oldTx.gymId,
+            amount: membershipAmount,
+            transactionType: "membership_card_purchase",
+            paymentMethod: "payos",
+            paymentStatus: "pending",
+            description: `Mua thẻ thành viên kèm gói (retry tx#${oldTx.id})`,
+            processedBy: userId,
+            metadata: {
+              membershipCard: oldMeta.membershipCard || null,
+              bundle: {
+                source: "package_bundle",
+                packageTransactionId: newTx.id,
+                retriedFromTransactionId: oldTx.id,
+              },
+            },
+          },
+          { transaction: t }
+        );
+      }
+
+      const frontendBase = process.env.FRONTEND_URL || "http://localhost:3000";
+      const payosResp = await payosService.createPackagePaymentLink({
+        orderCode: newTx.id,
+        amount: totalAmount,
+        description: oldTx.description || `Thanh toán gói tập #${oldTx.id}`,
+        returnUrl: `${frontendBase}/member/payment-success?payos=success&orderCode=${encodeURIComponent(newTx.id)}`,
+        cancelUrl: `${frontendBase}/member/payment-success?payos=cancel&orderCode=${encodeURIComponent(newTx.id)}`,
+      });
+
+      await newTx.update(
+        {
+          metadata: {
+            ...parseMeta(newTx.metadata),
+            bundle: membershipTx
+              ? {
+                  membershipTransactionId: membershipTx.id,
+                  packageAmount,
+                  membershipAmount,
+                  totalAmount,
+                }
+              : undefined,
+            payos: {
+              orderCode: payosResp.orderCode,
+              checkoutUrl: payosResp.checkoutUrl,
+              paymentLinkId: payosResp.paymentLinkId,
+            },
+          },
+        },
+        { transaction: t }
+      );
+
+      await t.commit();
+      return {
+        transactionId: newTx.id,
+        checkoutUrl: payosResp.checkoutUrl,
+      };
+    } catch (error) {
+      await t.rollback();
+      throw error;
     }
   },
 

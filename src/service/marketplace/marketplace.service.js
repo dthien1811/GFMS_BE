@@ -49,6 +49,11 @@ const parseJsonSafe = (value, fallback = null) => {
   }
 };
 
+const parseBoolFlag = (value) => {
+  const raw = String(value ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+};
+
 const normalizeRanges = (ranges) => {
   if (!Array.isArray(ranges)) return [];
 
@@ -260,6 +265,7 @@ async function listPublicReviews({ reviewType = null, gymId = null, trainerId = 
 const marketplaceService = {
   async listGyms(query = {}) {
     const { q, page, limit } = query;
+    const lite = parseBoolFlag(query?.lite);
     const pg = paginate({ page, limit });
     const where = {};
     if (q) {
@@ -276,6 +282,18 @@ const marketplaceService = {
       offset: pg.offset,
       limit: pg.limit,
     });
+
+    if (lite) {
+      return {
+        items: rows.map((row) => normalizeGymRow(row)),
+        pagination: {
+          page: pg.page,
+          limit: pg.limit,
+          total: count,
+          totalPages: Math.max(1, Math.ceil(count / pg.limit)),
+        },
+      };
+    }
 
     const gymIds = rows.map((x) => Number(x.id)).filter(Boolean);
     const [gymReviews, gymBookings] = await Promise.all([
@@ -320,13 +338,17 @@ const marketplaceService = {
     };
   },
 
-  async getGymDetail(id) {
+  async getGymDetail(id, query = {}) {
+    const lite = parseBoolFlag(query?.lite);
     const gym = await db.Gym.findByPk(id, {
       include: [{ model: db.User, as: "owner", attributes: ["username", "email"] }],
     });
 
     if (!gym) return null;
     const data = normalizeGymRow(gym);
+    if (lite) {
+      return data;
+    }
     const [gymReviewRow, gymBookingRow] = await Promise.all([
       db.Review.findOne({
         attributes: [[fn("AVG", col("rating")), "avgRating"], [fn("COUNT", col("id")), "reviewCount"]],
@@ -366,7 +388,7 @@ const marketplaceService = {
     });
   },
 
-  async listTrainers({ gymId, q, page, limit } = {}) {
+  async listTrainers({ gymId, q, page, limit, lite } = {}) {
     const where = {};
     const userWhere = {};
     if (gymId) where.gymId = gymId;
@@ -394,6 +416,18 @@ const marketplaceService = {
       const haystack = `${data.User?.username || ""} ${data.specialization || ""} ${data.bio || ""}`.toLowerCase();
       return haystack.includes(String(q).toLowerCase());
     });
+
+    if (parseBoolFlag(lite)) {
+      return {
+        items,
+        pagination: {
+          page: pg.page,
+          limit: pg.limit,
+          total: count,
+          totalPages: Math.max(1, Math.ceil(count / pg.limit)),
+        },
+      };
+    }
 
     const trainerIds = items.map((x) => Number(x.id)).filter(Boolean);
     const [trainerReviews, trainerStudents, trainerPackages] = await Promise.all([
@@ -497,7 +531,7 @@ const marketplaceService = {
     });
   },
 
-  async listPackages({ gymId, q, page, limit } = {}) {
+  async listPackages({ gymId, q, page, limit, lite } = {}) {
     const where = { packageType: "personal_training", ...ACTIVE_PACKAGE_WHERE };
 
     if (gymId) where.gymId = gymId;
@@ -512,6 +546,18 @@ const marketplaceService = {
       limit: pg.limit,
       distinct: true,
     });
+
+    if (parseBoolFlag(lite)) {
+      return {
+        items: rows,
+        pagination: {
+          page: pg.page,
+          limit: pg.limit,
+          total: count,
+          totalPages: Math.max(1, Math.ceil(count / pg.limit)),
+        },
+      };
+    }
 
     return {
       items: rows,
