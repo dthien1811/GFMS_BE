@@ -39,7 +39,12 @@ const ownerCommissionController = {
         message: "Đã gửi nhắc nhở điểm danh cho PT.",
       });
     } catch (e) {
-      console.error("Error in remindPendingAttendance controller:", e);
+      const status = e.statusCode || 500;
+      if (status < 500) {
+        console.warn("Remind pending attendance rejected:", e?.message || e);
+      } else {
+        console.error("Error in remindPendingAttendance controller:", e);
+      }
       return res.status(e.statusCode || 500).json({ message: e.message });
     }
   },
