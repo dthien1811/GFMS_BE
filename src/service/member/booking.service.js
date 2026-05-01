@@ -94,8 +94,65 @@ const normalizeTimeInput = (startTime) => {
   return st;
 };
 
+const VN_OFFSET_MINUTES = 7 * 60;
+const VN_OFFSET_MS = VN_OFFSET_MINUTES * 60 * 1000;
+
+const parseIsoDateParts = (isoDate) => {
+  const m = String(isoDate || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return {
+    year: Number(m[1]),
+    month: Number(m[2]),
+    day: Number(m[3]),
+  };
+};
+
+const parseTimeParts = (value) => {
+  const m = String(value || "").match(/^(\d{2}):(\d{2})(?::(\d{2}))?$/);
+  if (!m) return null;
+  return {
+    hour: Number(m[1]),
+    minute: Number(m[2]),
+    second: Number(m[3] || 0),
+  };
+};
+
+const toVnDateTimeMs = (isoDate, time = "00:00:00") => {
+  const dateParts = parseIsoDateParts(isoDate);
+  const timeParts = parseTimeParts(time);
+  if (!dateParts || !timeParts) return NaN;
+  return (
+    Date.UTC(
+      dateParts.year,
+      dateParts.month - 1,
+      dateParts.day,
+      timeParts.hour,
+      timeParts.minute,
+      timeParts.second
+    ) - VN_OFFSET_MS
+  );
+};
+
+const getVnNowDateTimeParts = () => {
+  const nowShifted = new Date(Date.now() + VN_OFFSET_MS);
+  return {
+    year: nowShifted.getUTCFullYear(),
+    month: nowShifted.getUTCMonth() + 1,
+    day: nowShifted.getUTCDate(),
+    hour: nowShifted.getUTCHours(),
+    minute: nowShifted.getUTCMinutes(),
+  };
+};
+
+const getVnTodayStartMs = () => {
+  const p = getVnNowDateTimeParts();
+  return Date.UTC(p.year, p.month - 1, p.day, 0, 0, 0) - VN_OFFSET_MS;
+};
+
 const getDateDow = (isoDate) => {
-  return new Date(`${isoDate}T00:00:00`).getDay();
+  const parts = parseIsoDateParts(isoDate);
+  if (!parts) return NaN;
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
 };
 
 const genCode = (prefix = "TX") =>
@@ -321,7 +378,7 @@ async function getOwnedBookingOrThrow(userId, bookingId, transaction) {
     throw e;
   }
 
-  const startMs = new Date(`${booking.bookingDate}T${toHHMM(booking.startTime)}:00`).getTime();
+  const startMs = toVnDateTimeMs(booking.bookingDate, `${toHHMM(booking.startTime)}:00`);
   if (Number.isFinite(startMs) && startMs <= Date.now()) {
     const e = new Error('Chỉ có thể đổi lịch cho buổi tập trong tương lai');
     e.statusCode = 400;
@@ -369,7 +426,7 @@ async function buildRescheduleOptionsForBooking(booking, { selectedDate = null, 
     if (normalizedWeekday && normalizedWeekday !== dayKey) continue;
     const hours = getTrainerHoursForDate(trainer, isoDate);
     if (!Array.isArray(hours) || !hours.length) continue;
-    const dateStartMs = new Date(`${isoDate}T00:00:00`).getTime();
+    const dateStartMs = toVnDateTimeMs(isoDate, "00:00:00");
     if (dateStartMs + 24 * 60 * 60 * 1000 <= minAllowedMs) continue;
     candidateDates.push({ date: isoDate, weekday: dayKey, label: formatYMDLabel(isoDate) });
   }
@@ -410,7 +467,7 @@ async function buildRescheduleOptionsForBooking(booking, { selectedDate = null, 
       const [start, end] = slotKey.split('-');
       const startTime = `${start}:00`;
       const endTime = `${end}:00`;
-      const startMs = new Date(`${effectiveDate}T${start}:00`).getTime();
+      const startMs = toVnDateTimeMs(effectiveDate, `${start}:00`);
       const trainerBusy = trainerBookings.some((b) => overlap(timeToMinutes(startTime), timeToMinutes(endTime), timeToMinutes(b.startTime), timeToMinutes(b.endTime)));
       const memberBusy = memberBookings.some((b) => overlap(timeToMinutes(startTime), timeToMinutes(endTime), timeToMinutes(b.startTime), timeToMinutes(b.endTime)));
       const tooSoon = startMs < minAllowedMs;
@@ -708,13 +765,12 @@ async function buildValidatedFixedPlan(userId, payload, transaction = null) {
     throw e;
   }
 
-  const now = new Date();
-  const today00 = new Date();
-  today00.setHours(0, 0, 0, 0);
+  const nowMs = Date.now();
+  const today00Ms = getVnTodayStartMs();
 
   for (const d of bookingDates) {
-    const dayStart = new Date(`${d}T00:00:00`);
-    if (dayStart < today00) {
+    const dayStartMs = toVnDateTimeMs(d, "00:00:00");
+    if (dayStartMs < today00Ms) {
       const e = new Error("Lịch chứa ngày trong quá khứ");
       e.statusCode = 400;
       throw e;
@@ -785,8 +841,8 @@ async function buildValidatedFixedPlan(userId, payload, transaction = null) {
     let ok = true;
 
     for (const bookingDate of bookingDates) {
-      const dateTime = new Date(`${bookingDate}T${startTime}`);
-      if (dateTime.getTime() - now.getTime() < MIN_BOOKING_LEAD_MINUTES * 60 * 1000) {
+      const dateTimeMs = toVnDateTimeMs(bookingDate, startTime);
+      if (dateTimeMs - nowMs < MIN_BOOKING_LEAD_MINUTES * 60 * 1000) {
         ok = false;
         break;
       }
@@ -861,7 +917,7 @@ const bookingService = {
       throw e;
     }
 
-    const dayKey = DAY_KEYS[new Date(`${date}T00:00:00`).getDay()];
+    const dayKey = DAY_KEYS[getDateDow(date)];
     const availableHours = safeParseJSON(trainer.availableHours, {});
     const hours = availableHours?.[dayKey] || [];
     if (!hours.length) return [];
@@ -880,11 +936,9 @@ const bookingService = {
       e: timeToMinutes(b.endTime),
     }));
 
-    const now = new Date();
-    const todayLocal = new Date();
-    todayLocal.setHours(0, 0, 0, 0);
-    const isToday = new Date(`${date}T00:00:00`).getTime() === todayLocal.getTime();
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const vnNow = getVnNowDateTimeParts();
+    const isToday = toVnDateTimeMs(date, "00:00:00") === getVnTodayStartMs();
+    const nowMinutes = vnNow.hour * 60 + vnNow.minute;
 
     const slots = [];
     for (const h of hours) {
@@ -1282,8 +1336,8 @@ const bookingService = {
         throw e;
       }
 
-      const bookingDateTime = new Date(`${date}T${startTimeFixed}`);
-      if (bookingDateTime <= new Date()) {
+      const bookingDateTimeMs = toVnDateTimeMs(date, startTimeFixed);
+      if (bookingDateTimeMs <= Date.now()) {
         const e = new Error("Không thể đặt lịch trong quá khứ");
         e.statusCode = 400;
         throw e;
@@ -1433,8 +1487,8 @@ const bookingService = {
       const skipped = [];
 
       for (const bookingDate of bookingDates) {
-        const bookingDateTime = new Date(`${bookingDate}T${startTimeFixed}`);
-        if (bookingDateTime <= new Date()) {
+        const bookingDateTimeMs = toVnDateTimeMs(bookingDate, startTimeFixed);
+        if (bookingDateTimeMs <= Date.now()) {
           skipped.push({ bookingDate, reason: "past_time" });
           continue;
         }
