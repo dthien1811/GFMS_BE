@@ -936,16 +936,31 @@ module.exports = {
             });
           }
         }
-        const currentNotes = String(booking.notes || "");
-        if (!currentNotes.includes(BUSY_REQUEST_NOTE_MARKER)) {
+        const BUSY_MARKER = BUSY_REQUEST_NOTE_MARKER;
+        const SUBSTITUTE_MARKER = "[PT_SUBSTITUTE]";
+
+        let currentNotes = String(booking.notes || "");
+
+        // Khi đã xếp PT khác vào dạy thay, cần đánh dấu rõ để UI PT hiển thị "Lịch dạy thay"
+        // và tránh nhầm với trạng thái "PT đã báo bận" của PT gốc.
+        if (replacement && !currentNotes.includes(SUBSTITUTE_MARKER)) {
+          const previousTrainerId = Number(request?.data?.trainerId || 0) || null;
+          const subNote = `${SUBSTITUTE_MARKER} Thay PT #${previousTrainerId || "?"} lúc ${new Date().toISOString()}`;
+          currentNotes = currentNotes ? `${currentNotes}\n${subNote}` : subNote;
+        }
+
+        // Giữ marker BUSY để audit/trace nhưng không tạo trùng dòng.
+        if (!currentNotes.includes(BUSY_MARKER)) {
           const assignmentNote = replacement
             ? ` | Đã điều phối nội bộ cho huấn luyện viên ${replacement?.User?.username || `#${replacement.id}`}`
             : shouldAutoAssignInternal
             ? " | Không tìm thấy huấn luyện viên nội bộ phù hợp"
             : " | Owner chọn chuyển sang luồng mượn huấn luyện viên";
-          const note = `${BUSY_REQUEST_NOTE_MARKER} Owner đã duyệt yêu cầu báo bận #${request.id}${assignmentNote}`;
-          booking.notes = currentNotes ? `${currentNotes}\n${note}` : note;
+          const note = `${BUSY_MARKER} Owner đã duyệt yêu cầu báo bận #${request.id}${assignmentNote}`;
+          currentNotes = currentNotes ? `${currentNotes}\n${note}` : note;
         }
+
+        booking.notes = currentNotes;
         await booking.save({ transaction: t });
 
         request.data = {
