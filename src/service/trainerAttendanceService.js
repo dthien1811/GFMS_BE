@@ -678,14 +678,24 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
           requestType: "BUSY_SLOT",
           status: { [db.Sequelize.Op.in]: ["PENDING", "APPROVED", "pending", "approved"] },
         },
-        attributes: ["data"],
+        attributes: ["data", "requesterId"],
         order: [["createdAt", "DESC"]],
         limit: 500,
       });
+      // IMPORTANT:
+      // - BUSY_SLOT được tạo bởi PT "gốc" (requesterId = userId).
+      // - Khi owner đã xếp PT khác vào dạy thay, booking có thể vẫn còn BUSY_SLOT pending/approved của PT cũ
+      //   (do chưa được xử lý / data fix). Không được hiển thị "đã báo bận" cho PT đang nhận dạy thay.
       busyRequestedByBookingId = new Set(
         busyRequests
-          .map((item) => Number(item?.data?.bookingId || 0))
-          .filter((bookingId) => bookingId > 0 && bookingIds.includes(bookingId))
+          .map((item) => ({
+            bookingId: Number(item?.data?.bookingId || 0),
+            requesterId: Number(item?.requesterId || 0),
+          }))
+          .filter((x) => x.bookingId > 0 && bookingIds.includes(x.bookingId))
+          // Chỉ PT đã tạo BUSY_SLOT (requesterId) mới thấy "đã báo bận".
+          .filter((x) => Number(userId) > 0 && x.requesterId === Number(userId))
+          .map((x) => x.bookingId)
       );
     }
   } catch (_e) {
@@ -720,10 +730,20 @@ const getMyScheduleForDate = async ({ userId, date, status }) => {
     const hasSubstituteMarker = notes.includes("[PT_SUBSTITUTE]");
     const hasBusyMarker = notes.includes(BUSY_REQUEST_NOTE_MARKER);
     const hasAttendance = attByBookingId.has(Number(plainBooking.id));
-    // isSubstitute: chỉ khi có marker [PT_SUBSTITUTE] rõ ràng
-    const isSubstituteBooking = hasSubstituteMarker;
-    // busyRequested: chỉ khi có marker báo bận VÀ KHÔNG phải dạy thay
-    const busyRequested = !isSubstituteBooking && (busyRequestedByBookingId.has(Number(plainBooking.id)) || hasBusyMarker);
+    // isSubstitute: ưu tiên marker chuẩn; fallback theo text notes để không bị dính "báo bận"
+    // trong các booking đã được xếp PT khác vào nhưng thiếu marker do data cũ/flow khác.
+    const isSubstituteBooking =
+      Boolean(plainBooking?.isSubstitute) ||
+      hasSubstituteMarker ||
+      /thay\s*pt\s*#/i.test(notes) ||
+      /gán\s*pt\s*thế/i.test(notes);
+
+    // busyRequested: chỉ khi PT hiện tại là người đã báo bận (lọc theo BUSY_SLOT.data.trainerId)
+    // NOTE: Không dùng fallback theo notes [PT_BUSY_REQUEST] nữa vì marker có thể còn sót lại
+    // sau khi owner đã xếp PT khác vào (dạy thay) → gây hiển thị sai cho PT nhận lịch.
+    const busyRequested =
+      !isSubstituteBooking &&
+      busyRequestedByBookingId.has(Number(plainBooking.id));
     const base = {
       ...plainBooking,
       busyRequested,
