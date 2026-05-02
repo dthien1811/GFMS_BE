@@ -2,6 +2,7 @@ import { Op } from "sequelize";
 import db from "../models/index";
 import realtimeService from "./realtime.service";
 import { applyPackageActivationCompletion, removePendingCommissionForBooking } from "./bookingActivationHelpers";
+import { bookingSlotEndDate, bookingDateToYmd } from "../utils/vnWallClock";
 
 const DEFAULT_RETENTION_REASON =
   "Buổi tập đã qua giờ, huấn luyện viên không điểm danh — toàn bộ giá trị buổi ghi nhận cho chủ phòng tập.";
@@ -137,13 +138,7 @@ export async function createOwnerRetentionCommissionForBooking(booking, { transa
 }
 
 const formatSlotLabel = (booking) => {
-  const raw = booking?.bookingDate;
-  const ymd =
-    typeof raw === "string"
-      ? raw.slice(0, 10)
-      : raw instanceof Date
-        ? toYmdLocal(raw)
-        : "";
+  const ymd = bookingDateToYmd(booking?.bookingDate);
   const start = String(booking?.startTime || "").slice(0, 5);
   const end = String(booking?.endTime || "").slice(0, 5);
   if (!ymd) return "Buổi tập";
@@ -171,20 +166,7 @@ const notifyOwnerRetentionRecorded = async (booking) => {
   }
 };
 
-const bookingSlotEnd = (booking) => {
-  const raw = booking.bookingDate;
-  const dateStr =
-    typeof raw === "string"
-      ? raw.slice(0, 10)
-      : raw instanceof Date
-        ? toYmdLocal(raw)
-        : "";
-  if (!dateStr) return null;
-  let end = String(booking.endTime || "23:59:59");
-  if (end.length === 5) end = `${end}:00`;
-  const d = new Date(`${dateStr}T${end}`);
-  return Number.isNaN(d.getTime()) ? null : d;
-};
+const bookingSlotEnd = bookingSlotEndDate;
 
 const bookingAttendanceDeadline = (booking) => {
   const end = bookingSlotEnd(booking);
