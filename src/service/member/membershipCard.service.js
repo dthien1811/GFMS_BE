@@ -403,6 +403,58 @@ const syncExpiredCardsAndNotify = async () => {
   return due.length;
 };
 
+/** Lịch sử giao dịch mua thẻ thành viên (theo user, mọi chi nhánh Member). */
+const listMyPurchaseHistory = async (userId) => {
+  const uid = Number(userId || 0);
+  if (!uid) return [];
+
+  const members = await db.Member.findAll({
+    where: { userId: uid },
+    attributes: ["id"],
+    raw: true,
+  });
+  const memberIds = members.map((m) => Number(m.id)).filter((id) => id > 0);
+  if (!memberIds.length) return [];
+
+  const rows = await db.Transaction.findAll({
+    where: {
+      memberId: { [db.Sequelize.Op.in]: memberIds },
+      transactionType: "membership_card_purchase",
+    },
+    include: [{ model: db.Gym, attributes: ["id", "name"], required: false }],
+    order: [["createdAt", "DESC"]],
+    limit: 500,
+  });
+
+  return rows.map((tx) => {
+    const plain = typeof tx.get === "function" ? tx.get({ plain: true }) : tx;
+    const meta = plain.metadata?.membershipCard || {};
+    const planMonths = Number(meta.planMonths || 0);
+    const gymName = plain.Gym?.name ? String(plain.Gym.name).trim() : "";
+    const baseLabel =
+      String(plain.description || "").trim() ||
+      (planMonths > 0 ? `Thẻ thành viên ${planMonths} tháng` : "Mua thẻ thành viên");
+    const label = gymName ? `${baseLabel} — ${gymName}` : baseLabel;
+    const tDate = plain.transactionDate || plain.paidAt || plain.createdAt;
+    return {
+      id: `mc-tx-${plain.id}`,
+      kind: "membership_card",
+      label,
+      gymName: gymName || null,
+      createdAt: plain.createdAt,
+      updatedAt: plain.updatedAt,
+      Transaction: {
+        id: plain.id,
+        transactionCode: plain.transactionCode,
+        transactionDate: tDate,
+        paymentMethod: plain.paymentMethod,
+        paymentStatus: plain.paymentStatus,
+        amount: plain.amount,
+      },
+    };
+  });
+};
+
 const notifyOwnerAboutMembershipCardPurchase = async ({
   gymId,
   memberId,
@@ -449,6 +501,7 @@ export default {
   resolvePlanForPackagePurchase,
   createOrExtendMembershipCard,
   purchaseMembershipCard,
+  listMyPurchaseHistory,
   syncExpiredCardsAndNotify,
   notifyOwnerAboutMembershipCardPurchase,
 };
