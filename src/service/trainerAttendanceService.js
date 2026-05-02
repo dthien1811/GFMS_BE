@@ -2,6 +2,7 @@ const db = require("../models");
 const { Op } = require("sequelize");
 const realtimeService = require("./realtime.service").default;
 const { syncPackageActivationCountersByActivationId } = require("./member/booking.service");
+const { bookingSlotEndDate, toVnDateTimeMs, bookingDateToYmd } = require("../utils/vnWallClock");
 
 const mustHaveModel = (Model, name) => {
   if (!Model) {
@@ -246,21 +247,8 @@ const ensureAttendanceEditable = async (bookingInput) => {
   }
 };
 
-/** Giờ kết thúc slot theo ngày + endTime (local server), khớp logic owner retention. */
-const getBookingSlotEndDate = (booking) => {
-  const raw = booking?.bookingDate;
-  const dateStr =
-    typeof raw === "string"
-      ? raw.slice(0, 10)
-      : raw instanceof Date
-        ? `${raw.getFullYear()}-${String(raw.getMonth() + 1).padStart(2, "0")}-${String(raw.getDate()).padStart(2, "0")}`
-        : "";
-  if (!dateStr) return null;
-  let end = String(booking?.endTime || "23:59:59");
-  if (end.length === 5) end = `${end}:00`;
-  const d = new Date(`${dateStr}T${end}`);
-  return Number.isNaN(d.getTime()) ? null : d;
-};
+/** Giờ kết thúc slot theo ngày + endTime (múi giờ VN), khớp logic owner retention. */
+const getBookingSlotEndDate = (booking) => bookingSlotEndDate(booking);
 
 const getAttendanceEditDeadline = (booking) => {
   const end = getBookingSlotEndDate(booking);
@@ -291,7 +279,7 @@ const assertAttendanceDateWindow = (booking) => {
 };
 
 const assertBusyRequestBeforeSixHours = (booking) => {
-  const bookingDate = String(booking?.bookingDate || "").slice(0, 10);
+  const bookingDate = bookingDateToYmd(booking?.bookingDate);
   const startTime = String(booking?.startTime || "").slice(0, 5);
   if (!bookingDate || !startTime) {
     const err = new Error("Không xác định được thời gian bắt đầu buổi tập");
@@ -299,15 +287,15 @@ const assertBusyRequestBeforeSixHours = (booking) => {
     throw err;
   }
 
-  const slotStart = new Date(`${bookingDate}T${startTime}:00`);
-  if (Number.isNaN(slotStart.getTime())) {
+  const slotStartMs = toVnDateTimeMs(bookingDate, `${startTime}:00`);
+  if (!Number.isFinite(slotStartMs)) {
     const err = new Error("Thời gian buổi tập không hợp lệ");
     err.statusCode = 400;
     throw err;
   }
 
   const minLeadTime = 6 * 60 * 60 * 1000;
-  if (slotStart.getTime() - Date.now() < minLeadTime) {
+  if (slotStartMs - Date.now() < minLeadTime) {
     const err = new Error("Yêu cầu báo bận phải gửi trước ít nhất 6 tiếng so với giờ bắt đầu");
     err.statusCode = 400;
     throw err;
