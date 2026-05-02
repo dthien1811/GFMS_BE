@@ -77,6 +77,62 @@ const getMembershipCardSummary = async (memberId) => {
   };
 };
 
+/** Mọi thẻ đang hiệu lực của user (cùng userId, khác chi nhánh Member). */
+const listActiveMembershipCardSummariesForUser = async (userId) => {
+  const uid = Number(userId || 0);
+  if (!uid) return [];
+  try {
+    const rows = await db.MembershipCard.findAll({
+      where: {
+        status: "active",
+        endDate: { [db.Sequelize.Op.gte]: new Date() },
+      },
+      include: [
+        {
+          model: db.Member,
+          attributes: ["id", "gymId", "userId"],
+          where: { userId: uid },
+          required: true,
+        },
+        {
+          model: db.Gym,
+          attributes: ["id", "name", "address"],
+          required: false,
+        },
+      ],
+      order: [["endDate", "DESC"], ["id", "DESC"]],
+    });
+
+    return rows.map((row) => {
+      const remainingMonths = calcRemainingMonths(row.endDate);
+      const gid = Number(row.gymId || row.Member?.gymId || 0);
+      return {
+        id: row.id,
+        memberId: row.Member?.id || row.memberId,
+        planCode: row.planCode,
+        planMonths: row.planMonths,
+        remainingMonths,
+        price: Number(row.price || 0),
+        startDate: row.startDate,
+        endDate: row.endDate,
+        status: row.status,
+        gymId: gid,
+        purchaseSource: row.purchaseSource,
+        gym: row.Gym
+          ? {
+              id: row.Gym.id,
+              name: row.Gym.name || "",
+              address: row.Gym.address || "",
+            }
+          : null,
+      };
+    });
+  } catch (e) {
+    if (isMissingMembershipCardTableError(e)) return [];
+    throw e;
+  }
+};
+
 const hasActiveMembershipCard = async (memberId, transaction = null) => {
   const card = await getActiveMembershipCard(memberId, transaction);
   return !!card;
@@ -388,6 +444,7 @@ export default {
   getPlanByMonths,
   getPlanById,
   getMembershipCardSummary,
+  listActiveMembershipCardSummariesForUser,
   hasActiveMembershipCard,
   resolvePlanForPackagePurchase,
   createOrExtendMembershipCard,
