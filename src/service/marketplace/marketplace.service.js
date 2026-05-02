@@ -389,7 +389,7 @@ const marketplaceService = {
   },
 
   async listTrainers({ gymId, q, page, limit, lite } = {}) {
-    const where = {};
+    const where = { isActive: true };
     const userWhere = {};
     if (gymId) where.gymId = gymId;
     if (q) {
@@ -487,7 +487,7 @@ const marketplaceService = {
     const trainer = await db.Trainer.findByPk(id, {
       include: [{ model: db.User }, { model: db.Gym }],
     });
-    if (!trainer) return null;
+    if (!trainer || trainer.isActive === false || trainer.isActive === 0) return null;
     const data = typeof trainer.toJSON === "function" ? trainer.toJSON() : trainer;
     const [trainerReviewRow, trainerStudentRow, trainerPackageRow] = await Promise.all([
       db.Review.findOne({

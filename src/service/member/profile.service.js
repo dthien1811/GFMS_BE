@@ -47,7 +47,40 @@ const normalizeCertificateLinks = (input) => {
   return { ok: true, value: unique };
 };
 
-const toSafeUser = (user, member = null, gym = null, activation = null, latestMetric = null, membershipCard = null) => {
+const mapMembershipCardSafe = (c) =>
+  c
+    ? {
+        id: c.id,
+        memberId: c.memberId || null,
+        planCode: c.planCode,
+        planMonths: c.planMonths,
+        remainingMonths: Number(c.remainingMonths ?? 0),
+        price: Number(c.price || 0),
+        startDate: c.startDate,
+        endDate: c.endDate,
+        status: c.status,
+        gymId: Number(c.gymId || 0),
+        gym: c.gym
+          ? {
+              id: c.gym.id,
+              name: c.gym.name || "",
+              address: c.gym.address || "",
+            }
+          : null,
+      }
+    : null;
+
+const toSafeUser = (
+  user,
+  member = null,
+  gym = null,
+  activation = null,
+  latestMetric = null,
+  membershipCardsInput = []
+) => {
+  const cards = Array.isArray(membershipCardsInput) ? membershipCardsInput : [];
+  const membershipCard = cards.length ? mapMembershipCardSafe(cards[0]) : null;
+
   return {
     id: user.id,
     email: user.email || "",
@@ -109,17 +142,8 @@ const toSafeUser = (user, member = null, gym = null, activation = null, latestMe
           recordedAt: latestMetric.recordedAt,
         }
       : null,
-    membershipCard: membershipCard
-      ? {
-          id: membershipCard.id,
-          planCode: membershipCard.planCode,
-          planMonths: membershipCard.planMonths,
-          price: Number(membershipCard.price || 0),
-          startDate: membershipCard.startDate,
-          endDate: membershipCard.endDate,
-          status: membershipCard.status,
-        }
-      : null,
+    membershipCards: cards.map((c) => mapMembershipCardSafe(c)).filter(Boolean),
+    membershipCard,
   };
 };
 
@@ -361,18 +385,18 @@ const memberProfileService = {
     let gym = null;
     let activation = null;
     let latestMetric = null;
-    let membershipCard = null;
+
+    const membershipCardsList =
+      await membershipCardService.listActiveMembershipCardSummariesForUser(user.id);
+
+    if (membershipCardsList.length > 0 && membershipCardsList[0].memberId) {
+      member = await db.Member.findOne({
+        where: { id: membershipCardsList[0].memberId },
+        raw: true,
+      });
+    }
 
     if (member) {
-      const activeCardRow = await db.MembershipCard.findOne({
-        where: { status: "active", endDate: { [db.Sequelize.Op.gte]: new Date() } },
-        include: [{ model: db.Member, attributes: ["id", "gymId"], where: { userId }, required: true }],
-        order: [["endDate", "DESC"], ["id", "DESC"]],
-      });
-      if (activeCardRow?.Member?.id) {
-        member = await db.Member.findOne({ where: { id: activeCardRow.Member.id }, raw: true });
-      }
-
       if (member.gymId) {
         gym = await db.Gym.findOne({
           where: { id: member.gymId },
@@ -399,11 +423,9 @@ const memberProfileService = {
         order: [["recordedAt", "DESC"], ["id", "DESC"]],
         raw: true,
       });
-
-      membershipCard = await membershipCardService.getMembershipCardSummary(member.id);
     }
 
-    return toSafeUser(user, member, gym, activation, latestMetric, membershipCard);
+    return toSafeUser(user, member, gym, activation, latestMetric, membershipCardsList);
   },
 
   async updateMyProfile(userId, payload) {
