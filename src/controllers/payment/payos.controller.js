@@ -194,6 +194,18 @@ async function applyFixedPlanDraftAfterPayment(tx, activationId) {
   }));
   const created = await db.Booking.bulkCreate(rows);
 
+  if (created.length) {
+    try {
+      await realtimeService.notifyTrainerNewBookingsFromMember({
+        trainerId,
+        createdCount: created.length,
+        firstBookingId: created[0]?.id,
+      });
+    } catch (e) {
+      console.error("[payos] notify trainer after fixed-plan bookings:", e?.message || e);
+    }
+  }
+
   await tx.update(
     {
       metadata: {

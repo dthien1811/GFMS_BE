@@ -2,6 +2,7 @@
 import db from "../../models";
 import { Op } from "sequelize";
 import payosService from "../payment/payos.service";
+import realtimeService from "../realtime.service";
 
 const SLOT_MINUTES = 60;
 
@@ -815,6 +816,18 @@ const memberMyPackageService = {
       await syncActivationCounters(activation, t);
 
       await t.commit();
+
+      if (created.length) {
+        try {
+          await realtimeService.notifyTrainerNewBookingsFromMember({
+            trainerId: trainer.id,
+            createdCount: created.length,
+            firstBookingId: created[0]?.id,
+          });
+        } catch (e) {
+          console.error("[myPackages] notify trainer after auto-book:", e?.message || e);
+        }
+      }
 
       return {
         repeatWeeks,
