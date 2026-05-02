@@ -7,6 +7,7 @@ const router = express.Router();
 router.use(requireGroupName(["Members", "Member"]));
 
 router.get("/plans", membershipCardController.listPlans);
+router.get("/history", membershipCardController.purchaseHistory);
 router.get("/me", membershipCardController.myCurrentCard);
 router.post("/purchase", membershipCardController.purchase);
 
