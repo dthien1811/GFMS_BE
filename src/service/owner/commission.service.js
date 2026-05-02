@@ -3,6 +3,7 @@ import { Op } from "sequelize";
 import ExcelJS from "exceljs";
 import realtimeService from "../realtime.service";
 import ownerRetentionSyncService from "../ownerRetentionSync.service";
+import { bookingSlotEndDate, bookingDateToYmd, vnTodayYmd, vnYmdFromUtcMs } from "../../utils/vnWallClock";
 
 const {
   Commission,
@@ -205,9 +206,8 @@ const ownerCommissionService = {
       return { data: [], pagination: { total: 0, page, limit, totalPages: 0 } };
     }
 
-    const minDate = new Date(now.getTime() - (ATTENDANCE_EDIT_GRACE_HOURS + 36) * 60 * 60 * 1000);
-    const minYmd = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, "0")}-${String(minDate.getDate()).padStart(2, "0")}`;
-    const maxYmd = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    const minYmd = vnYmdFromUtcMs(now.getTime() - (ATTENDANCE_EDIT_GRACE_HOURS + 36) * 60 * 60 * 1000);
+    const maxYmd = vnTodayYmd();
 
     const rows = await Booking.findAll({
       where: {
@@ -236,14 +236,7 @@ const ownerCommissionService = {
       limit: 500,
     });
 
-    const slotEnd = (booking) => {
-      const dateStr = String(booking?.bookingDate || "").slice(0, 10);
-      if (!dateStr) return null;
-      let end = String(booking?.endTime || "23:59:59");
-      if (end.length === 5) end = `${end}:00`;
-      const d = new Date(`${dateStr}T${end}`);
-      return Number.isNaN(d.getTime()) ? null : d;
-    };
+    const slotEnd = (booking) => bookingSlotEndDate(booking);
     const reminderAt = (booking) => {
       const end = slotEnd(booking);
       if (!end) return null;
@@ -375,11 +368,9 @@ const ownerCommissionService = {
       throw err;
     }
 
-    const dateStr = String(booking?.bookingDate || "").slice(0, 10);
-    let end = String(booking?.endTime || "23:59:59");
-    if (end.length === 5) end = `${end}:00`;
-    const endAt = new Date(`${dateStr}T${end}`);
-    if (Number.isNaN(endAt.getTime())) {
+    const dateStr = bookingDateToYmd(booking?.bookingDate);
+    const endAt = bookingSlotEndDate(booking);
+    if (!dateStr || !endAt || Number.isNaN(endAt.getTime())) {
       const err = new Error("Không thể xác định thời gian kết thúc buổi tập.");
       err.statusCode = 400;
       throw err;
@@ -422,9 +413,18 @@ const ownerCommissionService = {
     const trainerName = booking?.Trainer?.User?.username || `PT #${booking?.Trainer?.id || booking?.trainerId || "?"}`;
     const memberName = booking?.Member?.User?.username || `Hội viên #${booking?.memberId || "?"}`;
     const gymName = booking?.Gym?.name || "phòng tập";
-    const dateLabel = new Date(`${dateStr}T00:00:00`).toLocaleDateString("vi-VN");
+    const dateLabel = (() => {
+      const parts = dateStr.split("-");
+      const y = parts[0];
+      const m = parts[1];
+      const d = parts[2];
+      return y && m && d ? `${Number(d)}/${Number(m)}/${y}` : dateStr;
+    })();
     const timeLabel = `${String(booking?.startTime || "").slice(0, 5)}-${String(booking?.endTime || "").slice(0, 5)}`;
-    const deadlineLabel = deadline.toLocaleString("vi-VN");
+    const deadlineLabel = deadline.toLocaleString("vi-VN", {
+      timeZone: "Asia/Ho_Chi_Minh",
+      hour12: false,
+    });
 
     await realtimeService.notifyUser(trainerUserId, {
       title: "Owner nhắc điểm danh buổi tập",
