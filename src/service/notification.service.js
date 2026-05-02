@@ -3,7 +3,15 @@ import db from "../models";
 import { attachGymIdsToNotifications, matchesNotificationGym } from "./notification-gym.service";
 
 /** Loại hiển thị trên trang Thông báo PT (không gộp tin nhắn — dùng tab Tin nhắn + icon riêng). */
-const PT_CORE_TYPES = ["booking_update", "review", "withdrawal", "request_update"];
+const PT_CORE_TYPES = [
+  "booking_update",
+  "booking",
+  "booking_reschedule",
+  "trainer_share",
+  "review",
+  "withdrawal",
+  "request_update",
+];
 
 const trainerNotificationWhere = (userId, extra = {}) => ({
   userId,

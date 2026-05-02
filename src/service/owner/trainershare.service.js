@@ -351,6 +351,15 @@ const assertReferencedMemberBelongsToGym = async ({ memberId, toGymId }) => {
   return member;
 };
 
+/** userId của PT gắn phiếu mượn — dùng cho socket + thông báo realtime. */
+const trainerUserIdForShareTrainerId = async (trainerId) => {
+  const tid = Number(trainerId || 0);
+  if (!tid) return null;
+  const row = await Trainer.findByPk(tid, { attributes: ["userId"] });
+  const uid = row?.userId != null ? Number(row.userId) : null;
+  return Number.isInteger(uid) && uid > 0 ? uid : null;
+};
+
 const emitTrainerShareChanged = (userIds = [], payload = {}) => {
   const ids = [...new Set((userIds || []).filter(Boolean).map(Number))];
   console.log(`[trainer_share emit] targets=${JSON.stringify(ids)} action=${payload.action} status=${payload.status} shareId=${payload.shareId}`);
@@ -1049,7 +1058,10 @@ const updateMyTrainerShare = async (userId, shareId, data) => {
   await trainerShare.save();
 
   const fromGym = await Gym.findByPk(trainerShare.fromGymId, { attributes: ["ownerId"] });
-  emitTrainerShareChanged([userId, fromGym?.ownerId], {
+  const ptUid = trainerShare.trainerId
+    ? await trainerUserIdForShareTrainerId(trainerShare.trainerId)
+    : null;
+  emitTrainerShareChanged([userId, fromGym?.ownerId, ptUid].filter(Boolean), {
     shareId: trainerShare.id,
     status: trainerShare.status,
     action: "updated",
@@ -1086,7 +1098,10 @@ const deleteMyTrainerShare = async (userId, shareId) => {
   }
 
   const fromGym = await Gym.findByPk(trainerShare.fromGymId, { attributes: ["ownerId"] });
-  emitTrainerShareChanged([userId, fromGym?.ownerId], {
+  const ptUidDel = trainerShare.trainerId
+    ? await trainerUserIdForShareTrainerId(trainerShare.trainerId)
+    : null;
+  emitTrainerShareChanged([userId, fromGym?.ownerId, ptUidDel].filter(Boolean), {
     shareId: trainerShare.id,
     status: trainerShare.status,
     action: "deleted",
@@ -1338,7 +1353,10 @@ const acceptTrainerShareRequest = async (userId, requestId) => {
     }
   }
 
-  emitTrainerShareChanged([userId, request.requestedBy], {
+  const ptUidApproved = request.trainerId
+    ? await trainerUserIdForShareTrainerId(request.trainerId)
+    : null;
+  emitTrainerShareChanged([userId, request.requestedBy, ptUidApproved].filter(Boolean), {
     shareId: request.id,
     status: request.status,
     action: "approved",
@@ -1357,6 +1375,20 @@ const acceptTrainerShareRequest = async (userId, requestId) => {
     });
   }
 
+  if (
+    ptUidApproved &&
+    Number(ptUidApproved) !== Number(userId) &&
+    Number(ptUidApproved) !== Number(request.requestedBy)
+  ) {
+    await realtimeService.notifyUser(ptUidApproved, {
+      title: "Phiếu mượn PT đã được chấp nhận",
+      message: `${request.fromGym?.name || "Chi nhánh cho mượn"} đã đồng ý cho mượn — phiếu #${request.id}. Kiểm tra lịch làm việc.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: request.id,
+    });
+  }
+
   return serializeOwnerShare(request);
 };
 
@@ -1367,6 +1399,7 @@ const rejectTrainerShareRequest = async (userId, requestId, reason) => {
   const request = await TrainerShare.findByPk(requestId, {
     include: [
       { model: Gym, as: 'fromGym' },
+      { model: Gym, as: 'toGym' },
       {
         model: Trainer,
         include: [{ model: User, attributes: ["username"] }],
@@ -1405,7 +1438,10 @@ const rejectTrainerShareRequest = async (userId, requestId, reason) => {
   }
   await request.save();
 
-  emitTrainerShareChanged([userId, request.requestedBy], {
+  const ptUidRejected = request.trainerId
+    ? await trainerUserIdForShareTrainerId(request.trainerId)
+    : null;
+  emitTrainerShareChanged([userId, request.requestedBy, ptUidRejected].filter(Boolean), {
     shareId: request.id,
     status: request.status,
     action: "rejected",
@@ -1418,6 +1454,20 @@ const rejectTrainerShareRequest = async (userId, requestId, reason) => {
     await realtimeService.notifyUser(request.requestedBy, {
       title: "Đối tác đã từ chối cho mượn huấn luyện viên",
       message: `${request.fromGym?.name || "Đối tác"} đã từ chối yêu cầu mượn ${request.Trainer?.User?.username || `Huấn luyện viên #${request.trainerId}`}.`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: request.id,
+    });
+  }
+
+  if (
+    ptUidRejected &&
+    Number(ptUidRejected) !== Number(userId) &&
+    Number(ptUidRejected) !== Number(request.requestedBy)
+  ) {
+    await realtimeService.notifyUser(ptUidRejected, {
+      title: "Phiếu mượn PT bị từ chối",
+      message: `${request.fromGym?.name || "Chi nhánh cho mượn"} đã từ chối yêu cầu mượn cho ${request.toGym?.name || "chi nhánh bạn"} — phiếu #${request.id}.`,
       notificationType: "trainer_share",
       relatedType: "trainerShare",
       relatedId: request.id,
@@ -1827,7 +1877,11 @@ const updateBorrowerSessionPrice = async (userId, shareId, data) => {
   await trainerShare.save();
 
   const fromGym = await Gym.findByPk(trainerShare.fromGymId, { attributes: ["ownerId"] });
-  emitTrainerShareChanged([userId, fromGym?.ownerId], {
+  const toGymForPrice = await Gym.findByPk(trainerShare.toGymId, { attributes: ["name"] });
+  const ptUidPrice = trainerShare.trainerId
+    ? await trainerUserIdForShareTrainerId(trainerShare.trainerId)
+    : null;
+  emitTrainerShareChanged([userId, fromGym?.ownerId, ptUidPrice].filter(Boolean), {
     shareId: trainerShare.id,
     status: trainerShare.status,
     action: "session_price_updated",
@@ -1835,6 +1889,17 @@ const updateBorrowerSessionPrice = async (userId, shareId, data) => {
     fromGymId: trainerShare.fromGymId,
     toGymId: trainerShare.toGymId,
   });
+
+  if (ptUidPrice) {
+    const priceLabel = Number(p).toLocaleString("vi-VN");
+    await realtimeService.notifyUser(ptUidPrice, {
+      title: "Giá buổi mượn PT đã được cập nhật",
+      message: `${toGymForPrice?.name || "Chi nhánh mượn"} đã cập nhật giá buổi ${priceLabel}đ (phiếu #${trainerShare.id}).`,
+      notificationType: "trainer_share",
+      relatedType: "trainerShare",
+      relatedId: trainerShare.id,
+    });
+  }
 
   return serializeOwnerShare(trainerShare);
 };

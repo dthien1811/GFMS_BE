@@ -49,6 +49,29 @@ const realtimeService = {
     return rows;
   },
 
+  /**
+   * PT: sau khi hệ thống tạo booking (PayOS fixed-plan draft / auto-book gói) — cùng notificationType
+   * `booking_update` như đặt lịch thủ công, để bell PT + socket khớp.
+   */
+  async notifyTrainerNewBookingsFromMember({ trainerId, createdCount, firstBookingId }) {
+    const tid = Number(trainerId || 0);
+    const cnt = Math.max(0, Number(createdCount || 0));
+    if (!tid || !cnt) return null;
+    const trainer = await db.Trainer.findByPk(tid, { attributes: ["id", "userId"] });
+    if (!trainer?.userId) return null;
+    const firstId = Number(firstBookingId || 0) || null;
+    return this.notifyUser(trainer.userId, {
+      title: "Bạn có lịch tập mới",
+      message:
+        cnt === 1
+          ? "Học viên vừa đặt thêm một buổi tập."
+          : `Học viên vừa đặt ${cnt} buổi.`,
+      notificationType: "booking_update",
+      relatedType: "booking",
+      relatedId: firstId,
+    });
+  },
+
   /** Persist + socket to every user in Administrators group (GFMS admin console). */
   async notifyAdministrators(payload) {
     if (!payload?.title || !payload?.message) return [];
